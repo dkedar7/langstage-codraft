@@ -26,6 +26,7 @@ class CodraftConfig(HostConfig):
     templates_dir: Path | None = None
     default_page_size: str = ""          # letter | a4 | legal | a5 | slide (new documents)
     default_theme: str = "classic"
+    web_fonts: bool = True                # load non-bundled Google Fonts families (editor and export)
     demo: bool = False
     theme: str = "auto"                   # app chrome: light | dark | auto (same as langstage web)
     # App branding (same keys as langstage web, so one langstage.toml brands both stages).
@@ -52,6 +53,7 @@ class CodraftConfig(HostConfig):
         "demo": ("LANGSTAGE_CODRAFT_DEMO", _env_bool),
         "theme": ("LANGSTAGE_THEME", str),
         "default_page_size": ("LANGSTAGE_CODRAFT_DEFAULT_PAGE_SIZE", str),
+        "web_fonts": ("LANGSTAGE_CODRAFT_WEB_FONTS", _env_bool),
         "subtitle": ("LANGSTAGE_SUBTITLE", str),
         "agent_name": ("LANGSTAGE_AGENT_NAME", str),
         "welcome_message": ("LANGSTAGE_WELCOME_MESSAGE", str),
@@ -74,6 +76,7 @@ class CodraftConfig(HostConfig):
         "demo": "codraft.demo",
         "theme": "ui.theme",
         "default_page_size": "codraft.default_page_size",
+        "web_fonts": "codraft.web_fonts",
         "subtitle": "ui.subtitle",
         "agent_name": "ui.agent_name",
         "welcome_message": "ui.welcome_message",
@@ -90,7 +93,7 @@ class CodraftConfig(HostConfig):
     _TOML_PATHS: ClassVar[dict] = {"data_dir": "path", "templates_dir": "path"}
     # Read directly from the [codraft] table (themes.py), not config fields: never "unknown".
     _TOML_PASSTHROUGH: ClassVar[tuple[str, ...]] = (
-        "configurable", "codraft.themes", "codraft.allowed_themes",
+        "configurable", "codraft.themes", "codraft.allowed_themes", "codraft.doc_defaults",
         "ui.colors", "ui.colors_dark", "ui.starter_prompts", "ui.font_family", "ui.font_url",
         "ui.features",
     )

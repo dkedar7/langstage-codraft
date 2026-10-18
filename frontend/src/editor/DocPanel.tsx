@@ -7,7 +7,7 @@ import { NumberInput, TextInput } from "./BlockPanel";
 import { useEditorApi } from "./context";
 import { BRIEF_OPTIONS } from "./NewDocDialog";
 import { withBase } from "../base";
-import { agentName } from "../branding";
+import { AgentName, agentName } from "../branding";
 
 export function DocPanel({ identity }: { identity: { name: string; setName: (n: string) => void; managed?: boolean } }) {
   const ed = useEditorApi();
@@ -15,7 +15,7 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
   const s = doc.settings;
   const set = (patch: Partial<Settings> | Record<string, any>) => ed.run(api.patchDoc(doc.id, { settings: patch }));
   const fileRef = useRef<HTMLInputElement>(null);
-  const [purpose, setPurpose] = useState<"reference" | "template">("reference");
+  const [purpose, setPurpose] = useState<"reference" | "template" | "style">("reference");
 
   return (
     <div className="overflow-auto scroll-thin h-full">
@@ -109,7 +109,7 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
 
       <div className="panel-section">
         <div className="font-semibold">Brief</div>
-        <div className="text-[11.5px] text-[var(--color-text-muted)]">The agent reads this to match your intent.</div>
+        <div className="text-[11.5px] text-[var(--color-text-muted)]">{AgentName(cfg.ui)} reads this to match your intent.</div>
         {BRIEF_OPTIONS.map((f) => (
           <div key={f.key}>
             <span className="label">{f.label}</span>
@@ -142,16 +142,21 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
         <div className="flex gap-2 mt-2">
           <select className="select" style={{ width: 130 }} value={purpose} onChange={(e) => setPurpose(e.target.value as any)}>
             <option value="reference">Reference</option><option value="template">Template</option>
+            <option value="style">Match its look</option>
           </select>
           <button className="btn" onClick={() => fileRef.current?.click()}><Upload size={14} /> Upload</button>
           <input ref={fileRef} type="file" hidden data-testid="upload-input"
-            accept=".pdf,.docx,.md,.txt,.html,.htm,.csv,.json" onChange={async (e) => {
+            accept=".pdf,.docx,.md,.txt,.html,.htm,.csv,.json,.png,.jpg,.jpeg" onChange={async (e) => {
               const f = e.target.files?.[0];
               e.target.value = "";
               if (!f) return;
               const u = await ed.run(api.upload(doc.id, f, purpose), `Uploaded ${f.name}`);
               if (u && purpose === "template" && cfg.chat_available) {
                 ed.ask(`Use the uploaded template "${u.filename}" (${u.id}) to scaffold this document: mirror its structure as blocks.`);
+              }
+              if (u && purpose === "style") {
+                const r = await ed.run(api.applyStyle(u.id));
+                if (r) ed.toast(r.changes.length ? `Matched ${u.filename}: ${r.changes.join("; ")}` : `Nothing readable in ${u.filename}.`, "info");
               }
             }} />
         </div>

@@ -2,7 +2,7 @@ import { createContext, useContext } from "react";
 import type { AppConfig, Doc } from "../types";
 import type { Peer } from "./useLive";
 
-export type PanelTab = "chat" | "comments" | "review" | "block" | "document";
+export type PanelTab = "chat" | "comments" | "review" | "block" | "design" | "document";
 
 export interface EditorApi {
   doc: Doc;
@@ -27,6 +27,8 @@ export interface EditorApi {
   /** other people in this document right now */
   peers: Peer[];
   me: { id: string; name: string; color: string };
+  /** Re-read the app config (after saving or deleting a theme). */
+  reloadConfig?: () => Promise<void>;
 }
 
 export const EditorContext = createContext<EditorApi | null>(null);

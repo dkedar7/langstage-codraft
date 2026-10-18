@@ -102,13 +102,17 @@ langstage-codraft check --agent my_agent.py:graph  # preflight; --live runs one 
 A graph built without the Codraft tools still chats, but it can't touch the document. `check`
 tells you when that's the case.
 
-The agent's toolset (`CODRAFT_TOOLS`) has 20 tools. Each one reads and writes through the same
+Name your agent and the editor uses that name wherever it would say "agent": "Ask Juniper",
+"Suggestions from Juniper", replies and history credited to Juniper. Codraft reads `graph.name`
+(`create_agent(model, name="Juniper")`); `[ui] agent_name` overrides it.
+
+The agent's toolset (`CODRAFT_TOOLS`) has 24 tools. Each one reads and writes through the same
 API the editor uses, so the agent has no private path, and nothing the agent can do is out of
 the author's reach:
 
 | Read | Write (suggestions) | Style (applies directly) | Other |
 |---|---|---|---|
-| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload` |
+| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload` |
 
 Each document has its own agent thread (the AG-UI thread id is the document id). Conversations
 are stored in SQLite and survive restarts. The same agent is also served at `POST /agui` for any
@@ -138,6 +142,43 @@ block styles (`lead`, `pullquote`, `kicker`, `byline`, `footer`, `bio`; headings
 sizes, page-anchored pins, and reserved areas (`reserve_area`) that keep part of a page empty.
 Page numbers: put `{page}` (and `{pages}`) in a repeating footer; cover and closing pages are
 skipped unless you turn on "Number cover and closing pages", and any page can be left unnumbered.
+
+## Design the whole document
+
+The **Design** tab, and the same tools for the agent, cover the look of the whole document. All
+of it applies to this document only and exports exactly as you see it (PDF, PNG, HTML; Word gets
+the fonts, colours, header and footer too).
+
+- **Cover page.** A report's title and subtitle sit on their own cover page. Turn it off and they
+  open page 1 as a full-width title block, with the summary starting right below. Give the cover
+  a background colour or image, place its blocks at the top, middle or bottom, and pin art or a
+  logo to an exact spot (light text switches on over dark backgrounds). "+ Add to cover" above
+  the page adds to it, and so does anything inserted right after a cover block, by you or the
+  agent. Back pages work the same way.
+- **Fonts and colours.** Override the theme for this document: body, heading, title and label
+  fonts; size, line spacing, heading scale, weight and case; alignment; and the text, heading,
+  accent, rule, tint and paper colours. 17 families are bundled (Inter, Source Serif 4, Raleway,
+  Lato, Open Sans, Montserrat, Roboto, Merriweather, Lora, Playfair Display, EB Garamond, Libre
+  Baskerville, Carlito, Arimo, Tinos and more), and any other Google Fonts family loads on demand.
+  **Save as theme** keeps the look (cover included) for every other document.
+- **Header and footer.** Left, centre and right text in the page margins, with `{page}`,
+  `{pages}`, `{title}` and `{year}`, an optional rule, and the first page left out if you like.
+  They skip the cover and back pages; unnumbered pages drop the `{page}` slot.
+- **Match a document's look.** Upload a PDF, a Word file or a page image. Codraft reads its page
+  size, margins and columns, its fonts (mapped to open look-alikes: Calibri → Carlito, Arial →
+  Arimo, Times → Tinos, Helvetica Neue → Inter, ...), its text, heading, accent and tint colours,
+  whether it has a cover and what colour, and its running header and footer, then applies them.
+  The agent sees the uploaded pages (`view_upload` renders PDFs) and matches the rest by eye
+  with `match_upload_style`, `set_typography`, `set_cover` and `set_header_footer`.
+
+```python
+# What the Design tab writes, as document settings (PATCH /api/docs/{id}):
+{
+  "cover": {"enabled": True, "background": "#002f58", "align": "bottom"},
+  "style": {"font_body": "'Lato', sans-serif", "color_heading": "#002f58", "color_accent": "#009fe3"},
+  "footer": {"left": "{page}", "center": "{title}", "right": "Example Forum", "rule": True},
+}
+```
 
 ## Bring any agent: MCP
 
@@ -182,7 +223,18 @@ label = "Acme"
 font_body = "Inter, system-ui, sans-serif"
 font_heading = "Inter, system-ui, sans-serif"
 color_accent = "#d9480f"
+color_heading = "#0b1021"
+cover_background = "#0b1021"                     # a theme can style the cover too
+cover_text = "light"
+
+[codraft.doc_defaults]                           # settings every new document starts with
+cover = { enabled = false }                      # house style: no separate cover page
+footer = { left = "{page}", right = "Acme Corp" }
 ```
+
+`web_fonts = false` (in `[codraft]`) keeps documents to the bundled fonts, with nothing fetched
+from Google Fonts. `[ui.features] style_editor = false` hides the font and colour editor (the
+theme list, the cover and the header and footer stay).
 
 `langstage-codraft run --show-config` prints the resolved values and where each one came from.
 
@@ -258,7 +310,8 @@ mount(app, "/write", create_app(
     cfg, graph,
     ui={"agent_name": "Acme Assistant", "embedded": True, "colors": {"primary": "#002f58"}},
     doc_themes={"acme": {"label": "Acme", "font_heading": "Raleway, sans-serif",
-                         "color_accent": "#002f58"}},
+                         "color_accent": "#002f58", "cover_background": "#002f58"}},
+    doc_defaults={"footer": {"left": "{page}", "right": "Acme"}},   # every new document
 ))
 ```
 
@@ -266,8 +319,9 @@ mount(app, "/write", create_app(
 URL prefix. If a proxy serves it under a different public path, it sends that path as
 `X-Forwarded-Prefix`, which is honoured only alongside the proxy secret. `?embed=1` turns on
 embedded mode for one page, for example in an `<iframe>`. `doc_themes` adds document themes
-(the same keys as `[codraft.themes.*]`). A theme's fonts must be installed where exports render,
-or loaded with `ui.font_url`.
+(the same keys as `[codraft.themes.*]`) and `doc_defaults` sets what new documents start with
+(as `[codraft.doc_defaults]`). A theme can use any bundled font or Google Fonts family; Codraft
+loads it in the editor and in exports.
 
 In an `<iframe>`, Codraft tells the host page what's happening with `postMessage` (same origin
 only), and navigates with `replaceState` so the host's Back button leaves the page:

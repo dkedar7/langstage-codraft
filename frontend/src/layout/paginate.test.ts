@@ -184,3 +184,53 @@ describe("paginate: page-anchored pins", () => {
     expect(r.pages[0].items.find((i) => i.id === "a")!.y).toBe(160);
   });
 });
+
+describe("paginate: designable cover (0.5)", () => {
+  const cover = [atom("title", 60, { role: "cover" }), atom("sub", 20, { role: "cover" })];
+
+  it("with the cover off, the cover blocks open page 1 full width, above the body", () => {
+    const r = paginate([...cover, atom("summary", 40), atom("body", 40)], geo({ columns: 2, cover: { enabled: false, align: "center" } }));
+    expect(r.pages.map((p) => p.kind)).toEqual(["body"]);
+    const items = r.pages[0].items;
+    expect(items.map((i) => i.id)).toEqual(["title", "sub", "summary", "body"]);
+    expect(items[0]).toMatchObject({ y: 0, w: 500 });
+    expect(items[1]).toMatchObject({ y: 70, w: 500 });
+    expect(items[2].y).toBeGreaterThanOrEqual(100);
+    expect(items[2].w).toBeLessThan(500); // the body flows in columns below the title block
+  });
+
+  it("aligns the cover stack top, middle or bottom", () => {
+    const at = (align: "top" | "center" | "bottom") =>
+      paginate([...cover, atom("a", 10)], geo({ cover: { enabled: true, align } })).pages[0].items.map((i) => i.y);
+    expect(at("top")).toEqual([0, 70]);
+    expect(at("center")).toEqual([155, 225]);
+    expect(at("bottom")).toEqual([310, 380]);
+  });
+
+  it("a pinned cover block sits at its rectangle and the stack keeps clear of it", () => {
+    const hero = atom("hero", 150, { role: "cover", pin: { anchor: "page", page: 9, top: 0, x: 0, w: 600, column: 0, span: 1, height: 200 } });
+    const r = paginate([hero, ...cover, atom("a", 10)], geo({ cover: { enabled: true, align: "top" } }));
+    const [h, t] = r.pages[0].items;
+    expect(r.pages[0].kind).toBe("cover");
+    expect(h).toMatchObject({ id: "hero", pinned: true, x: -50, y: -50, w: 600, h: 200 });
+    expect(t).toMatchObject({ id: "title", y: 160 }); // below the hero: (200 - 50) + gap
+  });
+
+  it("a full-page pin is a backdrop: the stack sits on top of it", () => {
+    const bg = atom("bg", 500, { role: "cover", pin: { anchor: "page", page: 1, top: 0, x: 0, w: 600, column: 0, span: 1, height: 500 } });
+    const r = paginate([bg, ...cover], geo());
+    expect(r.pages[0].items.map((i) => [i.id, i.y])).toEqual([["bg", -50], ["title", 155], ["sub", 225]]);
+  });
+
+  it("with the cover off, a pinned cover block lands on page 1", () => {
+    const logo = atom("logo", 40, { role: "cover", pin: { anchor: "page", page: 7, top: 10, x: 20, w: 80, column: 0, span: 1, height: 40 } });
+    const r = paginate([logo, ...cover, atom("a", 10)], geo({ cover: { enabled: false, align: "center" } }));
+    expect(r.pages).toHaveLength(1);
+    expect(r.pages[0].items.find((i) => i.id === "logo")).toMatchObject({ pinned: true, x: -30, y: -40 });
+  });
+
+  it("aligns the back page too", () => {
+    const r = paginate([atom("a", 10), atom("thanks", 40, { role: "back" })], geo({ back: { align: "bottom" } }));
+    expect(r.pages[1].items[0].y).toBe(360);
+  });
+});

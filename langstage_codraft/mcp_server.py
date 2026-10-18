@@ -98,10 +98,15 @@ def build_mcp_server() -> Any:
         u = get_store().get_upload(upload_id, with_text=True)
         if u["doc_id"] != doc_id:
             return ["ERROR: that upload belongs to another document"]
+        from .stylematch import summary
+
+        look = [f"Its look: {summary(u['style'])}"] if u.get("style") else []
         if u["mime"].startswith("image/") and not u["mime"].endswith("svg+xml"):
             fmt = "png" if u["mime"].endswith("png") else "jpeg"
-            return [f"{u['filename']}:", Image(data=Path(u["path"]).read_bytes(), format=fmt)]
-        return [u["text"][:3000] or "(no extractable text)"]
+            return [f"{u['filename']}:", Image(data=Path(u["path"]).read_bytes(), format=fmt), *look]
+        pages = [p for p in u.get("pages", []) if Path(p).exists()][:4]
+        shots = [Image(data=Path(p).read_bytes(), format="jpeg") for p in pages]
+        return [f"{u['filename']}:", *shots, *look, u["text"][:3000] or "(no extractable text)"]
 
     @server.tool(description="Look at the author's sketch on an image block (returns the drawing).")
     def view_sketch(doc_id: str, block_id: str) -> list:

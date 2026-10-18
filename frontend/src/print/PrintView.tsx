@@ -3,8 +3,9 @@ import { api } from "../api";
 import { pageMm } from "../layout/units";
 import { BlockView } from "../render/BlockView";
 import { pendingCharts } from "../render/Chart";
-import { Fragment, Page } from "../render/Page";
-import { themeVars } from "../render/theme";
+import { pendingFonts, useDocFonts } from "../fonts";
+import { Fragment, Page, PageFurniture } from "../render/Page";
+import { effectiveTheme, pageDesign, themeVars } from "../render/theme";
 import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
 import { pageNumbers, usesPageToken } from "../layout/numbering";
 import type { AppConfig, Doc } from "../types";
@@ -35,8 +36,10 @@ export function PrintView({ docId }: { docId: string }) {
 }
 
 function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
-  const theme = cfg.themes[doc.settings.theme];
+  const theme = effectiveTheme(cfg.themes, doc.settings);
+  const fontTick = useDocFonts(theme, cfg.web_fonts !== false);
   const { layout, geo, ctx, measureNode, ready, measured } = useDocLayout(doc.blocks, doc.settings, theme, false, true);
+  const firstBody = layout.pages.find((p) => p.kind === "body")?.number;
   const byId = Object.fromEntries(doc.blocks.map((b) => [b.id, b]));
   const numbering = pageNumbers(layout.pages, {
     start: doc.settings.page_number_start ?? 1,
@@ -54,7 +57,8 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
       if (!alive) return;
       const imgs = Array.from(document.images);
       const imagesDone = imgs.every((i) => i.complete);
-      if (pendingCharts.count === 0 && imagesDone) {
+      const fontsDone = pendingFonts.count === 0 && (document.fonts?.status ?? "loaded") === "loaded";
+      if (pendingCharts.count === 0 && imagesDone && fontsDone) {
         requestAnimationFrame(() => requestAnimationFrame(() => {
           if (!alive) return;
           window.__codraftReady = true;
@@ -70,7 +74,7 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
       alive = false;
       clearTimeout(t);
     };
-  }, [ready, layout, measured]);
+  }, [ready, layout, measured, fontTick]);
 
   const pageCss = pageless
     ? `@page { size: ${geo.pageW / (96 / 25.4)}mm ${(layout.pages[0]?.height || 0) / (96 / 25.4) + 40}mm; margin: 0 }`
@@ -81,7 +85,11 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
       <style>{pageCss}</style>
       <div className="cd-doc cd-pages" style={themeVars(theme)} lang={langCode(doc.settings)}>
         {layout.pages.map((p) => (
-          <Page key={p.number} page={p} geo={geo} kind={p.kind} renderItem={(it) => {
+          <Page key={p.number} page={p} geo={geo} kind={p.kind}
+            decor={p.kind === "body" ? null : pageDesign(p.kind, doc.settings, theme)}
+            furniture={<PageFurniture settings={doc.settings} geo={geo} page={p} firstBody={p.number === firstBody}
+              pageNo={numbering.map[p.number] ?? undefined} ctx={pctx} />}
+            renderItem={(it) => {
             const b = byId[it.id];
             if (!b) return null;
             const pageNo = numbering.map[p.number] ?? undefined;

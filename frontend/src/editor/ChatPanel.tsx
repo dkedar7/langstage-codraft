@@ -4,6 +4,7 @@ import {
 } from "lucide-react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { api, streamChat, type Frame } from "../api";
+import { agentNamed } from "../branding";
 import { mdToHtml } from "../render/markdown";
 import { useEditorApi } from "./context";
 
@@ -139,7 +140,7 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
   const abort = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const branded = cfg.ui?.agent_name && cfg.ui.agent_name !== "Co-author" ? cfg.ui.agent_name : "";
+  const branded = agentNamed(cfg.ui) ? cfg.ui!.agent_name! : "";
   const agentName = branded || (cfg.agent.kind === "demo" ? "Demo co-author" : "Co-author");
 
   // Load past turns. A message sent before they arrive (a new document's kickoff) waits for
@@ -196,7 +197,7 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
             durationMs: f.duration_ms } : t)) }));
           ed.refresh();
         } else if (f.type === "error") {
-          setMsgs((all) => [...all, { id: nid(), role: "error", content: f.error || f.message || "Agent error", tools: [] }]);
+          setMsgs((all) => [...all, { id: nid(), role: "error", content: f.error || f.message || `${agentName} ran into an error`, tools: [] }]);
         }
       }, ctrl.signal);
     } catch (e: any) {

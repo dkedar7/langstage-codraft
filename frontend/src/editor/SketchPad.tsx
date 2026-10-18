@@ -1,6 +1,8 @@
 import type React from "react";
 import { Eraser, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { agentName } from "../branding";
+import { useEditorApi } from "./context";
 
 const COLORS = ["#111827", "#2563eb", "#dc2626", "#059669", "#d97706"];
 const W = 960;
@@ -13,6 +15,7 @@ export function SketchPad({ initial, onSave, onClose }: {
   onSave: (png: Blob) => Promise<void> | void;
   onClose: () => void;
 }) {
+  const ed = useEditorApi();
   const ref = useRef<HTMLCanvasElement>(null);
   const [color, setColor] = useState(COLORS[0]);
   const [size, setSize] = useState(4);
@@ -49,7 +52,7 @@ export function SketchPad({ initial, onSave, onClose }: {
         <div className="flex items-center gap-2 px-4 h-11 border-b border-[var(--color-border)]">
           <Pencil size={14} className="text-[var(--color-text-muted)]" />
           <span className="font-semibold text-[var(--color-text)]">Sketch</span>
-          <span className="text-xs text-[var(--color-text-muted)]">a rough drawing the agent can turn into an image</span>
+          <span className="text-xs text-[var(--color-text-muted)]">a rough drawing {agentName(ed.cfg.ui)} can turn into an image</span>
           <button className="btn btn-ghost btn-icon ml-auto" onClick={onClose}><X size={15} /></button>
         </div>
         <div className="p-4 bg-[var(--color-panel)]">

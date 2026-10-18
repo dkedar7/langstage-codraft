@@ -21,11 +21,11 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
+from . import fonts, stylematch, themes
 from . import templates as tpl
-from . import themes
 from .config import CodraftConfig, codraft_toml_table
 from .render import BrowserMissing, Renderer, get_renderer, set_renderer, zip_images
-from .store import Invalid, NotFound, Store, set_store
+from .store import Invalid, NotFound, Store, get_store, set_store
 from .textutil import extract_text
 
 log = logging.getLogger("langstage_codraft")
@@ -68,7 +68,7 @@ UI_COLOR_KEYS = (
     "text", "text_secondary", "text_muted", "success", "error", "warning", "panel", "card",
     "accent_soft", "canvas", "header", "header_text",
 )
-UI_FEATURES = ("chat", "mcp", "doc_list", "theme_toggle")
+UI_FEATURES = ("chat", "mcp", "doc_list", "theme_toggle", "style_editor")
 
 
 def resolve_ui(cfg: CodraftConfig, overrides: dict | None = None) -> dict:
@@ -116,11 +116,13 @@ def _load_css(value: str) -> str:
 
 def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                *, store: Store | None = None, ui: dict | None = None,
-               doc_themes: dict[str, dict] | None = None) -> FastAPI:
+               doc_themes: dict[str, dict] | None = None,
+               doc_defaults: dict[str, Any] | None = None) -> FastAPI:
     """The Codraft ASGI app. ``ui`` overrides app branding in code (for hosts that embed
     Codraft); ``doc_themes`` adds or overrides document themes (same keys as
-    ``[codraft.themes.*]``, which it extends). To serve it under another FastAPI app, use
-    :func:`mount`."""
+    ``[codraft.themes.*]``, which it extends); ``doc_defaults`` are settings every new
+    document starts with (a house cover, header or footer; extends ``[codraft.doc_defaults]``).
+    To serve it under another FastAPI app, use :func:`mount`."""
     data_dir = Path(cfg.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     store = store or Store(data_dir / "codraft.db")
@@ -128,9 +130,19 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     table = codraft_toml_table()
     toml_themes = table.get("themes") if isinstance(table.get("themes"), dict) else {}
     themes.configure({**toml_themes, **(doc_themes or {})} or None, table.get("allowed_themes"))
+    themes.set_saved_provider(store.saved_themes)
+    house = _deep(table.get("doc_defaults") if isinstance(table.get("doc_defaults"), dict) else {},
+                  doc_defaults or {})
     tpl.configure(cfg.templates_dir)
     st = AppState(cfg, graph, info or _default_info(graph, ui or {}, cfg))
     st.ui = resolve_ui(cfg, ui)
+    # The editor calls the agent by its own name (graph.name, e.g. create_agent(name="Lighthouse"))
+    # unless the deployer chose one (ui.agent_name).
+    if graph_name(graph) and st.ui.get("agent_name") in ("", "Co-author"):
+        st.ui["agent_name"] = graph_name(graph)
+    shown = st.ui.get("agent_name")
+    if shown not in ("", "Co-author") and st.info.get("kind") == "spec" and st.info.get("label") != shown:
+        st.info = {**st.info, "label": shown, "spec": st.info.get("label")}  # the status chip: its name
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -255,6 +267,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             "approval_default": cfg.approval, "default_theme": cfg.default_theme,
             "default_page_size": cfg.default_page_size or "letter",
             "themes": themes.all_themes(), "templates": tpl.summaries(),
+            "fonts": fonts.catalog(), "web_fonts": cfg.web_fonts,
+            "cover_default": bool((house.get("cover") or {}).get("enabled", True)),
             "chat_available": st.graph is not None,
             "ui_theme": getattr(cfg, "theme", "auto"),
             "mcp_url": "/mcp" if (st.mcp is not None and st.ui["features"].get("mcp", True)) else None,
@@ -269,7 +283,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     def create_doc(body: dict = Body(default={})) -> dict:
         try:
             template = tpl.all_templates().get(body.get("template") or "blank", tpl.BUILTIN_TEMPLATES["blank"])
-            base = {"approval": cfg.approval, "theme": cfg.default_theme}
+            base = _deep({"approval": cfg.approval, "theme": cfg.default_theme}, house)
             if cfg.default_page_size:
                 base["page_size"] = cfg.default_page_size
             tpl_settings = dict(template.get("settings", {}))
@@ -515,7 +529,53 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         mime = file.content_type or mimetypes.guess_type(file.filename or "")[0] or "application/octet-stream"
         text = "" if mime.startswith("image/") else await asyncio.to_thread(extract_text, file.filename or "", data)
         try:
-            return store.add_upload(doc_id, file.filename or "file", data, purpose=purpose, mime=mime, text=text)
+            u = store.add_upload(doc_id, file.filename or "file", data, purpose=purpose, mime=mime, text=text)
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+        # PDFs get their first pages rendered, so the agent can see them; a "style" upload
+        # also gets its look read out (fonts, colours, page setup, cover).
+        meta = await asyncio.to_thread(_describe_upload, u, data, purpose == "style")
+        return store.set_upload_meta(u["id"], meta) if meta else u
+
+    @app.post("/api/uploads/{uid}/apply-style")
+    def apply_style(uid: str) -> dict:
+        """Apply the look read from a "style" upload to its document."""
+        try:
+            u = store.get_upload(uid)
+            if not u.get("style"):
+                raise Invalid(f"{u['filename']} has no style to apply (upload it as 'style': a PDF, Word file or page image)")
+            if u["style"].get("error"):
+                raise Invalid(f"could not read the style of {u['filename']}: {u['style']['error']}")
+            patch, changes = stylematch.to_settings(u["style"])
+            store.update_document(u["doc_id"], settings=patch)
+            return {"doc": store.full(u["doc_id"]), "changes": changes}
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    # ----------------------------------------------------------------- themes
+    @app.post("/api/themes")
+    def save_theme(request: Request, body: dict = Body(...)) -> dict:
+        """Save a look as a theme: ``{label, doc_id}`` saves that document's theme with its
+        overrides and cover style; ``{label, values}`` saves explicit theme values."""
+        try:
+            values = dict(body.get("values") or {})
+            if body.get("doc_id"):
+                s = store.get_document(body["doc_id"])["settings"]
+                values = {k: v for k, v in themes.effective_theme(s).items() if k in themes.THEME_KEYS}
+                cover = s.get("cover") or {}
+                for k in ("background", "text", "image", "align"):
+                    if cover.get(k):
+                        values[f"cover_{k}"] = cover[k]
+            name = store.save_theme(body.get("label", ""), values, author=current_user(request))
+            return {"name": name, "themes": themes.all_themes()}
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.delete("/api/themes/{name}")
+    def delete_theme(name: str) -> dict:
+        try:
+            store.delete_theme(name)
+            return {"ok": True, "themes": themes.all_themes()}
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
 
@@ -562,7 +622,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         if not message:
             raise HTTPException(400, "empty message")
         if doc_id in st.running:
-            raise HTTPException(409, "the agent is already working on this document")
+            who = st.ui.get("agent_name") if st.ui.get("agent_name") not in ("", "Co-author") else "the agent"
+            raise HTTPException(409, f"{who} is already working on this document")
         from langstage_core.agui import iter_event_frames
 
         async def gen():
@@ -608,7 +669,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
 
                 struct = await r.acall(r.structure(doc_id))
                 if fmt == "pptx":
-                    struct["theme"] = themes.all_themes().get(doc["settings"]["theme"], {})
+                    struct["theme"] = themes.effective_theme(doc["settings"])
                     data = await asyncio.to_thread(exporters.to_pptx, store, doc_id, struct)
                     mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
                 else:
@@ -670,6 +731,34 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     return app
 
 
+def _describe_upload(u: dict, data: bytes, want_style: bool) -> dict:
+    """Rendered pages (PDFs) and, for a style upload, the style profile."""
+    meta: dict[str, Any] = {}
+    store = get_store()
+    is_pdf = u["mime"] == "application/pdf" or u["filename"].lower().endswith(".pdf")
+    if is_pdf:
+        try:
+            meta["pages"] = stylematch.render_pages(data, store.uploads_dir, u["id"])
+        except Exception as exc:  # noqa: BLE001 - the text is still there for the agent
+            log.warning("codraft: could not render %s (%s)", u["filename"], exc)
+    if want_style:
+        images = [u["path"]] if u["mime"].startswith("image/") else []
+        meta["style"] = stylematch.analyze(u["filename"], data, u["mime"], images)
+    return meta
+
+
+# Names LangGraph and its builders give a graph by default (and Codraft's own built-in
+# agents' trace names): not a name worth showing.
+_GENERIC_GRAPH_NAMES = {"langgraph", "agent", "graph", "deepagent", "deep agent", "codraft", "codraft-demo", ""}
+
+
+def graph_name(graph: Any) -> str:
+    """The agent's own name (``graph.name``), or "" when it is missing or a default."""
+    n = getattr(graph, "name", None)
+    n = n.strip() if isinstance(n, str) else ""
+    return "" if n.lower() in _GENERIC_GRAPH_NAMES else n
+
+
 def _default_info(graph: Any, ui: dict, cfg: CodraftConfig) -> dict:
     """Agent info for a host that passes a graph but no ``info`` (e.g. when mounting)."""
     if graph is None:
@@ -677,7 +766,7 @@ def _default_info(graph: Any, ui: dict, cfg: CodraftConfig) -> dict:
                 "hint": "Pass an agent graph to create_app to turn on chat."}
     from .agent import missing_tools
 
-    name = ui.get("agent_name") or (cfg.agent_name if cfg.agent_name != "Co-author" else "") or "Agent"
+    name = ui.get("agent_name") or (cfg.agent_name if cfg.agent_name != "Co-author" else "") or graph_name(graph) or "Agent"
     try:
         missing = missing_tools(graph)
     except Exception:  # noqa: BLE001

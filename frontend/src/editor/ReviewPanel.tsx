@@ -2,7 +2,7 @@ import { CheckCheck, Sparkles, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockText, SuggestionDiff } from "./Diff";
 import { useEditorApi } from "./context";
-import { agentName } from "../branding";
+import { agentName, agentNamed } from "../branding";
 
 export function ReviewPanel() {
   const ed = useEditorApi();
@@ -18,13 +18,13 @@ export function ReviewPanel() {
     <div className="flex flex-col h-full">
       <div className="panel-section">
         <div className="flex items-center gap-2">
-          <div className="font-semibold">Agent suggestions</div>
+          <div className="font-semibold">{agentNamed(ed.cfg.ui) ? `Suggestions from ${ed.cfg.ui!.agent_name}` : "Agent suggestions"}</div>
           <span className="chip">{pending.length} pending</span>
         </div>
         <label className="flex items-center gap-2 mt-3 text-[12.5px]">
           <input type="checkbox" data-testid="auto-apply" checked={auto}
             onChange={(e) => ed.run(api.patchDoc(doc.id, { settings: { approval: e.target.checked ? "auto" : "required" } }))} />
-          Apply agent edits without asking (still versioned, so you can step back)
+          Apply {agentNamed(ed.cfg.ui) ? `${ed.cfg.ui!.agent_name}'s` : "agent"} edits without asking (still versioned, so you can step back)
         </label>
         {pending.length > 1 && (
           <div className="flex gap-2 mt-3">

@@ -16,9 +16,18 @@ from __future__ import annotations
 
 import io
 import re
+from typing import Any
 
+from .fonts import family_of
 from .pages import page_mm
 from .store import Store
+from .themes import effective_theme
+
+
+def qn(tag: str) -> str:
+    from docx.oxml.ns import qn as _qn
+
+    return _qn(tag)
 
 EMU_PER_PX = 9525  # 914400 EMU/inch at 96 px/inch
 
@@ -123,6 +132,8 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
     sec.bottom_margin, sec.left_margin = Mm(m.get("bottom", 20)), Mm(m.get("left", 20))
     d.core_properties.title = doc["title"]
     content_w_mm = w - m.get("left", 20) - m.get("right", 20)
+    theme = effective_theme(s)
+    _docx_styles(d, theme)
 
     def set_columns(section, n: int):
         cols = section._sectPr.find(qn("w:cols"))
@@ -143,7 +154,7 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
             if st.get("code"):
                 r.font.name = "Consolas"
             if st.get("link"):
-                r.font.color.rgb = RGBColor(0x1A, 0x4D, 0x8F)
+                r.font.color.rgb = _rgb(theme.get("color_accent")) or RGBColor(0x1A, 0x4D, 0x8F)
                 r.underline = True
 
     def add_markdown(md: str, style_quote=False):
@@ -213,12 +224,17 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
         elif t == "page-break":
             d.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
 
+    separate_cover = bool(cover) and (s.get("cover") or {}).get("enabled", True)
     for b in cover:
         emit(b)
-    if cover:
+    if separate_cover:
         d.add_section()  # new page; flow section gets the columns
     if columns > 1:
         set_columns(d.sections[-1], columns)
+    flow_section = d.sections[-1]
+    if separate_cover:
+        _clear_header_footer(d.sections[0])
+    _header_footer(flow_section, s, doc["title"], content_w_mm)
     for b in flow:
         emit(b)
     if back:
@@ -226,11 +242,124 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
 
         sec_back = d.add_section(WD_SECTION.NEW_PAGE)
         set_columns(sec_back, 1)
+        _clear_header_footer(sec_back, unlink=True)
         for b in back:
             emit(b)
     buf = io.BytesIO()
     d.save(buf)
     return buf.getvalue()
+
+
+def _rgb(color: str | None) -> Any:
+    from docx.shared import RGBColor
+
+    m = re.fullmatch(r"#([0-9a-fA-F]{6})", (color or "").strip())
+    return RGBColor.from_string(m.group(1).upper()) if m else None
+
+
+def _docx_styles(d: Any, theme: dict) -> None:
+    """The document's fonts, sizes and colours on Word's Normal, Title and Heading styles."""
+    from docx.shared import Pt
+
+    body_pt = float(theme.get("font_size", 15)) * 0.75
+    scale = float(theme.get("heading_scale", 1.25))
+    body, head = family_of(theme.get("font_body", "")), family_of(theme.get("font_heading", ""))
+    display = family_of(theme.get("font_display") or "") or head
+    normal = d.styles["Normal"]
+    normal.font.name, normal.font.size = body or None, Pt(round(body_pt, 1))
+    if _rgb(theme.get("color_text")):
+        normal.font.color.rgb = _rgb(theme.get("color_text"))
+    heading_color = theme.get("color_heading")
+    for name, size, color, family in (
+        ("Title", body_pt * scale ** 4, heading_color or theme.get("color_text"), display),
+        ("Heading 1", body_pt * scale ** 3, heading_color or theme.get("color_text"), head),
+        ("Heading 2", body_pt * scale ** 2, heading_color or theme.get("color_accent"), head),
+        ("Heading 3", body_pt * scale, heading_color or theme.get("color_text"), head),
+    ):
+        try:
+            st = d.styles[name]
+        except KeyError:
+            continue
+        st.font.name, st.font.size = family or None, Pt(round(size, 1))
+        st.font.bold = int(theme.get("heading_weight", 700)) >= 600
+        if _rgb(color):
+            st.font.color.rgb = _rgb(color)
+        rpr = st.element.get_or_add_rPr()
+        fonts_el = rpr.find(qn("w:rFonts"))
+        if fonts_el is not None:  # drop theme-font links so the explicit family wins
+            for attr in ("w:asciiTheme", "w:hAnsiTheme", "w:eastAsiaTheme", "w:cstheme"):
+                fonts_el.attrib.pop(qn(attr), None)
+
+
+def _field(run: Any, instr: str) -> None:
+    """A Word field (PAGE, NUMPAGES) inside a run."""
+    from docx.oxml import OxmlElement
+
+    for kind, text in (("begin", None), (None, instr), ("separate", None), (None, "1"), ("end", None)):
+        if kind:
+            el = OxmlElement("w:fldChar")
+            el.set(qn("w:fldCharType"), kind)
+        elif text == instr:
+            el = OxmlElement("w:instrText")
+            el.set(qn("xml:space"), "preserve")
+            el.text = f" {instr} "
+        else:
+            el = OxmlElement("w:t")
+            el.text = text
+        run._r.append(el)
+
+
+def _clear_header_footer(section: Any, unlink: bool = False) -> None:
+    for part in (section.header, section.footer):
+        if unlink:
+            part.is_linked_to_previous = False
+        for par in part.paragraphs:
+            for r in list(par.runs):
+                r._r.getparent().remove(r._r)
+
+
+def _header_footer(section: Any, s: dict, title: str, content_w_mm: float) -> None:
+    """The running header and footer: left/centre/right on tab stops, {page} and {pages}
+    as live Word fields."""
+    from datetime import datetime
+
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    from docx.oxml import OxmlElement
+    from docx.shared import Mm, Pt
+
+    first_hidden = False
+    for part_name in ("header", "footer"):
+        hf = s.get(part_name) or {}
+        slots = [hf.get(k) or "" for k in ("left", "center", "right")]
+        target = getattr(section, part_name)
+        target.is_linked_to_previous = False
+        if not any(slots):
+            continue
+        first_hidden = first_hidden or not hf.get("first_page", True)
+        par = target.paragraphs[0]
+        par.paragraph_format.tab_stops.add_tab_stop(Mm(content_w_mm / 2), WD_TAB_ALIGNMENT.CENTER)
+        par.paragraph_format.tab_stops.add_tab_stop(Mm(content_w_mm), WD_TAB_ALIGNMENT.RIGHT)
+        for i, text in enumerate(slots):
+            if i:
+                par.add_run("\t")
+            text = text.replace("{title}", title).replace("{year}", str(datetime.now().year))
+            for piece in re.split(r"(\{page\}|\{pages\})", text):
+                if piece in ("{page}", "{pages}"):
+                    _field(par.add_run(), "PAGE" if piece == "{page}" else "NUMPAGES")
+                elif piece:
+                    par.add_run(piece)
+        for r in par.runs:
+            r.font.size = Pt(8)
+        if hf.get("rule"):
+            ppr = par._p.get_or_add_pPr()
+            bdr = OxmlElement("w:pBdr")
+            edge = OxmlElement("w:bottom" if part_name == "header" else "w:top")
+            for k, v in (("w:val", "single"), ("w:sz", "4"), ("w:space", "4"), ("w:color", "999999")):
+                edge.set(qn(k), v)
+            bdr.append(edge)
+            ppr.append(bdr)
+    if first_hidden:
+        section.different_first_page_header_footer = True
 
 
 # -------------------------------------------------------------------------- PPTX

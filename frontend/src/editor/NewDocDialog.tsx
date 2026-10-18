@@ -20,7 +20,9 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
   const [brief, setBrief] = useState<Record<string, string>>({ language: "English", output_format: "pdf" });
   const [notes, setNotes] = useState("");
   const [layout, setLayout] = useState({ mode: "paged", page_size: cfg.default_page_size || "letter", columns: 0, theme: "" });
-  const [files, setFiles] = useState<{ file: File; purpose: "reference" | "template" }[]>([]);
+  const [files, setFiles] = useState<{ file: File; purpose: "reference" | "template" | "style" }[]>([]);
+  const [cover, setCover] = useState(cfg.cover_default !== false);
+  const hasCover = !!cfg.templates.find((t) => t.id === template)?.has_cover;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -31,17 +33,26 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
       const settings: Record<string, any> = { mode: layout.mode, page_size: layout.page_size, brief: { ...brief, notes } };
       if (layout.columns) settings.columns = layout.columns;
       if (layout.theme) settings.theme = layout.theme;
-      const doc = await api.createDoc({ title: title || undefined, template, settings });
+      if (hasCover) settings.cover = { enabled: cover };
+      let doc = await api.createDoc({ title: title || undefined, template, settings });
       let kickoff: string | undefined;
+      let match: string | undefined;
       for (const f of files) {
         const u = await api.upload(doc.id, f.file, f.purpose);
         if (f.purpose === "template") kickoff = `Use the uploaded template "${u.filename}" (${u.id}) to scaffold this document: mirror its structure as blocks, with placeholder text where content is specific to the original.`;
+        if (f.purpose === "style") {
+          const r = await api.applyStyle(u.id).catch(() => null);
+          if (r) doc = r.doc;
+          match = `Match the look of the uploaded ${u.filename} (${u.id}). Its page setup, fonts and colours are applied; `
+            + "compare view_upload with view_pages and refine the cover, heading styles, callouts and figures. Keep my text.";
+        }
       }
       if (!kickoff && notes.trim()) {
         kickoff = template === "blank"
           ? `Here is what I want to write: ${notes.trim()}\nPropose an outline as heading and text blocks (short placeholder text only; I will write the content).`
           : `Here is what I want to write: ${notes.trim()}\nAdapt this template's headings and placeholder text to fit it (short placeholders only; I will write the content).`;
       }
+      if (match) kickoff = kickoff ? `${kickoff}\n\nThen: ${match}` : match;
       onCreated(doc, cfg.chat_available ? kickoff : undefined);
     } catch (e: any) {
       setErr(String(e.message || e));
@@ -70,22 +81,30 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
                 </button>
               ))}
             </div>
+            {hasCover && (
+              <label className="flex items-center gap-2 mt-2 text-[12.5px]">
+                <input type="checkbox" data-testid="new-cover" checked={cover} onChange={(e) => setCover(e.target.checked)} />
+                Cover page <span className="text-[var(--color-text-muted)]">(off: the title opens page 1)</span>
+              </label>
+            )}
             <span className="label">Title</span>
             <input className="input" value={title} placeholder="Untitled document" data-testid="new-title" onChange={(e) => setTitle(e.target.value)} />
             <span className="label">Describe it in your own words (optional)</span>
             <textarea className="textarea" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
               placeholder="e.g. a two-page proposal to fund a city bike-share pilot, for the transportation committee" />
-            <span className="label">Upload references or a template</span>
+            <span className="label">Upload references, a template, or a document whose look to match</span>
             <label className="btn cursor-pointer"><FileUp size={14} /> Add files
-              <input type="file" hidden multiple accept=".pdf,.docx,.md,.txt,.html,.htm,.csv,.json"
+              <input type="file" hidden multiple accept=".pdf,.docx,.md,.txt,.html,.htm,.csv,.json,.png,.jpg,.jpeg"
                 onChange={(e) => setFiles([...files, ...Array.from(e.target.files || []).map((file) => ({ file, purpose: "reference" as const }))])} />
             </label>
             {files.map((f, i) => (
               <div key={i} className="flex items-center gap-2 mt-1.5 text-xs">
                 <span className="truncate flex-1">{f.file.name}</span>
-                <select className="select" style={{ width: 110, padding: "2px 4px" }} value={f.purpose}
+                <select className="select" style={{ width: 130, padding: "2px 4px" }} value={f.purpose}
+                  data-testid={`new-upload-purpose-${i}`}
                   onChange={(e) => setFiles(files.map((x, k) => (k === i ? { ...x, purpose: e.target.value as any } : x)))}>
                   <option value="reference">reference</option><option value="template">template</option>
+                  <option value="style">match its look</option>
                 </select>
                 <button className="btn btn-ghost btn-icon" onClick={() => setFiles(files.filter((_, k) => k !== i))}><X size={12} /></button>
               </div>

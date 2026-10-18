@@ -15,6 +15,8 @@ export interface RenderCtx {
   /** for {pages} / {title} tokens in repeated headers and footers */
   pageCount?: number;
   title?: string;
+  /** the agent's name for editor hints ("Lighthouse", or "the agent") */
+  agent?: string;
 }
 
 /** Fill {page}, {pages} and {title} (running headers/footers). Measurement uses "00". */
@@ -45,7 +47,7 @@ function frameHeight(c: Record<string, any>, boxed: boolean): number {
   return (c.caption ? 28 : 0) + (c.label || c.title ? 26 : 0) + (c.source ? 22 : 0) + (boxed ? 24 : 0);
 }
 
-function imageSrc(src: string): string {
+export function imageSrc(src: string): string {
   if (!src) return "";
   if (/^upl_[a-z0-9]+$/i.test(src)) return withBase(`/api/uploads/${src}/file`);
   return src;
@@ -120,7 +122,7 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
       inner = (
         <figure className="cd-figure" style={{ position: "relative" }}>
           <FigureFrame c={{ ...c, caption: "" }}>
-          {isSketch && ctx.editing && <span className="cd-sketch-tag">Sketch: ask the agent to turn it into an image</span>}
+          {isSketch && ctx.editing && <span className="cd-sketch-tag">Sketch: ask {ctx.agent || "the agent"} to turn it into an image</span>}
           {src ? (
             <img src={src} alt={c.alt || ""} style={fixedHeight
               ? { width: "100%", height: fixedHeight - capH, objectFit: c.fit || "contain" }

@@ -12,8 +12,11 @@
  *    boundaries and line boundaries, with widow/orphan control). Every other block
  *    is atomic: if it doesn't fit, it moves to the next column or page. An atomic
  *    block taller than a whole empty column is placed anyway and flagged as overflow.
- *  - Cover and back blocks get their own pages, stacked in a single column and
- *    centered vertically. Those pages are exempt from columns and repeated blocks.
+ *  - Cover and back blocks get their own pages, stacked in a single column (centred by
+ *    default, or top/bottom). Those pages are exempt from columns and repeated blocks.
+ *    A pinned cover/back block sits at its rectangle (art, a logo, a band) and the stack
+ *    keeps clear of it; a pin taller than 60% of the page is a backdrop the stack covers.
+ *  - With the cover turned off, the cover blocks open page 1 as a full-width title block.
  *
  * Nothing here touches the DOM, so the same function lays out the editor, the
  * preview and the export (parity by construction), and it is unit tested.
@@ -47,7 +50,12 @@ export interface Geometry {
   colGap: number;
   blockGap: number;
   minPages: number;
+  /** cover page on/off and where its stack sits (default: on, centred) */
+  cover?: { enabled: boolean; align: StackAlign };
+  back?: { align: StackAlign };
 }
+
+export type StackAlign = "top" | "center" | "bottom";
 
 export interface Placed {
   id: string;
@@ -107,8 +115,8 @@ export function contentSize(geo: Geometry) {
 export function blockWidth(b: Pick<MeasuredBlock, "full" | "role" | "pin">, geo: Geometry): number {
   const { contentW, colW } = contentSize(geo);
   if (geo.mode === "pageless") return Math.min(contentW, 720);
-  if (b.role !== "flow") return contentW;
   if (b.pin?.anchor === "page") return b.pin.w || contentW;
+  if (b.role !== "flow") return contentW;
   if (b.pin) return b.pin.span * colW + (b.pin.span - 1) * geo.colGap;
   return b.full ? contentW : colW;
 }
@@ -182,18 +190,46 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
     return { pages, blockPages, contentW: w, contentH: y, colW: w };
   }
 
-  const cover = blocks.filter((b) => b.role === "cover" && b.kind !== "break");
+  let cover = blocks.filter((b) => b.role === "cover" && b.kind !== "break");
   const back = blocks.filter((b) => b.role === "back" && b.kind !== "break");
-  const flow = blocks.filter((b) => b.role === "flow");
+  let flow = blocks.filter((b) => b.role === "flow");
+  if (geo.cover && !geo.cover.enabled && cover.length) {
+    // No cover page: the cover blocks become a full-width title block opening page 1.
+    const title = cover.map((b): MeasuredBlock => ({
+      ...b, role: "flow", full: true, repeat: null,
+      pin: b.pin ? (b.pin.anchor === "page" ? { ...b.pin, page: 1 } : { ...b.pin, page: 1, column: 0, span: n }) : null,
+    }));
+    flow = [...title, ...flow];
+    cover = [];
+  }
   const pinned = flow.filter((b) => b.pin);
   const flowing = flow.filter((b) => !b.pin);
 
-  const stackPage = (kind: "cover" | "back", list: MeasuredBlock[]) => {
-    const total = list.reduce((s, b) => s + b.height, 0) + geo.blockGap * Math.max(0, list.length - 1);
-    let y = Math.max(0, (contentH - total) / 2);
+  const stackPage = (kind: "cover" | "back", list: MeasuredBlock[], align: StackAlign) => {
     const number = pages.length + 1;
     const items: Placed[] = [];
-    for (const b of list) {
+    // Pinned blocks first (so the stack draws over them), and the band they leave free.
+    let top = 0;
+    let bottom = contentH;
+    for (const b of list.filter((x) => x.pin)) {
+      const p = b.pin!;
+      const r = p.anchor === "page" ? pinRect(b, geo) : { x: 0, y: p.top, w: contentW, h: p.height || b.height };
+      items.push({ id: b.id, x: r.x, y: r.y, w: r.w, h: r.h, offset: 0, fragment: false, continued: false,
+        pinned: true, repeated: false, overflow: false });
+      note(b.id, number);
+      if (r.h >= contentH * 0.6) continue; // a backdrop: the stack sits on top of it
+      if (r.y + r.h / 2 < contentH / 2) top = Math.max(top, r.y + r.h + geo.blockGap);
+      else bottom = Math.min(bottom, r.y - geo.blockGap);
+    }
+    if (bottom - top < 40) {
+      top = 0;
+      bottom = contentH;
+    }
+    const stack = list.filter((x) => !x.pin);
+    const total = stack.reduce((s, b) => s + b.height, 0) + geo.blockGap * Math.max(0, stack.length - 1);
+    let y = align === "top" ? top : align === "bottom" ? Math.max(top, bottom - total)
+      : top + Math.max(0, (bottom - top - total) / 2);
+    for (const b of stack) {
       const overflow = y + b.height > contentH + EPS;
       items.push({ id: b.id, x: 0, y, w: contentW, h: Math.min(b.height, Math.max(0, contentH - y)),
         offset: 0, fragment: false, continued: false, pinned: false, repeated: false, overflow });
@@ -203,7 +239,7 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
     pages.push({ kind, number, items, height: contentH });
   };
 
-  if (cover.length) stackPage("cover", cover);
+  if (cover.length) stackPage("cover", cover, geo.cover?.align || "center");
 
   // ------------------------------------------------------------ body pages
   const firstBodyNumber = pages.length + 1;
@@ -402,6 +438,6 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
   while (body.length < Math.max(geo.minPages, maxPinPage)) newPage();
 
   for (const p of body) pages.push({ kind: "body", number: p.number, items: p.items, height: contentH });
-  if (back.length) stackPage("back", back);
+  if (back.length) stackPage("back", back, geo.back?.align || "center");
   return { pages, blockPages, contentW, contentH, colW };
 }

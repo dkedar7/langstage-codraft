@@ -9,17 +9,90 @@ Deployers add or override themes in ``langstage.toml``::
 
 Unset keys inherit from ``classic``. ``[codraft] themes = ["acme", "modern"]`` limits
 which themes authors can pick.
+
+A theme can also style the cover and back pages (``cover_background``, ``cover_text``,
+``cover_image``, ``cover_align``). A document overrides any of these for itself in
+``settings.style`` and ``settings.cover`` (the Design tab), and authors can save a
+document's look as a new theme, stored with the documents.
 """
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from typing import Any
 
-THEME_KEYS = (
+# Typography and colour: what a document may override in settings.style.
+STYLE_KEYS = (
     "font_body", "font_heading", "font_mono", "font_size", "line_height", "heading_scale",
     "color_text", "color_muted", "color_accent", "color_page", "color_rule", "color_callout",
     "heading_weight", "heading_case", "font_display", "display_weight", "font_label",
     "text_align", "hyphens", "color_figure", "paragraph_gap", "paragraph_indent",
+    "color_heading",
 )
+COVER_KEYS = ("cover_background", "cover_text", "cover_image", "cover_align")
+THEME_KEYS = STYLE_KEYS + COVER_KEYS
+
+_NUMBERS = {
+    "font_size": (6, 48), "line_height": (0.9, 3.0), "heading_scale": (1.0, 2.0),
+    "heading_weight": (100, 900), "display_weight": (100, 900),
+    "paragraph_gap": (0, 3), "paragraph_indent": (0, 6),
+}
+_CHOICES = {
+    "heading_case": ("none", "uppercase", "capitalize", "lowercase"),
+    "text_align": ("left", "justify", "center", "right"),
+    "hyphens": ("manual", "auto", "none"),
+    "cover_text": ("auto", "light", "dark"),
+    "cover_align": ("top", "center", "bottom"),
+}
+_COLOR = re.compile(r"^(#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})"
+                    r"|(?:rgb|rgba|hsl|hsla)\([0-9.,%\s/]+\)|[a-zA-Z]{3,24})$")
+_FONT = re.compile(r"^[^;{}<>\\\n]{1,200}$")
+_IMAGE = re.compile(r"^(upl_[a-z0-9]+|https?://\S+|data:image/[a-z+.-]+;base64,[A-Za-z0-9+/=]+)$", re.I)
+
+
+def is_color(v: Any) -> bool:
+    return isinstance(v, str) and bool(_COLOR.match(v.strip()))
+
+
+def is_image_ref(v: Any) -> bool:
+    return isinstance(v, str) and len(v) <= 1_500_000 and bool(_IMAGE.match(v.strip()))
+
+
+def clean_values(values: dict[str, Any] | None, keys: tuple[str, ...] = THEME_KEYS) -> dict[str, Any]:
+    """Validate theme values (a document's overrides or a theme being saved). None drops a
+    key; anything malformed raises ValueError naming the key."""
+    out: dict[str, Any] = {}
+    for k, v in (values or {}).items():
+        if v is None or v == "":
+            continue
+        if k not in keys:
+            raise ValueError(f"unknown style key {k!r}; options: {', '.join(keys)}")
+        if k in _NUMBERS:
+            lo, hi = _NUMBERS[k]
+            try:
+                n = float(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"{k} must be a number") from None
+            if not lo <= n <= hi:
+                raise ValueError(f"{k} must be between {lo} and {hi}")
+            out[k] = int(n) if k.endswith("weight") else round(n, 3)
+        elif k in _CHOICES:
+            if v not in _CHOICES[k]:
+                raise ValueError(f"{k} must be one of {', '.join(_CHOICES[k])}")
+            out[k] = v
+        elif k.startswith("color_") or k == "cover_background":
+            if not is_color(v):
+                raise ValueError(f"{k} must be a colour like #1a4d8f")
+            out[k] = v.strip()
+        elif k.startswith("font_"):
+            if not isinstance(v, str) or not _FONT.match(v):
+                raise ValueError(f"{k} must be a CSS font list like \"'Lato', sans-serif\"")
+            out[k] = v.strip()
+        elif k == "cover_image":
+            if not is_image_ref(v):
+                raise ValueError("cover_image must be an upload id, an http(s) URL or a data: image")
+            out[k] = v.strip()
+    return out
 
 BUILTIN_THEMES: dict[str, dict[str, Any]] = {
     "classic": {
@@ -86,6 +159,14 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
 
 _custom: dict[str, dict[str, Any]] = {}
 _allowed: list[str] | None = None
+# Themes authors saved from a document ("Save as theme"); the server installs the store's
+# list here, so they survive restarts and show up for every document.
+_saved: Callable[[], dict[str, dict[str, Any]]] | None = None
+
+
+def set_saved_provider(fn: Callable[[], dict[str, dict[str, Any]]] | None) -> None:
+    global _saved
+    _saved = fn
 
 
 def configure(custom: dict[str, dict[str, Any]] | None, allowed: list[str] | None) -> None:
@@ -104,7 +185,17 @@ def all_themes() -> dict[str, dict[str, Any]]:
         merged[name].setdefault("label", name.replace("_", " ").title())
     if _allowed:
         merged = {k: v for k, v in merged.items() if k in _allowed} or {"classic": merged["classic"]}
+    for name, t in (_saved() if _saved else {}).items():
+        if name not in merged:
+            merged[name] = {**base, **t, "saved": True}
     return merged
+
+
+def effective_theme(settings: dict[str, Any]) -> dict[str, Any]:
+    """The document's theme with its own overrides (settings.style) on top."""
+    every = all_themes()
+    base = every.get(settings.get("theme") or "") or next(iter(every.values()))
+    return {**base, **{k: v for k, v in (settings.get("style") or {}).items() if v is not None}}
 
 
 def theme_names() -> list[str]:

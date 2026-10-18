@@ -86,7 +86,7 @@ export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>): 
       full: b.layout.span === "full",
       height: fixed || meas.height,
       splits: meas.splits,
-      pin: b.layout.pin && b.layout.role === "flow"
+      pin: b.layout.pin
         ? b.layout.pin.anchor === "page"
           ? { anchor: "page" as const, page: b.layout.pin.page, top: b.layout.pin.y ?? 0, x: b.layout.pin.x ?? 0,
               w: b.layout.pin.w ?? 300, column: 0, span: 1, height: b.layout.pin.h || meas.height }
@@ -103,7 +103,7 @@ export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>): 
  * inside the measuring box resizes (images loading, charts rendering).
  */
 export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme | undefined, editing: boolean, print = false) {
-  const geo = useMemo(() => geometry(settings), [settings]);
+  const geo = useMemo(() => geometry(settings, theme), [settings, theme]);
   const ctx: RenderCtx = useMemo(() => ({ references: compileReferences(blocks), editing, print, pageCount: 0 }),
     [blocks, editing, print]);
   const boxRef = useRef<HTMLDivElement>(null);
@@ -114,8 +114,9 @@ export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme |
   const widths = useMemo(() => {
     const w: Record<string, number> = {};
     for (const b of blocks) {
+      const pin = b.layout.pin;
       w[b.id] = blockWidth({ full: b.layout.span === "full", role: b.layout.role || "flow",
-        pin: b.layout.pin && b.layout.role === "flow" ? { ...b.layout.pin, height: 0 } : null }, geo);
+        pin: pin ? { ...pin, height: 0, top: 0, x: pin.x ?? 0, w: pin.anchor === "page" ? pin.w ?? 300 : undefined } : null }, geo);
     }
     return w;
   }, [blocks, geo]);

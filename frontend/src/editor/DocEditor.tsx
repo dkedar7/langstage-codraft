@@ -3,17 +3,19 @@ import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import {
   BarChart3, ChevronDown, Download, Eye, FileText, Film, GitPullRequestArrow, Heading, Image, Lightbulb,
-  ListOrdered, MessageSquare, MessagesSquare, Minus, PanelRightClose, PanelRightOpen, Plus,
+  ListOrdered, MessageSquare, MessagesSquare, Minus, Palette, PanelRightClose, PanelRightOpen, Plus,
   SeparatorHorizontal, Settings2, SquareDashed, SquareDashedMousePointer, Table, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
+import { agentName } from "../branding";
 import type { AppConfig, Doc } from "../types";
 import { BlockPanel } from "./BlockPanel";
 import { Canvas } from "./Canvas";
 import { ChatPanel, type ChatHandle } from "./ChatPanel";
 import { CommentsPanel } from "./CommentsPanel";
 import { EditorContext, type EditorApi, type PanelTab } from "./context";
+import { DesignPanel } from "./DesignPanel";
 import { DocPanel } from "./DocPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { useLive } from "./useLive";
@@ -52,12 +54,12 @@ function TabButton({ active, onClick, icon: Icon, label, count, testid }: {
   active: boolean; onClick: () => void; icon: typeof MessageSquare; label: string; count?: number; testid: string;
 }) {
   return (
-    <button onClick={onClick} data-testid={testid}
+    <button onClick={onClick} data-testid={testid} title={label}
       className={`flex items-center gap-1.5 flex-shrink-0 px-2 h-7 rounded-md text-[13px] font-medium whitespace-nowrap transition-colors ${
         active ? "bg-[var(--color-surface-3)] text-[var(--color-text)]"
           : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] hover:bg-[var(--color-surface-3)]"}`}>
       <Icon size={14} />
-      {label}
+      <span className={active ? "" : "ed-tab-label"}>{label}</span>
       {count != null && count > 0 && (
         <span className="min-w-[16px] h-4 px-1 rounded-full bg-[var(--color-card)] border border-[var(--color-border)] text-[10px] tabular-nums text-[var(--color-text-muted)] inline-flex items-center justify-center">
           {count}
@@ -67,9 +69,10 @@ function TabButton({ active, onClick, icon: Icon, label, count, testid }: {
   );
 }
 
-export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk, clearAsk }: {
+export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk, clearAsk, reloadConfig }: {
   docId: string; cfg: AppConfig; identity: { id: string; name: string; color: string; setName: (n: string) => void; managed?: boolean };
   onTitle: (t: string) => void; onChanged: () => void; pendingAsk?: string; clearAsk: () => void;
+  reloadConfig?: () => Promise<void>;
 }) {
   const [doc, setDoc] = useState<Doc | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -194,8 +197,9 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
   const apiValue: EditorApi | null = useMemo(() => (doc ? {
     doc, cfg, refresh, selected, select: (id) => { select(id); if (id && tab !== "chat" && tab !== "comments") setTab("block"); },
     editing, setEditing, tab, setTab: (t) => { setPanelOpen(true); setTab(t); }, commentFilter, setCommentFilter, ask, run, toast,
+    reloadConfig,
     agentRunning: agentRunning || serverRunning, setAgentRunning, zoom, peers, me,
-  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, agentRunning, serverRunning, zoom, peers, me]);
+  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, agentRunning, serverRunning, zoom, peers, me, reloadConfig]);
 
   if (err) return <div className="p-8 text-[var(--color-error)]">Could not open the document: {err}</div>;
   if (!doc || !apiValue) return <div className="p-8 text-[var(--color-text-muted)]">Loading…</div>;
@@ -300,7 +304,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
                 {!doc.blocks.length && (
                   <div className="text-center text-[var(--color-text-muted)] mt-10">
                     <div className="text-[15px] font-medium text-[var(--color-text)]">An empty page</div>
-                    <div className="mt-1">Add a block, or ask the co-author to propose an outline.</div>
+                    <div className="mt-1">Add a block, or ask {agentName(cfg.ui)} to propose an outline.</div>
                   </div>
                 )}
                 <div style={{ height: "fit-content" }}><Canvas /></div>
@@ -308,11 +312,12 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
             </Allotment.Pane>
             <Allotment.Pane minSize={340} preferredSize={480} visible={panelOpen}>
               <div className="flex flex-col h-full bg-[var(--color-panel)]">
-                <div className="flex items-center gap-1 px-2 h-11 border-b border-[var(--color-border)] overflow-x-auto flex-none">
+                <div className="ed-tabbar flex items-center gap-1 px-2 h-11 border-b border-[var(--color-border)] overflow-x-auto flex-none">
                   {cfg.ui?.features?.chat !== false && <TabButton testid="tab-chat" active={tab === "chat"} onClick={() => setTab("chat")} icon={MessageSquare} label="Chat" />}
                   <TabButton testid="tab-comments" active={tab === "comments"} onClick={() => setTab("comments")} icon={MessagesSquare} label="Comments" count={openComments} />
                   <TabButton testid="tab-review" active={tab === "review"} onClick={() => setTab("review")} icon={GitPullRequestArrow} label="Review" count={pending} />
                   <TabButton testid="tab-block" active={tab === "block"} onClick={() => setTab("block")} icon={SquareDashedMousePointer} label="Block" />
+                  <TabButton testid="tab-design" active={tab === "design"} onClick={() => setTab("design")} icon={Palette} label="Design" />
                   <TabButton testid="tab-document" active={tab === "document"} onClick={() => setTab("document")} icon={Settings2} label="Document" />
                 </div>
                 <div className="flex-1 min-h-0">
@@ -320,6 +325,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
                   {tab === "comments" && <CommentsPanel />}
                   {tab === "review" && <ReviewPanel />}
                   {tab === "block" && <BlockPanel />}
+                  {tab === "design" && <DesignPanel />}
                   {tab === "document" && <DocPanel identity={identity} />}
                 </div>
               </div>

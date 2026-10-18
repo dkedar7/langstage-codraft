@@ -26,7 +26,7 @@ def call(tool, cfg, **args):
 
 def test_tool_names_unique():
     names = [t.name for t in CODRAFT_TOOLS]
-    assert len(names) == len(set(names)) == 20
+    assert len(names) == len(set(names)) == 24
 
 
 def test_config_param_hidden_from_model():

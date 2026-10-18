@@ -1,4 +1,4 @@
-import type { AppConfig, Block, Comment, Doc, DocSummary, Suggestion, Upload, VersionTree } from "./types";
+import type { AppConfig, Block, Comment, Doc, DocSummary, Suggestion, Theme, Upload, VersionTree } from "./types";
 import { notifyHost, withBase } from "./base";
 
 /** The collaborator's display name, sent with human changes (the server prefers a trusted
@@ -82,6 +82,10 @@ export const api = {
     return req<Upload>("POST", `/api/docs/${docId}/uploads`, fd);
   },
   deleteUpload: (id: string) => req("DELETE", `/api/uploads/${id}`),
+  applyStyle: (uploadId: string) => req<{ doc: Doc; changes: string[] }>("POST", `/api/uploads/${uploadId}/apply-style`),
+  saveTheme: (body: { label: string; doc_id?: string; values?: Record<string, any> }) =>
+    req<{ name: string; themes: Record<string, Theme> }>("POST", "/api/themes", body),
+  deleteTheme: (name: string) => req<{ ok: boolean }>("DELETE", `/api/themes/${encodeURIComponent(name)}`),
   messages: (docId: string) => req<any[]>("GET", `/api/docs/${docId}/messages`),
   renderStatus: () => req<{ available: boolean; hint: string | null }>("GET", "/api/render/status"),
 };

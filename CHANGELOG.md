@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0 — 2026-10-18
+
+Design the whole document, not just its blocks.
+
+- **Cover pages you control.** A switch turns the separate cover off: the cover blocks (title,
+  subtitle) then open page 1 as a full-width title block and the body starts right below.
+  Covers (and back pages) take a background colour or image, top/middle/bottom placement and
+  pinned art or logos; dark backgrounds get light text. "+ Add to cover" sits above the page.
+- **Fixed: nothing could be added to a cover.** A block inserted after a cover block, by a
+  person or the agent, now joins the cover (it used to land on page 2), and `propose_insert`
+  takes a `role`.
+- **Fonts and colours per document** (the new Design tab): body, heading, title and label
+  fonts, sizes, line spacing, heading scale/weight/case, alignment, and text, heading, accent,
+  rule, tint and paper colours, on top of the theme. 13 more bundled families (Raleway, Lato,
+  Open Sans, Montserrat, Roboto, Merriweather, Lora, Playfair Display, EB Garamond, Libre
+  Baskerville, Carlito, Arimo, Tinos) and any Google Fonts family on demand (`web_fonts`).
+  **Save as theme** stores a document's look for every other document.
+- **Running header and footer** as settings: left/centre/right text in the margins with
+  `{page}`, `{pages}`, `{title}`, `{year}`; Word export writes them as real header/footer fields.
+- **Match an uploaded document's look.** Upload a PDF, Word file or page image as "style":
+  Codraft reads its page setup, fonts (mapped to open look-alikes), colours, cover and running
+  header/footer and applies them. PDFs are rendered, so the agent sees their pages.
+- **Agent tools:** `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`; the
+  outline reports the cover, style overrides and header/footer.
+- **Word export** carries the document's fonts, sizes and colours onto Word's styles.
+- **For hosts:** `create_app(doc_defaults=...)` / `[codraft.doc_defaults]` set what new
+  documents start with; themes take `color_heading` and `cover_*` keys; `[ui.features]
+  style_editor = false` hides the font and colour editor.
+- The side panel shows icons with the active tab's label when it's narrow.
+- **The agent goes by its own name.** When the graph has one (`create_agent(..., name="Juniper")`,
+  `create_deep_agent(..., name=...)`), the editor uses it everywhere it used to say "agent" or
+  "co-author": Ask Juniper, Suggestions from Juniper, Tag Juniper, its comment replies and
+  version history. LangGraph's default name ("LangGraph") is ignored; an explicit
+  `[ui] agent_name` still wins.
+
 ## 0.4.3 — 2026-10-18
 
 More from the Lighthouse dogfood (second pass, against 0.4.2).

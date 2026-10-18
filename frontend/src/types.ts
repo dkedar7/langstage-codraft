@@ -70,6 +70,28 @@ export interface Settings {
   min_pages: number;
   approval: "required" | "auto";
   brief: Brief;
+  /** cover/back page design; null values fall back to the theme */
+  cover?: PageDesign & { enabled?: boolean };
+  back?: PageDesign;
+  /** this document's typography and colour overrides on top of its theme */
+  style?: Partial<Theme>;
+  header?: HeaderFooter;
+  footer?: HeaderFooter;
+}
+
+export interface PageDesign {
+  align?: "top" | "center" | "bottom" | null;
+  background?: string | null;
+  image?: string | null;
+  text?: "auto" | "light" | "dark" | null;
+}
+
+export interface HeaderFooter {
+  left: string;
+  center: string;
+  right: string;
+  first_page: boolean;
+  rule: boolean;
 }
 
 export interface Comment {
@@ -102,10 +124,14 @@ export interface Upload {
   id: string;
   doc_id: string;
   filename: string;
-  purpose: "reference" | "template" | "asset";
+  purpose: "reference" | "template" | "style" | "asset";
   mime: string;
   chars: number;
   url: string;
+  /** rendered first pages of a PDF (server paths) */
+  pages?: string[];
+  /** the look read from a "style" upload */
+  style?: Record<string, any> | null;
 }
 
 export interface Doc {
@@ -147,7 +173,16 @@ export interface Theme {
   color_figure?: string;
   paragraph_gap?: number;
   paragraph_indent?: number;
+  color_heading?: string;
+  cover_background?: string;
+  cover_text?: "auto" | "light" | "dark";
+  cover_image?: string;
+  cover_align?: "top" | "center" | "bottom";
+  /** a theme an author saved from a document */
+  saved?: boolean;
 }
+
+export interface FontInfo { family: string; category: "sans" | "serif" | "mono"; bundled: boolean }
 
 export interface UiConfig {
   title?: string;
@@ -162,7 +197,7 @@ export interface UiConfig {
   colors?: Record<string, string>;
   colors_dark?: Record<string, string>;
   starter_prompts?: string[];
-  features?: { chat?: boolean; mcp?: boolean; doc_list?: boolean; theme_toggle?: boolean };
+  features?: { chat?: boolean; mcp?: boolean; doc_list?: boolean; theme_toggle?: boolean; style_editor?: boolean };
   custom_css?: string;
 }
 
@@ -176,7 +211,11 @@ export interface AppConfig {
   default_page_size?: string;
   default_theme: string;
   themes: Record<string, Theme>;
-  templates: { id: string; name: string; description: string }[];
+  templates: { id: string; name: string; description: string; has_cover?: boolean }[];
+  fonts?: FontInfo[];
+  web_fonts?: boolean;
+  /** new documents from a template with a cover start with it on (the host's house default) */
+  cover_default?: boolean;
   chat_available: boolean;
   ui_theme?: string;
   mcp_url?: string | null;

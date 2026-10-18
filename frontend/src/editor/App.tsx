@@ -213,7 +213,8 @@ export function App() {
           {active ? (
             <DocEditor key={active} docId={active} cfg={cfg} identity={identity} onTitle={onTitle(active)}
               onChanged={onDocChanged}
-              pendingAsk={kickoff[active]} clearAsk={() => setKickoff((k) => { const { [active]: _, ...rest } = k; return rest; })} />
+              pendingAsk={kickoff[active]} clearAsk={() => setKickoff((k) => { const { [active]: _, ...rest } = k; return rest; })}
+              reloadConfig={async () => { const c = await api.config(); setCfg(c); }} />
           ) : (
             <Home cfg={cfg} onNew={() => setNewOpen(true)} docs={docs} open={open} />
           )}

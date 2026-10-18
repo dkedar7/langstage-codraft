@@ -44,6 +44,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "theme": "classic",
     "min_pages": 1,                  # "Add page" raises this
     "approval": "required",          # required | auto
+    # Cover and back pages: blocks with role "cover"/"back" get their own page (cover
+    # enabled=False puts the cover blocks at the top of page 1 as a full-width title block).
+    # align places the stack; background (colour) and image (upload id or URL) fill the
+    # page; text is "light" on a dark background ("auto" decides). None = the theme's value.
+    "cover": {"enabled": True, "align": None, "background": None, "image": None, "text": None},
+    "back": {"align": None, "background": None, "image": None, "text": None},
+    # This document's typography and colour overrides on top of its theme (themes.STYLE_KEYS).
+    "style": {},
+    # Running header and footer on body pages: text left/center/right, tokens {page},
+    # {pages}, {title}, {year}. first_page=False skips the first body page.
+    "header": {"left": "", "center": "", "right": "", "first_page": True, "rule": False},
+    "footer": {"left": "", "center": "", "right": "", "first_page": True, "rule": False},
     "brief": {
         "writing_style": "",
         "objective": "",
@@ -121,7 +133,13 @@ CREATE TABLE IF NOT EXISTS uploads (
   id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, filename TEXT NOT NULL, purpose TEXT NOT NULL,
   mime TEXT NOT NULL, path TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS themes (
+  name TEXT PRIMARY KEY, data TEXT NOT NULL, author TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
+);
 """
+
+UPLOAD_PURPOSES = ("reference", "template", "style", "asset")
+_HF_SLOTS = ("left", "center", "right")
 
 
 class NotFound(KeyError):
@@ -224,6 +242,9 @@ class Store:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        cols = {r["name"] for r in self._db.execute("PRAGMA table_info(uploads)").fetchall()}
+        if "meta" not in cols:  # 0.5: rendered pages and the extracted style of an upload
+            self._db.execute("ALTER TABLE uploads ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
         self._db.commit()
         # Last client-computed layout per document (block -> pages), reported by the UI
         # after it paginates, so the agent's outline can say which page a block is on.
@@ -270,6 +291,37 @@ class Store:
 
     @staticmethod
     def _check_settings(s: dict) -> None:
+        from . import themes
+
+        try:
+            s["style"] = themes.clean_values(s.get("style") or {}, themes.STYLE_KEYS)
+        except ValueError as exc:
+            raise Invalid(f"settings.style: {exc}") from None
+        for page in ("cover", "back"):
+            c = dict(s.get(page) or {})
+            if page == "cover":
+                c["enabled"] = bool(c.get("enabled", True))
+            if c.get("align") not in (None, "top", "center", "bottom"):
+                raise Invalid(f"settings.{page}.align must be top, center or bottom")
+            if c.get("text") not in (None, "auto", "light", "dark"):
+                raise Invalid(f"settings.{page}.text must be auto, light or dark")
+            if c.get("background") not in (None, "") and not themes.is_color(c["background"]):
+                raise Invalid(f"settings.{page}.background must be a colour like #002f58")
+            if c.get("image") not in (None, "") and not themes.is_image_ref(c["image"]):
+                raise Invalid(f"settings.{page}.image must be an upload id or an image URL")
+            for k in ("background", "image"):
+                c[k] = c.get(k) or None
+            s[page] = c
+        for part in ("header", "footer"):
+            h = dict(s.get(part) or {})
+            for slot in _HF_SLOTS:
+                v = h.get(slot) or ""
+                if not isinstance(v, str) or len(v) > 300:
+                    raise Invalid(f"settings.{part}.{slot} must be text (300 characters at most)")
+                h[slot] = v
+            h["first_page"] = bool(h.get("first_page", True))
+            h["rule"] = bool(h.get("rule", False))
+            s[part] = h
         if s["mode"] not in ("paged", "pageless"):
             raise Invalid("settings.mode must be 'paged' or 'pageless'")
         if int(s["columns"]) not in (1, 2, 3):
@@ -307,7 +359,9 @@ class Store:
             if r is None:
                 raise NotFound(f"document {doc_id} not found")
             return {
-                "id": r["id"], "title": r["title"], "settings": json.loads(r["settings"]),
+                "id": r["id"], "title": r["title"],
+                # Defaults underneath, so documents from older versions get new settings.
+                "settings": _merge(DEFAULT_SETTINGS, json.loads(r["settings"])),
                 "rev": r["rev"], "created_at": r["created_at"], "updated_at": r["updated_at"],
             }
 
@@ -320,6 +374,9 @@ class Store:
             if title is not None:
                 self._db.execute("UPDATE documents SET title = ? WHERE id = ?", (title, doc_id))
             if settings:
+                if "style" in settings and settings["style"] is None:  # reset to the theme
+                    settings = {**settings, "style": {}}
+                    doc["settings"]["style"] = {}
                 merged = _merge(doc["settings"], settings)
                 merged["columns"] = int(merged["columns"])
                 self._check_settings(merged)
@@ -439,6 +496,7 @@ class Store:
         with self._lock:
             doc = self.get_document(doc_id)
             ord_ = self._ord_after(doc_id, after)
+            layout = self._inherit_role(after, layout)
             bid = self._insert_block_row(
                 doc_id, block_type, content, layout, ord_=ord_, refs=refs, author=author,
                 columns=doc["settings"]["columns"], note=note,
@@ -446,6 +504,17 @@ class Store:
             self._bump(doc_id)
             self._db.commit()
             return self.get_block(bid)
+
+    def _inherit_role(self, after: str | None, layout: dict | None) -> dict | None:
+        """A block added right after a cover (or back-page) block, with no role of its own,
+        joins that page instead of landing in the body."""
+        if (layout or {}).get("role") or after in (None, "__end__"):
+            return layout
+        r = self._one("SELECT layout FROM blocks WHERE id = ? AND deleted = 0", (after,))
+        role = json.loads(r["layout"]).get("role") if r else None
+        if role in ("cover", "back"):
+            return {**(layout or {}), "role": role}
+        return layout
 
     def edit_block(
         self, block_id: str, *, content: dict | None = None, refs: list | None = None,
@@ -698,6 +767,9 @@ class Store:
                 t = payload.get("type", "text")
                 if t not in BLOCK_TYPES:
                     raise Invalid(f"unknown block type {t!r}; expected one of {BLOCK_TYPES}")
+                lay = self._inherit_role(payload.get("after", "__end__"), payload.get("layout"))
+                if lay is not None:
+                    payload = {**payload, "layout": lay}
             # Supersede an older pending suggestion of the same kind on the same block.
             if block_id is not None and kind in ("edit", "delete", "move"):
                 self._db.execute(
@@ -742,7 +814,7 @@ class Store:
             if s["status"] != "pending":
                 raise Invalid(f"suggestion {sid} is already {s['status']}")
             p = {**s["payload"], **(payload_override or {})}
-            note = s["note"] or f"agent suggestion {sid}"
+            note = s["note"] or f"suggestion {sid}"
             result: dict[str, Any] = {}
             if s["kind"] == "edit":
                 blk = self.edit_block(s["block_id"], content=p.get("content"), refs=p.get("refs"),
@@ -795,8 +867,8 @@ class Store:
     # ---------------------------------------------------------------- uploads
     def add_upload(self, doc_id: str, filename: str, data: bytes, *, purpose: str = "reference",
                    mime: str = "application/octet-stream", text: str = "") -> dict:
-        if purpose not in ("reference", "template", "asset"):
-            raise Invalid("purpose must be 'reference', 'template' or 'asset'")
+        if purpose not in UPLOAD_PURPOSES:
+            raise Invalid(f"purpose must be one of {', '.join(UPLOAD_PURPOSES)}")
         with self._lock:
             self.get_document(doc_id)
             uid = _id("upl")
@@ -817,12 +889,23 @@ class Store:
             r = self._one("SELECT * FROM uploads WHERE id = ?", (uid,))
             if r is None:
                 raise NotFound(f"upload {uid} not found")
+            meta = json.loads(r["meta"] or "{}")
             d = {"id": r["id"], "doc_id": r["doc_id"], "filename": r["filename"], "purpose": r["purpose"],
                  "mime": r["mime"], "path": r["path"], "chars": len(r["text"]),
-                 "created_at": r["created_at"], "url": f"/api/uploads/{r['id']}/file"}
+                 "created_at": r["created_at"], "url": f"/api/uploads/{r['id']}/file",
+                 "pages": meta.get("pages", []), "style": meta.get("style")}
             if with_text:
                 d["text"] = r["text"]
             return d
+
+    def set_upload_meta(self, uid: str, meta: dict) -> dict:
+        """Rendered page images and the extracted style profile of an upload."""
+        with self._lock:
+            u = self.get_upload(uid)
+            self._db.execute("UPDATE uploads SET meta = ? WHERE id = ?", (json.dumps(meta), uid))
+            self._bump(u["doc_id"])
+            self._db.commit()
+            return self.get_upload(uid)
 
     def list_uploads(self, doc_id: str) -> list[dict]:
         with self._lock:
@@ -833,11 +916,47 @@ class Store:
         with self._lock:
             u = self.get_upload(uid)
             self._db.execute("DELETE FROM uploads WHERE id = ?", (uid,))
-            try:
-                Path(u["path"]).unlink(missing_ok=True)
-            except OSError:
-                pass
+            for f in [u["path"], *u.get("pages", [])]:
+                try:
+                    Path(f).unlink(missing_ok=True)
+                except OSError:
+                    pass
             self._bump(u["doc_id"])
+            self._db.commit()
+
+    # ----------------------------------------------------------------- themes
+    def save_theme(self, label: str, values: dict, *, author: str = "") -> str:
+        """Save a document's look as a named theme (validated values; see themes.THEME_KEYS)."""
+        from . import themes
+
+        label = (label or "").strip()[:60]
+        if not label:
+            raise Invalid("a saved theme needs a name")
+        try:
+            clean = themes.clean_values(values)
+        except ValueError as exc:
+            raise Invalid(str(exc)) from None
+        base = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-") or "theme"
+        with self._lock:
+            taken = set(themes.theme_names())
+            name, n = base, 2
+            while name in taken:
+                name, n = f"{base}-{n}", n + 1
+            self._db.execute("INSERT INTO themes (name, data, author, created_at) VALUES (?,?,?,?)",
+                             (name, json.dumps({**clean, "label": label}), author, time.time()))
+            self._db.commit()
+            return name
+
+    def saved_themes(self) -> dict[str, dict]:
+        with self._lock:
+            return {r["name"]: {**json.loads(r["data"]), "author": r["author"]}
+                    for r in self._q("SELECT name, data, author FROM themes ORDER BY created_at")}
+
+    def delete_theme(self, name: str) -> None:
+        with self._lock:
+            if self._one("SELECT name FROM themes WHERE name = ?", (name,)) is None:
+                raise NotFound(f"saved theme {name} not found (only saved themes can be deleted)")
+            self._db.execute("DELETE FROM themes WHERE name = ?", (name,))
             self._db.commit()
 
     # ----------------------------------------------------------------- layout

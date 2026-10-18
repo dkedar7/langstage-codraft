@@ -96,6 +96,17 @@ export function agentName(ui: UiConfig | undefined, prose = true): string {
   return n && n !== "Co-author" ? n : prose ? "the agent" : "agent";
 }
 
+/** The agent's name at the start of a sentence or as a label ("Lighthouse", or "The agent"). */
+export function AgentName(ui: UiConfig | undefined): string {
+  const n = agentName(ui);
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
+
+/** Is the agent named (graph.name or ui.agent_name), rather than the generic default? */
+export function agentNamed(ui: UiConfig | undefined): boolean {
+  return !!ui?.agent_name && ui.agent_name !== "Co-author";
+}
+
 /** A comment/version author for display: "agent" becomes the agent's name. */
 export function authorLabel(ui: UiConfig | undefined, author: string): string {
   return author === "agent" ? agentName(ui, false) : author;

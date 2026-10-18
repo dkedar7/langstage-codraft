@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import type { Theme } from "../types";
+import type { PageDesign, Settings, Theme } from "../types";
 
 export const FALLBACK_THEME: Theme = {
   label: "Classic",
@@ -18,6 +18,36 @@ export const FALLBACK_THEME: Theme = {
   heading_weight: 700,
   heading_case: "none",
 };
+
+/** The document's theme with its own overrides (settings.style) on top. */
+export function effectiveTheme(themes: Record<string, Theme>, s: Settings): Theme {
+  const base = themes[s.theme] || themes.classic || Object.values(themes)[0] || FALLBACK_THEME;
+  const own = Object.fromEntries(Object.entries(s.style || {}).filter(([, v]) => v != null && v !== ""));
+  return { ...FALLBACK_THEME, ...base, ...own } as Theme;
+}
+
+function hexLuminance(c: string): number | null {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec((c || "").trim());
+  if (!m) return null;
+  const h = m[1].length === 3 ? m[1].split("").map((x) => x + x).join("") : m[1];
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255)
+    .map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** A cover or back page's look: the document's choice, else the theme's. */
+export function pageDesign(kind: "cover" | "back", s: Settings, t: Theme): Required<Pick<PageDesign, "align">> & {
+  background: string | null; image: string | null; light: boolean;
+} {
+  const own = (kind === "cover" ? s.cover : s.back) || {};
+  const background = own.background || (kind === "cover" ? t.cover_background : null) || null;
+  const image = own.image || (kind === "cover" ? t.cover_image : null) || null;
+  const align = own.align || (kind === "cover" ? t.cover_align : null) || "center";
+  const text = own.text || (kind === "cover" ? t.cover_text : null) || "auto";
+  const lum = background ? hexLuminance(background) : null;
+  const light = text === "light" || (text === "auto" && ((lum != null && lum < 0.35) || (!background && !!image)));
+  return { align, background, image, light };
+}
 
 /** Theme -> CSS custom properties consumed by styles.css (.cd-doc ...). */
 export function themeVars(t: Theme | undefined): CSSProperties {
@@ -48,5 +78,6 @@ export function themeVars(t: Theme | undefined): CSSProperties {
     "--cd-figure": th.color_figure || th.color_callout,
     "--cd-par-gap": th.paragraph_gap != null ? th.paragraph_gap + "em" : ".7em",
     "--cd-par-indent": th.paragraph_indent ? th.paragraph_indent + "em" : "0",
+    ...(th.color_heading ? { "--cd-heading": th.color_heading } : {}),
   } as CSSProperties;
 }

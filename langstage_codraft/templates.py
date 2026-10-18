@@ -139,5 +139,6 @@ def all_templates() -> dict[str, dict[str, Any]]:
 
 
 def summaries() -> list[dict]:
-    return [{"id": k, "name": v.get("name", k), "description": v.get("description", "")}
+    return [{"id": k, "name": v.get("name", k), "description": v.get("description", ""),
+             "has_cover": any((b.get("layout") or {}).get("role") == "cover" for b in v.get("blocks", []))}
             for k, v in all_templates().items()]

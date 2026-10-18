@@ -1,4 +1,4 @@
-import type { Settings } from "../types";
+import type { Settings, Theme } from "../types";
 import type { Geometry } from "./paginate";
 
 /** CSS px per mm at 96 dpi. Mirrors langstage_codraft/pages.py. */
@@ -29,7 +29,7 @@ export function pageMm(s: Settings): [number, number] {
   return [w, h];
 }
 
-export function geometry(s: Settings): Geometry {
+export function geometry(s: Settings, t?: Partial<Theme>): Geometry {
   const [w, h] = pageMm(s);
   const m = s.margins;
   return {
@@ -41,5 +41,7 @@ export function geometry(s: Settings): Geometry {
     colGap: s.column_gap * MM,
     blockGap: s.block_gap * MM,
     minPages: Math.max(1, s.min_pages || 1),
+    cover: { enabled: s.cover?.enabled !== false, align: s.cover?.align || t?.cover_align || "center" },
+    back: { align: s.back?.align || "center" },
   };
 }

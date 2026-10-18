@@ -25,6 +25,7 @@ function BlockInspector({ block }: { block: Block }) {
   const patchLayout = (layout: any) => ed.run(api.patchBlock(block.id, { layout }));
   const patchContent = (content: any, note = "edited") => ed.run(api.patchBlock(block.id, { content, note }));
   const L = block.layout;
+  const onOwnPage = L.role !== "flow"; // cover or back page: pins place it on that page
 
   return (
     <div className="overflow-auto scroll-thin h-full">
@@ -41,7 +42,7 @@ function BlockInspector({ block }: { block: Block }) {
           <button className="btn btn-icon" title="Duplicate" onClick={() => ed.run(api.duplicateBlock(block.id))}><Copy size={14} /></button>
           <button className="btn btn-icon" title="Comment" onClick={() => { ed.setCommentFilter(block.id); ed.setTab("comments"); }}><MessageSquare size={14} /></button>
           <button className="btn" disabled={!ed.cfg.chat_available || ed.agentRunning}
-            onClick={() => ed.ask(`Look at block ${block.id} and suggest how to improve it.`)}><Bot size={14} /> Ask agent</button>
+            onClick={() => ed.ask(`Look at block ${block.id} and suggest how to improve it.`)}><Bot size={14} /> Ask {agentName(ed.cfg.ui, false)}</button>
           <button className="btn btn-icon btn-danger ml-auto" title="Delete block" data-testid="delete-block"
             onClick={() => { ed.select(null); ed.run(api.deleteBlock(block.id)); }}><Trash2 size={14} /></button>
         </div>
@@ -97,12 +98,14 @@ function BlockInspector({ block }: { block: Block }) {
             <NumberInput value={L.height} suffix="px" onCommit={(v) => patchLayout({ height: v })} />
           ) : null}
         </div>
-        {L.role === "flow" && (
+        {(
           <>
             <label className="flex items-center gap-2 mt-3">
               <input type="checkbox" data-testid="pin-toggle" checked={!!L.pin}
-                onChange={(e) => patchLayout({ pin: e.target.checked ? { page: 1, top: 0, column: 0, span: 1, height: L.height || null } : null })} />
-              Pin to a page position (other blocks flow around it)
+                onChange={(e) => patchLayout({ pin: !e.target.checked ? null : onOwnPage
+                  ? { anchor: "page", page: 1, x: 0, y: 0, w: 300, h: L.height || 200 }
+                  : { page: 1, top: 0, column: 0, span: 1, height: L.height || null } })} />
+              {onOwnPage ? `Pin to a spot on the ${L.role} page (art, a logo, a band)` : "Pin to a page position (other blocks flow around it)"}
             </label>
             {L.pin && (
               <label className="flex items-center gap-2 mt-2">
@@ -115,14 +118,19 @@ function BlockInspector({ block }: { block: Block }) {
             )}
             {L.pin?.anchor === "page" && (
               <div className="grid grid-cols-2 gap-2 mt-2">
-                <Field label="Page"><NumberInput value={L.pin.page} min={1} onCommit={(v) => patchLayout({ pin: { ...L.pin, page: v } })} /></Field>
+                {!onOwnPage && <Field label="Page"><NumberInput value={L.pin.page} min={1} onCommit={(v) => patchLayout({ pin: { ...L.pin, page: v } })} /></Field>}
                 <Field label="X"><NumberInput value={L.pin.x ?? 0} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, x: v } })} /></Field>
                 <Field label="Y"><NumberInput value={L.pin.y ?? 0} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, y: v } })} /></Field>
                 <Field label="Width"><NumberInput value={L.pin.w ?? 300} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, w: v } })} /></Field>
                 <Field label="Height"><NumberInput value={L.pin.h ?? 200} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, h: v } })} /></Field>
               </div>
             )}
-            {L.pin && L.pin.anchor !== "page" && (
+            {L.pin && L.pin.anchor !== "page" && onOwnPage && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <Field label="Top"><NumberInput value={L.pin.top} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, top: v } })} /></Field>
+              </div>
+            )}
+            {L.pin && L.pin.anchor !== "page" && !onOwnPage && (
               <div className="grid grid-cols-2 gap-2 mt-2">
                 <Field label="Page"><NumberInput value={L.pin.page} min={1} onCommit={(v) => patchLayout({ pin: { ...L.pin, page: v } })} /></Field>
                 <Field label="Top"><NumberInput value={L.pin.top} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, top: v } })} /></Field>

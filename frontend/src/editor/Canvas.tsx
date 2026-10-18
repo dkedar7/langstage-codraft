@@ -2,10 +2,12 @@ import type React from "react";
 import { ArrowDownUp, GripVertical, MessageSquare, Pin, Sparkles, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from "react";
 import { api } from "../api";
+import { agentName } from "../branding";
 import type { LayoutResult, PageLayout, Placed } from "../layout/paginate";
 import { BlockView } from "../render/BlockView";
-import { Fragment, Page } from "../render/Page";
-import { themeVars } from "../render/theme";
+import { useDocFonts } from "../fonts";
+import { Fragment, Page, PageFurniture } from "../render/Page";
+import { effectiveTheme, pageDesign, themeVars } from "../render/theme";
 import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
 import { pageNumbers, usesPageToken } from "../layout/numbering";
 import type { Block, Suggestion } from "../types";
@@ -22,17 +24,18 @@ function withVirtual(blocks: Block[], suggestions: Suggestion[]): Block[] {
     const p = s.payload;
     const vb: Block = {
       id: `virtual-${s.id}`, doc_id: s.doc_id, type: p.type || "text", ord: 0,
-      layout: { span: p.layout?.span || "column", height: null, role: "flow", pin: null, repeat: null },
+      layout: { span: p.layout?.span || "column", height: null, role: p.layout?.role || "flow", pin: null, repeat: null },
       content: p.content || {}, refs: p.refs || [], head: "", n_versions: 0, author: "agent", updated_at: 0,
       virtual: { suggestionId: s.id },
     };
+    const role = vb.layout.role;
     if (p.after === null) {
-      const firstFlow = out.findIndex((b) => b.layout.role === "flow");
-      out.splice(firstFlow < 0 ? out.length : firstFlow, 0, vb);
+      const first = out.findIndex((b) => b.layout.role === role);
+      out.splice(first < 0 ? out.length : first, 0, vb);
     } else {
       const idx = out.findIndex((b) => b.id === p.after);
-      const lastFlow = out.map((b) => b.layout.role).lastIndexOf("flow");
-      out.splice(idx >= 0 ? idx + 1 : lastFlow + 1, 0, vb);
+      const last = out.map((b) => b.layout.role).lastIndexOf(role);
+      out.splice(idx >= 0 ? idx + 1 : last + 1, 0, vb);
     }
   }
   return out;
@@ -62,7 +65,8 @@ interface DropTarget {
 export function Canvas() {
   const ed = useEditorApi();
   const { doc, cfg } = ed;
-  const theme = cfg.themes[doc.settings.theme];
+  const theme = useMemo(() => effectiveTheme(cfg.themes, doc.settings), [cfg.themes, doc.settings]);
+  useDocFonts(theme, cfg.web_fonts !== false);
   const blocks = useMemo(() => withVirtual(doc.blocks, doc.suggestions), [doc.blocks, doc.suggestions]);
   const { layout, geo, ctx, measureNode, measured } = useDocLayout(blocks, doc.settings, theme, true);
   const byId = useMemo(() => Object.fromEntries(blocks.map((b) => [b.id, b])), [blocks]);
@@ -184,7 +188,7 @@ export function Canvas() {
       const prev = cur > 0 ? flowOrder[cur - 1] : null;
       if (target.after === prev || target.after === d.id) return;
       const ok = await ed.run(api.moveBlock(d.id, target.after));
-      if (ok) ed.toast("Moved. Ask the agent to rewrite the neighbouring blocks for continuity?", "info");
+      if (ok) ed.toast(`Moved. Ask ${agentName(cfg.ui)} to rewrite the neighbouring blocks for continuity?`, "info");
       if (ok) continuityPrompt.current = d.id;
     } else if (d.kind === "pin" && target?.pin) {
       await ed.run(api.patchBlock(d.id, { layout: { pin: { ...(b.layout.pin || { span: 1, height: null }), ...target.pin } } }));
@@ -227,7 +231,24 @@ export function Canvas() {
     numberCoverPages: !!doc.settings.number_cover_pages,
     unnumbered: doc.settings.unnumbered_pages || [],
   });
-  const pctx = { ...ctx, title: doc.title, pageCount: numbering.last };
+  const pctx = { ...ctx, title: doc.title, pageCount: numbering.last, agent: agentName(cfg.ui) };
+  const firstBody = layout.pages.find((p) => p.kind === "body")?.number;
+  const coverOn = doc.settings.cover?.enabled !== false;
+  const hasCoverBlocks = doc.blocks.some((b) => b.layout.role === "cover");
+  const setCover = async (on: boolean) => {
+    const ok = await ed.run(api.patchDoc(doc.id, { settings: { cover: { enabled: on } } }));
+    if (ok) ed.toast(on ? "The title block has its own cover page again." : "No cover page: the title block opens page 1. Turn it back on above page 1 or in Design.", "info");
+  };
+  /** A new text block at the end of the cover (or back) page, ready to type in. */
+  const addTo = async (role: "cover" | "back") => {
+    const same = doc.blocks.filter((b) => b.layout.role === role);
+    const after = same.length ? same[same.length - 1].id : "__end__";
+    const b = await ed.run(api.addBlock(doc.id, { type: "text", content: { markdown: "" }, after, layout: { role } }));
+    if (b) {
+      ed.select(b.id);
+      ed.setEditing(b.id);
+    }
+  };
   const renderItem = (it: Placed, page: PageLayout) => {
     const b = byId[it.id];
     if (!b) return null;
@@ -333,13 +354,31 @@ export function Canvas() {
         <div className="cd-doc cd-pages" style={themeVars(theme)} lang={langCode(doc.settings)}>
           {layout.pages.map((p) => (
             <div key={p.number} ref={(el) => { pageRefs.current[p.number] = el; }} style={{ position: "relative" }}>
-              <div className="ed-page-label">
+              <div className="ed-page-label" onClick={(e) => e.stopPropagation()}>
                 {p.kind === "cover" ? "Cover" : p.kind === "back" ? "Back page" : `Page ${p.number}`}
                 {numbering.map[p.number] != null && numbering.map[p.number] !== p.number ? ` · printed as ${numbering.map[p.number]}` : ""}
                 {numbering.map[p.number] == null && p.kind === "body" ? " · unnumbered" : ""}
                 {doc.settings.mode === "pageless" ? " (pageless)" : ""}
+                {p.kind === "cover" && (
+                  <>
+                    <button className="ed-page-action" data-testid="cover-add" onClick={() => addTo("cover")}>+ Add to cover</button>
+                    <button className="ed-page-action" data-testid="cover-off" onClick={() => setCover(false)}
+                      title="Start the document on page 1: the cover blocks become its title block">No cover page</button>
+                    <button className="ed-page-action" onClick={() => ed.setTab("design")}>Design…</button>
+                  </>
+                )}
+                {p.kind === "back" && (
+                  <button className="ed-page-action" onClick={() => addTo("back")}>+ Add to back page</button>
+                )}
+                {p.number === firstBody && !coverOn && hasCoverBlocks && (
+                  <button className="ed-page-action" data-testid="cover-on" onClick={() => setCover(true)}
+                    title="Give the title block its own cover page again">Use a cover page</button>
+                )}
               </div>
-              <Page page={p} geo={geo} renderItem={renderItem}>
+              <Page page={p} geo={geo} renderItem={renderItem}
+                decor={p.kind === "body" ? null : pageDesign(p.kind, doc.settings, theme)}
+                furniture={<PageFurniture settings={doc.settings} geo={geo} page={p} firstBody={p.number === firstBody}
+                  pageNo={numbering.map[p.number] ?? undefined} ctx={pctx} onClick={() => ed.setTab("design")} />}>
                 {drop && drop.page === p.number && (
                   <div className="ed-drop" style={{ left: geo.margin.left + drop.x, top: geo.margin.top + drop.y,
                     width: drop.w, height: drop.pin ? 24 : 3, background: drop.pin ? "rgba(26,77,143,.12)" : undefined,

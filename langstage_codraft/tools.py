@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, tool
 
-from . import textutil
+from . import fonts, stylematch, textutil
 from .pages import MM, column_width, content_box, page_px
 from .store import (
     BLOCK_TYPES,
@@ -176,6 +177,7 @@ def get_document(config: RunnableConfig) -> str:
         lines.append(f"Geometry (px, 96/in): page {round(pw)}x{round(ph)}; content box x={round(m['left'] * MM)} "
                      f"y={round(m['top'] * MM)} w={round(cw)} h={round(chh)}; column width {round(colw)}; {cols}.")
         lines.append("Variants: " + "; ".join(f"{t}: {', '.join(v)}" for t, v in BLOCK_VARIANTS.items()))
+        lines.extend(_design_lines(s))
         if place.get("_pages"):
             lines.append(f"Rendered pages: {place['_pages']}")
         if open_c.get("_doc"):
@@ -382,13 +384,15 @@ def propose_insert(
     block_type: str, content: str, config: RunnableConfig, after_block_id: str | None = None,
     at_start: bool = False, note: str = "", references: list[dict] | None = None,
     full_width: bool = False, heading_level: int = 2, comment_id: str | None = None,
-    variant: str | None = None,
+    variant: str | None = None, role: str | None = None,
 ) -> str:
     """Propose a new block. block_type is one of: text, heading, image, video, table,
     chart, callout, divider, references, page-break, spacer. A callout's tone (content
     JSON {"markdown", "tone"}) is info, note, success, warn or dark (white on black). It is inserted after `after_block_id`,
     or at the start if at_start=True, or at the end otherwise. `content` uses the
-    same formats as propose_edit. full_width=True makes it span all columns."""
+    same formats as propose_edit. full_width=True makes it span all columns.
+    role: "cover" or "back" puts it on the cover or back page; a block inserted right
+    after a cover block stays on the cover without it."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -400,7 +404,8 @@ def propose_insert(
         payload: dict[str, Any] = {
             "type": block_type, "content": c,
             "after": None if at_start else (after_block_id or "__end__"),
-            "layout": {"span": "full" if full_width else "column", **({"variant": variant} if variant else {})},
+            "layout": {"span": "full" if full_width else "column", **({"variant": variant} if variant else {}),
+                       **({"role": role} if role else {})},
         }
         if references:
             payload["refs"] = references
@@ -467,7 +472,9 @@ def set_block_layout(
     pin it to a column position so other blocks flow around it; unpin=True releases it.
     page_x_px/page_y_px/page_w_px/page_h_px (with pin_page) instead anchor it to the
     PAGE in px from the page's top-left corner, so it can bleed past the margins (hero
-    art, a full-width band, a footer in the bottom margin). repeat ('all', 'odd', 'even'
+    art, a full-width band, a footer in the bottom margin). On the cover or back page
+    (role cover/back) a pin places the block on that page and pin_page is ignored: use
+    page_*_px for cover art or a logo; the other cover blocks stack around it. repeat ('all', 'odd', 'even'
     or comma-separated page numbers) repeats a pinned block, for headers and footers;
     text in repeated blocks may use {page}, {pages} and {title}.
     variant sets the typographic style (get_document lists them per block type), e.g.
@@ -703,10 +710,16 @@ def _view_upload(upload_id: str, config: RunnableConfig = None) -> tuple[str, An
         u = store.get_upload(upload_id, with_text=True)
         if u["doc_id"] != doc_id:
             return (f"ERROR: upload {upload_id} belongs to another document", None)
+        look = f"\nIts look: {stylematch.summary(u['style'])}" if u.get("style") else ""
         if u["mime"].startswith("image/") and not u["mime"].endswith("svg+xml"):
-            return (f"{u['filename']} ({u['purpose']}) is attached to this turn as an image.", {"images": [u["path"]]})
+            return (f"{u['filename']} ({u['purpose']}) is attached to this turn as an image.{look}",
+                    {"images": [u["path"]]})
         text = u["text"][:3000]
-        return (f"{u['filename']} ({u['purpose']}, {len(u['text'])} chars):\n{text or '(no extractable text)'}", None)
+        pages = [x for x in u.get("pages", []) if Path(x).exists()][:4]
+        if pages:
+            return (f"{u['filename']} ({u['purpose']}): its first {len(pages)} page(s) are attached as images.{look}"
+                    f"\nText ({len(u['text'])} chars):\n{text or '(no extractable text)'}", {"images": pages})
+        return (f"{u['filename']} ({u['purpose']}, {len(u['text'])} chars):{look}\n{text or '(no extractable text)'}", None)
     except Exception as exc:  # noqa: BLE001
         return (_err(exc), None)
 
@@ -780,7 +793,7 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
     """Insert several blocks in one call (drafting a section, an outline, a whole page).
     Each item: {"type": "text"|"heading"|..., "content": <same formats as propose_edit, or a
     content dict>, "level": 1-3 for headings, "layout": {"span": "full"|"column",
-    "variant": "...", "dropcap": true, "pin": {...}, "repeat": "odd"}, "references":
+    "variant": "...", "dropcap": true, "pin": {...}, "repeat": "odd", "role": "cover"}, "references":
     [{title, url, note}]}. They go in order after `after_block_id` (or at the end). Each is
     a suggestion; with approval "auto" they apply immediately and the new ids come back."""
     try:
@@ -815,6 +828,192 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
         return _err(exc)
 
 
+# ------------------------------------------------------------------ design
+def _design_lines(s: dict) -> list[str]:
+    """Cover, style overrides and running header/footer, for the outline."""
+    out = []
+    cover = s.get("cover") or {}
+    if cover.get("enabled", True):
+        bits = [f"{k} {cover[k]}" for k in ("align", "background", "image", "text") if cover.get(k)]
+        out.append("Cover: blocks with role=cover get their own page" + (f" ({', '.join(bits)})" if bits else ""))
+    else:
+        out.append("Cover: OFF (cover blocks open page 1 as a full-width title block)")
+    if s.get("style"):
+        out.append("Style overrides (on top of the theme): " + ", ".join(f"{k}={v}" for k, v in s["style"].items()))
+    for part in ("header", "footer"):
+        h = s.get(part) or {}
+        if any(h.get(k) for k in ("left", "center", "right")):
+            out.append(f"{part.title()}: " + " | ".join(h.get(k) or "—" for k in ("left", "center", "right"))
+                       + ("" if h.get("first_page", True) else " (not on the first body page)"))
+    return out
+
+
+def _font_stack(v: str) -> str:
+    v = v.strip()
+    if "," in v or "'" in v or '"' in v:
+        return v
+    fam = fonts._BY_KEY.get(re.sub(r"[^a-z0-9]", "", v.lower()), v)
+    return fonts.css_stack(fam, fonts._KNOWN.get(fam, "sans"))
+
+
+@tool
+def set_typography(
+    config: RunnableConfig, font_body: str | None = None, font_heading: str | None = None,
+    font_display: str | None = None, font_label: str | None = None, font_size_px: float | None = None,
+    line_height: float | None = None, heading_scale: float | None = None, heading_weight: int | None = None,
+    heading_case: str | None = None, color_text: str | None = None, color_heading: str | None = None,
+    color_muted: str | None = None, color_accent: str | None = None, color_page: str | None = None,
+    color_rule: str | None = None, color_callout: str | None = None, color_figure: str | None = None,
+    text_align: str | None = None, paragraph_gap_em: float | None = None,
+    paragraph_indent_em: float | None = None, reset: bool = False,
+) -> str:
+    """Override this document's typography and colours on top of its theme (applies
+    immediately; only the values you pass change). Fonts: a family name ("Lato",
+    "EB Garamond", any Google Fonts family) or a CSS font list; font_display is for display
+    headings and kickers, font_label for labels, captions and figure titles. Colours: hex
+    like "#002f58"; color_heading colours the headings, color_accent links, drop caps,
+    rules and callout edges, color_callout/color_figure the tinted boxes. font_size_px is
+    the body size (13-16 is usual). heading_case: none, uppercase or capitalize.
+    text_align: left or justify. reset=True clears every override. Prefer the theme;
+    override on purpose (a brand, or a document the author asked you to match)."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        if reset:
+            store.update_document(doc_id, settings={"style": None})
+            return "Typography reset to the theme."
+        vals: dict[str, Any] = {
+            "font_body": font_body, "font_heading": font_heading, "font_display": font_display,
+            "font_label": font_label, "font_size": font_size_px, "line_height": line_height,
+            "heading_scale": heading_scale, "heading_weight": heading_weight, "heading_case": heading_case,
+            "color_text": color_text, "color_heading": color_heading, "color_muted": color_muted,
+            "color_accent": color_accent, "color_page": color_page, "color_rule": color_rule,
+            "color_callout": color_callout, "color_figure": color_figure, "text_align": text_align,
+            "paragraph_gap": paragraph_gap_em, "paragraph_indent": paragraph_indent_em,
+        }
+        vals = {k: (_font_stack(v) if k.startswith("font_") and isinstance(v, str) else v)
+                for k, v in vals.items() if v is not None}
+        if not vals:
+            return "Nothing to change: pass at least one value (or reset=True)."
+        doc = store.update_document(doc_id, settings={"style": vals})
+        return "Style overrides now: " + json.dumps(doc["settings"]["style"])
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def set_cover(
+    config: RunnableConfig, enabled: bool | None = None, page: str = "cover", align: str | None = None,
+    background: str | None = None, image: str | None = None, text_color: str | None = None,
+    clear_background: bool = False, clear_image: bool = False,
+) -> str:
+    """Design the cover page (or page="back" for the back page); applies immediately.
+    enabled=False turns the separate cover off: the cover blocks (title, subtitle, ...) then
+    open page 1 as a full-width title block and the body follows right below them;
+    enabled=True brings the cover page back. align (top, center, bottom) places the stack
+    of cover blocks. background fills the page with a colour ("#002f58"); image fills it
+    with an upload id or image URL (cropped to fit). text_color: light (for dark
+    backgrounds), dark, or auto. For art or a logo at an exact spot, give a cover block a
+    page-anchored pin with set_block_layout. Add blocks to the cover by inserting them
+    right after a cover block (or with role="cover")."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        if page not in ("cover", "back"):
+            return "ERROR: page must be 'cover' or 'back'"
+        c: dict[str, Any] = {}
+        if enabled is not None and page == "cover":
+            c["enabled"] = bool(enabled)
+        if align:
+            c["align"] = align.lower()
+        if text_color:
+            c["text"] = text_color.lower()
+        if background or clear_background:
+            c["background"] = None if clear_background else background
+        if image or clear_image:
+            c["image"] = None if clear_image else image
+        if not c:
+            return "Nothing to change."
+        doc = store.update_document(doc_id, settings={page: c})
+        has = any(b["layout"].get("role") == page for b in store.list_blocks(doc_id))
+        hint = "" if has or page == "cover" and c.get("enabled") is False else (
+            f" Note: no block has role={page} yet, so there is no {page} page; insert one with role='{page}'.")
+        return f"{page.title()} settings: {json.dumps(doc['settings'][page])}.{hint}"
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def set_header_footer(
+    config: RunnableConfig, header_left: str | None = None, header_center: str | None = None,
+    header_right: str | None = None, footer_left: str | None = None, footer_center: str | None = None,
+    footer_right: str | None = None, first_page: bool | None = None, rule: bool | None = None,
+    clear: bool = False,
+) -> str:
+    """Running header and footer on body pages (never the cover or back page); applies
+    immediately. Text for the left, centre and right of each ("" empties a slot); {page},
+    {pages}, {title} and {year} fill in on every page. first_page=False hides both on the
+    first body page; rule=True draws a hairline under the header and over the footer.
+    clear=True removes both. Use this rather than pinned blocks for ordinary headers and
+    footers; they sit in the page margins."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        empty = {"left": "", "center": "", "right": ""}
+        if clear:
+            store.update_document(doc_id, settings={"header": empty, "footer": empty})
+            return "Header and footer removed."
+        patch: dict[str, dict] = {"header": {}, "footer": {}}
+        for part, vals in (("header", (header_left, header_center, header_right)),
+                           ("footer", (footer_left, footer_center, footer_right))):
+            for slot, v in zip(("left", "center", "right"), vals, strict=True):
+                if v is not None:
+                    patch[part][slot] = v
+            if first_page is not None:
+                patch[part]["first_page"] = bool(first_page)
+            if rule is not None:
+                patch[part]["rule"] = bool(rule)
+        patch = {k: v for k, v in patch.items() if v}
+        if not patch:
+            return "Nothing to change."
+        doc = store.update_document(doc_id, settings=patch)
+        return "\n".join(_design_lines(doc["settings"])[1:]) or "Header and footer are empty."
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def match_upload_style(upload_id: str, config: RunnableConfig) -> str:
+    """Make this document look like an uploaded one (a PDF, Word file or page image):
+    applies its page size, margins, columns, fonts (mapped to open look-alikes), colours,
+    cover and running header/footer, and returns what changed. Afterwards compare the
+    upload (view_upload) with the result (view_pages) and refine what numbers can't
+    capture: the cover design, heading treatments (variants), callouts, figures."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        u = store.get_upload(upload_id)
+        if u["doc_id"] != doc_id:
+            return f"ERROR: upload {upload_id} belongs to another document"
+        prof = u.get("style")
+        if not prof:
+            data = Path(u["path"]).read_bytes()
+            images = [u["path"]] if u["mime"].startswith("image/") else []
+            prof = stylematch.analyze(u["filename"], data, u["mime"], images)
+            if prof is None:
+                return f"ERROR: can't read the style of {u['filename']} (use a PDF, a .docx or a page image)"
+            store.set_upload_meta(upload_id, {"pages": u.get("pages", []), "style": prof})
+        if prof.get("error"):
+            return f"ERROR: could not read the style of {u['filename']}: {prof['error']}"
+        patch, changes = stylematch.to_settings(prof)
+        if not patch:
+            return f"Nothing readable in {u['filename']}; look at it with view_upload and style by eye."
+        store.update_document(doc_id, settings=patch)
+        return f"Matched {u['filename']}:\n- " + "\n- ".join(changes)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 CODRAFT_TOOLS = [
     get_document,
     read_blocks,
@@ -829,6 +1028,10 @@ CODRAFT_TOOLS = [
     reply_to_comment,
     set_block_layout,
     set_document_style,
+    set_typography,
+    set_cover,
+    set_header_footer,
+    match_upload_style,
     compile_references,
     view_pages,
     view_sketch,

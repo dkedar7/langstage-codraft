@@ -51,7 +51,7 @@ How you work:
 - Match the brief's writing style, audience, platform and language.
 """
 
-_MAX_IMAGES = 4
+_MAX_IMAGES = 8  # e.g. a whole reference spread, or several rendered pages
 
 
 def _doc_brief(state_config: Any) -> str:

@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langstage-codraft"
+version = "0.2.0"
+description = "The document stage for your LangGraph agent: co-author paged documents block by block, with approval-gated agent edits, per-block version history, and PDF/HTML/PNG export."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Kedar Dabhadkar", email = "kdabhadk@gmail.com" }]
+keywords = ["langgraph", "agents", "document-editor", "ai-writing", "langstage", "ag-ui"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Text Processing",
+]
+dependencies = [
+    # Host layer (config chain, spec loading, demo) + the in-process AG-UI stream.
+    "langstage-core[agui]>=1.0.50",
+    "langgraph>=1.0",
+    "langchain>=1.0",
+    # Default agent: OpenAI-compatible chat (OpenAI, OpenRouter, any compatible gateway).
+    "langchain-openai>=1.0",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-multipart>=0.0.12",
+    "click>=8.0",
+    "pydantic>=2.0",
+    "httpx>=0.27",
+    # Export (PDF/PNG/HTML) and the agent's view_pages tool render with headless
+    # Chromium. The browser itself is fetched lazily (`langstage-codraft install-browser`).
+    "playwright>=1.45",
+    # Text extraction for uploaded reference / template documents.
+    "pypdf>=4.0",
+    "python-docx>=1.1",
+    # Office and motion exports (PPTX, GIF) and sketch handling.
+    "python-pptx>=1.0",
+    "pillow>=10",
+    # Codraft over MCP: any agent harness can co-author (mounted at /mcp; `langstage-codraft mcp`).
+    "mcp>=2.0,<3",
+]
+
+[project.optional-dependencies]
+search = ["ddgs>=9.0"]
+anthropic = ["langchain-anthropic>=1.0"]
+video = ["imageio>=2.30", "imageio-ffmpeg>=0.5", "numpy>=1.26"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "imageio>=2.30", "imageio-ffmpeg>=0.5", "numpy>=1.26"]
+
+[project.scripts]
+langstage-codraft = "langstage_codraft.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dkedar7/langstage-codraft"
+Documentation = "https://dkedar7.github.io/langstage-docs/stages/codraft/"
+Issues = "https://github.com/dkedar7/langstage-codraft/issues"
+
+[tool.hatch.build]
+artifacts = ["langstage_codraft/static/**"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["langstage_codraft"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["frontend/node_modules", "frontend/test-results", "frontend/playwright-report", "docs/notes"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008"]  # B008: FastAPI's Body()/File() defaults are the idiom

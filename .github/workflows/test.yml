@@ -1,0 +1,100 @@
+name: Tests
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ['3.11', '3.12', '3.13', '3.14']
+        include:
+          - os: windows-latest
+            python-version: '3.13'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check langstage_codraft tests
+      - name: Unit + API tests
+        run: pytest -q --ignore=tests/e2e
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Paginator unit tests
+        run: npm test
+      - name: Typecheck + build
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static
+          path: langstage_codraft/static
+
+  e2e:
+    # Real browser against a live keyless demo server, including the
+    # editor-vs-export pixel parity gate.
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: static
+          path: langstage_codraft/static
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+          python -m playwright install --with-deps chromium
+      - name: Browser end-to-end tests
+        run: pytest -q tests/e2e
+
+  minimal-install:
+    # A user's install: declared deps only, no dev extras, real wheel build.
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: static
+          path: langstage_codraft/static
+      - name: Install (no extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+      - name: Smoke
+        run: |
+          python -c "from langstage_codraft import CODRAFT_TOOLS, CodraftMiddleware; print(len(CODRAFT_TOOLS), 'tools')"
+          langstage-codraft --version
+          langstage-codraft run --demo --show-config
+          langstage-codraft check --demo

@@ -160,3 +160,28 @@ def test_editor_matches_export_pixels(page, server):
     changed = sum(1 for v in diff.getdata() if v > 48)
     ratio = changed / (diff.size[0] * diff.size[1])
     assert ratio < 0.01, f"{ratio:.4%} of pixels differ between editor and export"
+
+
+def test_kickoff_stays_visible_when_history_is_slow_and_mid_turn_messages_queue(page, server):
+    """Dogfood 0.4.2: behind a slower proxy, the chat history landed on top of a new
+    document's kickoff and hid it; and Enter during a turn silently did nothing."""
+    import time
+
+    def slow_history(route):
+        time.sleep(1.5)
+        route.continue_()
+
+    page.route("**/api/docs/*/messages", slow_history)
+    page.goto(server)
+    page.click("[data-testid=new-doc]")
+    page.fill("textarea", "A one-page note on library opening hours")
+    page.click("[data-testid=create-doc]")
+    log = page.locator("[data-testid=chat-log]")
+    log.get_by_text("Here is what I want to write").wait_for(timeout=15000)
+    # Queue a second message while the kickoff turn is running.
+    page.fill("[data-testid=chat-input]", "List the references")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(300)
+    assert page.locator("[data-testid=chat-queued]").count() == 1 or log.get_by_text("List the references", exact=True).count() == 1
+    log.get_by_text("List the references", exact=True).wait_for(timeout=30000)
+    assert log.get_by_text("Here is what I want to write").count() == 1

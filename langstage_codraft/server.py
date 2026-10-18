@@ -272,8 +272,16 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             base = {"approval": cfg.approval, "theme": cfg.default_theme}
             if cfg.default_page_size:
                 base["page_size"] = cfg.default_page_size
-            settings = _deep(_deep(base,
-                                   template.get("settings", {})), body.get("settings") or {})
+            tpl_settings = dict(template.get("settings", {}))
+            if (body.get("template") or "blank") in tpl.BUILTIN_TEMPLATES:
+                # A deployer's house style beats the built-ins' generic look ("classic") and
+                # their paper size (regional, not a design choice). Templates with a distinct
+                # look (academic, bold, modern, minimal) keep their theme.
+                if tpl_settings.get("theme") == "classic":
+                    tpl_settings.pop("theme")
+                if cfg.default_page_size:
+                    tpl_settings.pop("page_size", None)
+            settings = _deep(_deep(base, tpl_settings), body.get("settings") or {})
             is_blank = body.get("template") in (None, "", "blank")
             title = body.get("title") or ("Untitled document" if is_blank else template.get("name", "Untitled"))
             blocks = [dict(b) for b in template.get("blocks", [])]

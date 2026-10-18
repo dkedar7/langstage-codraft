@@ -133,15 +133,21 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  // A message sent while the agent is still working waits here and goes when the turn ends
+  // (pressing Enter used to do nothing at all mid-turn).
+  const [queued, setQueued] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const branded = cfg.ui?.agent_name && cfg.ui.agent_name !== "Co-author" ? cfg.ui.agent_name : "";
   const agentName = branded || (cfg.agent.kind === "demo" ? "Demo co-author" : "Co-author");
 
+  // Load past turns. A message sent before they arrive (a new document's kickoff) waits for
+  // them; otherwise the history would land on top of the running turn and hide it.
+  const history = useRef<Promise<void>>(Promise.resolve());
   useEffect(() => {
     let alive = true;
-    api.messages(doc.id).then((h) => alive && setMsgs(fromHistory(h))).catch(() => {});
+    history.current = api.messages(doc.id).then((h) => { if (alive) setMsgs(fromHistory(h)); }).catch(() => {});
     return () => { alive = false; };
   }, [doc.id]);
 
@@ -152,11 +158,17 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
 
   const send = async (text: string) => {
     const message = text.trim();
-    if (!message || streaming) return;
+    if (!message) return;
+    if (streaming) {
+      setQueued(message);
+      setInput("");
+      return;
+    }
     if (!cfg.chat_available) {
       ed.toast(cfg.agent.hint || "No agent is configured.", "error");
       return;
     }
+    await history.current;
     setInput("");
     if (inputRef.current) inputRef.current.style.height = "auto";
     const aid = nid();
@@ -199,6 +211,15 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
   };
 
   useImperativeHandle(ref, () => ({ send }), [send]);
+
+  useEffect(() => {
+    if (!streaming && queued) {
+      const q = queued;
+      setQueued(null);
+      send(q);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streaming, queued]);
 
   const openComments = doc.comments.filter((c) => c.status === "open").length;
   const starters = [
@@ -286,6 +307,13 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
             ))}
           </div>
         )}
+        {queued && (
+          <div className="flex items-center gap-2 mb-2 text-[11.5px] text-[var(--color-text-secondary)]" data-testid="chat-queued">
+            <span className="truncate">Next: “{queued}” (sends when {agentName} finishes)</span>
+            <button className="ml-auto text-[var(--color-text-muted)] hover:text-[var(--color-text)]" title="Don't send"
+              onClick={() => setQueued(null)}>✕</button>
+          </div>
+        )}
         <div className="flex items-end gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-[var(--shadow-xs)] px-3 py-2 transition-colors focus-within:border-[var(--color-primary)] focus-within:ring-1 focus-within:ring-[var(--color-primary)]">
           <textarea ref={inputRef} value={input} rows={1} data-testid="chat-input" disabled={!cfg.chat_available}
             placeholder={cfg.chat_available ? (branded ? `Ask ${branded}…` : "Ask the co-author…") : "No agent configured"}
@@ -308,7 +336,7 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
         </div>
         <div className={`text-center mt-1.5 transition-opacity ${input ? "opacity-0" : "opacity-100"}`}>
           <span className="text-[10px] text-[var(--color-text-muted)]">
-            <kbd className="kbd">Enter</kbd> to send, <kbd className="kbd">Shift+Enter</kbd> for new line
+            <kbd className="kbd">Enter</kbd> to {streaming ? "queue" : "send"}, <kbd className="kbd">Shift+Enter</kbd> for new line
           </span>
         </div>
       </div>

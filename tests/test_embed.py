@@ -143,3 +143,16 @@ def test_default_page_size_doc_themes_and_agent_label(tmp_path):
         assert conf["agent"]["label"] == "Harbor" and conf["agent"]["missing_tools"] == []
         assert c.post("/api/docs", json={}).json()["settings"]["page_size"] == "a4"
         assert c.post("/api/docs", json={"settings": {"page_size": "letter"}}).json()["settings"]["page_size"] == "letter"
+
+
+def test_house_theme_and_paper_beat_builtin_template_defaults(tmp_path):
+    cfg = CodraftConfig.resolve(overrides={"data_dir": tmp_path / "d", "port": 8796, "default_page_size": "a4",
+                                           "default_theme": "house"}, use_toml=False)
+    app = create_app(cfg, None, store=Store(tmp_path / "d" / "c.db"), doc_themes={"house": {"label": "House"}})
+    with TestClient(app) as c:
+        rep = c.post("/api/docs", json={"template": "report"}).json()["settings"]
+        assert rep["theme"] == "house" and rep["page_size"] == "a4"
+        paper = c.post("/api/docs", json={"template": "paper"}).json()["settings"]
+        assert paper["theme"] == "academic" and paper["page_size"] == "a4"  # distinct look kept
+        mine = c.post("/api/docs", json={"template": "report", "settings": {"theme": "modern"}}).json()["settings"]
+        assert mine["theme"] == "modern"  # the author's pick always wins

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.3 — 2026-10-18
+
+More from the Lighthouse dogfood (second pass, against 0.4.2).
+
+- **Fixed: a new document's kickoff could vanish from the chat.** When the chat history
+  arrived after the kickoff started (common behind a slower proxy), it replaced the running
+  turn, which then carried on out of sight. Sending now waits for the history.
+- **Messages sent mid-turn are queued** and go when the turn ends; pressing Enter while the
+  agent worked used to do nothing.
+- **House style wins over the built-in templates' generic look:** with a `default_theme`, the
+  report and newsletter templates use it instead of `classic` (templates with their own look,
+  such as academic, keep it), and `default_page_size` beats a built-in template's paper size.
+
 ## 0.4.2 — 2026-10-18
 
 Fixes from dogfooding Codraft embedded in Lighthouse (a real host app, two signed-in users,

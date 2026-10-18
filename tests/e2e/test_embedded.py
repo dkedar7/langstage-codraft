@@ -8,6 +8,7 @@ import httpx
 import pytest
 from conftest import _free_port
 from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, JSONResponse
 
 NAVY = "#002f58"
 
@@ -32,12 +33,35 @@ def hosted(tmp_path_factory):
         "features": {"mcp": False},
     })
     host = FastAPI()
+    expired = {"on": False}
 
     @host.get("/")
     def home():
         return {"host": True}
 
+    @host.get("/host")
+    def host_page(doc: str = ""):
+        # A host page framing Codraft, recording what Codraft tells it.
+        src = f"/write/d/{doc}?embed=1" if doc else "/write/?embed=1"
+        return HTMLResponse(
+            "<!doctype html><title>Host</title><script>window.got=[];"
+            "addEventListener('message', e => window.got.push(e.data));</script>"
+            f"<iframe id=f src='{src}' style='width:1300px;height:800px'></iframe>")
+
+    @host.post("/expire")
+    def expire(on: bool = True):
+        expired["on"] = on
+        return {"expired": on}
+
+    @host.middleware("http")
+    async def session_gate(request, call_next):
+        # Like a host whose sign-in lapsed: its gate answers API calls with 401.
+        if expired["on"] and request.url.path.startswith("/write/api/"):
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
     mount(host, "/write", codraft)
+    host.state.expired = expired
     srv = uvicorn.Server(uvicorn.Config(host, host="127.0.0.1", port=port, log_level="warning"))
     t = threading.Thread(target=srv.run, daemon=True)
     t.start()
@@ -81,3 +105,40 @@ def test_embedded_branded_and_exporting(browser, hosted):
     # Export renders through the mounted print route.
     r = httpx.get(f"{hosted}/write/api/docs/{doc['id']}/export?format=pdf", timeout=120)
     assert r.status_code == 200 and r.content[:4] == b"%PDF"
+
+
+def test_host_page_handshake(browser, hosted):
+    """Dogfood 0.4.1: in a frame, Codraft tells the host where it is (for deep links), doesn't
+    grow the host's history, and reports an expired host session instead of a JSON error."""
+    doc = httpx.post(hosted + "/write/api/docs", json={"template": "memo", "title": "Frame test"}).json()
+    ctx = browser.new_context(viewport={"width": 1400, "height": 900})
+    pg = ctx.new_page()
+    errors: list[str] = []
+    pg.on("pageerror", lambda e: errors.append(str(e)))
+    pg.goto(f"{hosted}/host")
+    fr = pg.frame_locator("#f")
+    fr.locator("[data-testid=doc-list-item]").first.wait_for()
+    before = pg.evaluate("history.length")
+    fr.locator("[data-testid=doc-list-item]", has_text="Frame test").click()
+    fr.locator(".cd-page").first.wait_for()
+    pg.wait_for_function("window.got.some(m => m.type === 'codraft:location' && m.doc)")
+    loc = [m for m in pg.evaluate("window.got") if m.get("doc")][-1]
+    assert loc["doc"] == doc["id"] and loc["path"] == f"/d/{doc['id']}" and loc["title"] == "Frame test"
+    assert pg.evaluate("history.length") == before  # replaceState inside the frame
+    # Deep link: the host frames the document directly.
+    pg.goto(f"{hosted}/host?doc={doc['id']}")
+    pg.frame_locator("#f").locator(".cd-page").first.wait_for()
+    # Expired host session: a clear message and a message to the host, not a JSON parse error.
+    httpx.post(hosted + "/expire?on=true")
+    try:
+        fr = pg.frame_locator("#f")
+        fr.locator("[data-testid=tab-comments]").click()
+        fr.locator("[data-testid=comment-input]").fill("hello")
+        fr.locator("[data-testid=comment-add]").click()
+        pg.wait_for_function("window.got.some(m => m.type === 'codraft:auth-required')", timeout=10000)
+        assert fr.get_by_text("Your session has ended").count() >= 1
+        assert fr.get_by_text("Unexpected token").count() == 0
+    finally:
+        httpx.post(hosted + "/expire?on=false")
+    ctx.close()
+    assert not errors, errors

@@ -190,3 +190,17 @@ def test_numbering_settings_via_tool(store, cfg_for):
     call(set_document_style, cfg_for(d["id"]), number_cover_pages=True, unnumbered_pages="3, 7", page_number_start=5)
     s = store.get_document(d["id"])["settings"]
     assert s["number_cover_pages"] is True and s["unnumbered_pages"] == [3, 7] and s["page_number_start"] == 5
+
+
+def test_parse_content_accepts_structured_json_strings():
+    """Dogfood 0.4.1: an agent sent references content as a JSON string and the block's title
+    became the literal JSON; the documented callout form {"markdown", "tone"} was read as text."""
+    assert parse_content("references", '{"title": "References", "style": "numbered"}') == {
+        "title": "References", "style": "numbered"}
+    assert parse_content("callout", '{"markdown": "Watch out", "tone": "dark"}') == {
+        "markdown": "Watch out", "tone": "dark"}
+    assert parse_content("heading", '{"text": "## Findings", "level": 2}') == {"text": "Findings", "level": 2}
+    # Text that merely starts with "{" (or JSON without this type's keys) stays literal.
+    assert parse_content("text", "{curly} braces") == {"markdown": "{curly} braces"}
+    assert parse_content("text", '{"a": 1}') == {"markdown": '{"a": 1}'}
+    assert parse_content("references", "Sources") == {"title": "Sources"}

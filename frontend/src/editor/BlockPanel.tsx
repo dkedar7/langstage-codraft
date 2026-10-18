@@ -6,6 +6,7 @@ import { blockText } from "./Diff";
 import { useEditorApi } from "./context";
 import { SketchPad } from "./SketchPad";
 import { withBase } from "../base";
+import { agentName, authorLabel } from "../branding";
 
 export function BlockPanel() {
   const ed = useEditorApi();
@@ -229,7 +230,7 @@ function Versions({ block }: { block: Block }) {
             <button key={v.id} onClick={() => ed.run(api.checkout(block.id, { version_id: v.id }))}
               className={`w-full text-left rounded px-2 py-1 text-xs ${v.id === tree.head ? "bg-[var(--ui-accent-soft)]" : "hover:bg-[var(--color-surface-3)]"}`}>
               <div className="flex items-center gap-1">
-                <span className={`chip ${v.author === "agent" ? "chip-agent" : ""}`}>{v.author}</span>
+                <span className={`chip ${v.author === "agent" ? "chip-agent" : ""}`}>{authorLabel(ed.cfg.ui, v.author)}</span>
                 {!onPath && <GitBranch size={11} className="text-[var(--color-text-muted)]" />}
                 {v.children.length > 1 && <span className="text-[10px] text-[var(--color-text-muted)]">forks {v.children.length}</span>}
                 <span className="text-[var(--color-text-muted)] ml-auto">{new Date(v.created_at * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
@@ -312,7 +313,7 @@ function ContentEditor({ block, patch }: { block: Block; patch: (c: any, note?: 
           </select>
           <span className="label">Sketch</span>
           <div className="text-[11.5px] text-[var(--color-text-muted)] mb-2">
-            Draw what you have in mind; the agent can turn it into an image (or find one).
+            Draw what you have in mind; {agentName(ed.cfg.ui)} can turn it into an image (or find one).
           </div>
           <div className="flex flex-wrap gap-2">
             <button className="btn" data-testid="open-sketch" onClick={() => setSketching(true)}>
@@ -382,7 +383,7 @@ function ContentEditor({ block, patch }: { block: Block; patch: (c: any, note?: 
           <JsonArea value={c.spec || {}} onCommit={(v) => patch({ spec: v })} />
           <span className="label">Caption</span>
           <TextInput value={c.caption || ""} onCommit={(v) => patch({ caption: v })} />
-          <div className="text-[11px] text-[var(--color-text-muted)] mt-1">Tip: ask the agent “make this a bar chart of …”.</div>
+          <div className="text-[11px] text-[var(--color-text-muted)] mt-1">Tip: ask {agentName(ed.cfg.ui)} “make this a bar chart of …”.</div>
         </>
       );
     case "references":

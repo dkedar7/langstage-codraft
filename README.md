@@ -169,6 +169,7 @@ spec = "my_agent.py:graph"
 model = "openrouter:anthropic/claude-haiku-5.5"   # used when no agent spec is set
 approval = "required"                            # or "auto" for new documents
 default_theme = "acme"
+default_page_size = "a4"                         # new documents (default letter)
 allowed_themes = ["acme", "academic"]
 templates_dir = "templates"                      # *.json: settings + a block skeleton
 data_dir = ".codraft"
@@ -224,28 +225,60 @@ doc_list = true
 theme_toggle = true
 ```
 
-To put Codraft inside another FastAPI app, mount it and pass the branding in code:
+To put Codraft inside another FastAPI app, mount it and pass the branding in code. This is a
+complete `host.py` (`pip install langstage-codraft deepagents`, then
+`CODRAFT_PROXY_SECRET=... OPENROUTER_API_KEY=... uvicorn host:app --port 8080`):
 
 ```python
-from langstage_codraft import CODRAFT_TOOLS, CodraftMiddleware
+# host.py
+import os
+
+from deepagents import create_deep_agent
+from fastapi import FastAPI
+from langchain_openai import ChatOpenAI
+
+from langstage_codraft import CodraftMiddleware
 from langstage_codraft.config import CodraftConfig
 from langstage_codraft.server import create_app, mount
 
+app = FastAPI()  # your app
+
 cfg = CodraftConfig.resolve(overrides={
-    "data_dir": "/data/codraft",
+    "data_dir": "codraft-data",
     "renderer_url": "http://127.0.0.1:8080/write",   # how exports reach the mounted print route
-    "proxy_secret": os.environ["CODRAFT_PROXY_SECRET"],  # import os
+    "proxy_secret": os.environ["CODRAFT_PROXY_SECRET"],
     "user_header": "X-User-Email",                   # the signed-in user, set by your proxy
+    "default_page_size": "a4",
 })
-graph = create_deep_agent(model=..., tools=[*my_tools, *CODRAFT_TOOLS], middleware=[CodraftMiddleware()])
-mount(app, "/write", create_app(cfg, graph, ui={"agent_name": "Acme Assistant", "embedded": True,
-                                                "colors": {"primary": "#002f58"}}))
+model = ChatOpenAI(model="anthropic/claude-haiku-5.5", base_url="https://openrouter.ai/api/v1",
+                   api_key=os.environ["OPENROUTER_API_KEY"])
+# The middleware registers Codraft's tools and prompt; add your own tools alongside.
+graph = create_deep_agent(model=model, tools=[], middleware=[CodraftMiddleware()])
+mount(app, "/write", create_app(
+    cfg, graph,
+    ui={"agent_name": "Acme Assistant", "embedded": True, "colors": {"primary": "#002f58"}},
+    doc_themes={"acme": {"label": "Acme", "font_heading": "Raleway, sans-serif",
+                         "color_accent": "#002f58"}},
+))
 ```
 
 `mount` runs Codraft's startup and shutdown inside your app's lifespan. The page works under any
 URL prefix. If a proxy serves it under a different public path, it sends that path as
 `X-Forwarded-Prefix`, which is honoured only alongside the proxy secret. `?embed=1` turns on
-embedded mode for one page, for example in an `<iframe>`.
+embedded mode for one page, for example in an `<iframe>`. `doc_themes` adds document themes
+(the same keys as `[codraft.themes.*]`). A theme's fonts must be installed where exports render,
+or loaded with `ui.font_url`.
+
+In an `<iframe>`, Codraft tells the host page what's happening with `postMessage` (same origin
+only), and navigates with `replaceState` so the host's Back button leaves the page:
+
+| Message | When | Host page might |
+|---|---|---|
+| `{type: "codraft:location", path, doc, title}` | a document opens or closes | put `?doc=<id>` in its own URL, then frame `<prefix>/d/<id>` on load |
+| `{type: "codraft:auth-required"}` | a request came back 401 or as an HTML login page | send the user to sign in again |
+
+`CodraftMiddleware(tool_errors=True)` (the default) hands any tool's exception back to the model
+as the tool result, so one failing lookup doesn't end a long drafting turn.
 
 Access settings:
 

@@ -99,3 +99,71 @@ def test_default_agent_tools_build_with_openrouter_key(monkeypatch):
     assert "config" not in gen.tool_call_schema.model_json_schema()["properties"]
     g = build_default_agent("openrouter:anthropic/claude-haiku-5.5")
     assert "generate_image" in graph_tool_names(g) and "view_sketch" in graph_tool_names(g)
+
+
+def test_failing_tool_is_returned_to_the_model_not_raised():
+    """Dogfood 0.4.1: a host tool raising (missing embeddings key) ended the whole turn."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.tools import tool
+
+    from langstage_codraft import CodraftMiddleware
+
+    @tool
+    def library_search(query: str) -> str:
+        """Search the library."""
+        raise RuntimeError("Missing credentials")
+
+    class M(GenericFakeChatModel):
+        def bind_tools(self, tools, **kw):
+            return self
+
+    def run(mw):
+        model = M(messages=iter([
+            AIMessage(content="", tool_calls=[{"name": "library_search", "args": {"query": "nrw"}, "id": "c1"}]),
+            AIMessage(content="I couldn't search, so here is a draft without sources."),
+        ]))
+        return create_agent(model, tools=[library_search], middleware=[mw]).invoke(
+            {"messages": [{"role": "user", "content": "draft"}]})
+
+    out = run(CodraftMiddleware(attach_images=False))
+    err = next(m for m in out["messages"] if isinstance(m, ToolMessage))
+    assert err.status == "error" and "Missing credentials" in err.content
+    assert out["messages"][-1].content.startswith("I couldn't search")
+    import pytest
+
+    with pytest.raises(RuntimeError):
+        run(CodraftMiddleware(attach_images=False, tool_errors=False))
+
+
+def test_tool_images_sit_after_their_tool_results(tmp_path):
+    """Dogfood 0.4.1: page images appended at the end of every model call read as fresh input,
+    and the agent looped ("Now I can see the pages clearly…") for minutes."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from langstage_codraft.middleware import _MAX_IMAGES, _with_images
+
+    png = tmp_path / "p1.png"
+    png.write_bytes(b"\x89PNG fake")
+    call = lambda i, n: AIMessage(content="", tool_calls=[{"name": n, "args": {}, "id": f"c{i}"}])  # noqa: E731
+    msgs = [
+        HumanMessage(content="check the layout"),
+        call(1, "view_pages"),
+        ToolMessage(content="rendered", tool_call_id="c1", artifact={"images": [str(png)]}),
+        call(2, "set_block_layout"),
+        ToolMessage(content="ok", tool_call_id="c2"),
+    ]
+    out = _with_images(msgs)
+    assert len(out) == len(msgs) + 1
+    assert isinstance(out[3], HumanMessage) and "above" in out[3].content[0]["text"]
+    assert out[-1] is msgs[-1]  # the newest message is still the real tool result
+    # Images from before the latest human message are not re-sent.
+    assert _with_images([*msgs, AIMessage(content="done"), HumanMessage(content="thanks")]) == [
+        *msgs, AIMessage(content="done"), HumanMessage(content="thanks")]
+    # Only the newest _MAX_IMAGES images in a turn.
+    many = [HumanMessage(content="go")]
+    for i in range(_MAX_IMAGES + 3):
+        many += [call(i, "view_pages"), ToolMessage(content="r", tool_call_id=f"c{i}", artifact={"images": [str(png)]})]
+    imgs = [m for m in _with_images(many) if isinstance(m, HumanMessage) and isinstance(m.content, list)]
+    assert len(imgs) == _MAX_IMAGES

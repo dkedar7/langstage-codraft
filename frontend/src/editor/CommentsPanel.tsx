@@ -4,6 +4,7 @@ import { api } from "../api";
 import type { Comment } from "../types";
 import { blockText } from "./Diff";
 import { useEditorApi } from "./context";
+import { agentName, authorLabel } from "../branding";
 
 export function CommentsPanel() {
   const ed = useEditorApi();
@@ -44,12 +45,12 @@ export function CommentsPanel() {
           <div className="text-xs text-[var(--color-text-muted)] mb-2 line-clamp-2">“{blockText(targetBlock.type, targetBlock.content).slice(0, 140)}”</div>
         )}
         <textarea className="textarea" rows={3} value={body} data-testid="comment-input"
-          placeholder="Tag the agent: e.g. “make this more concise” or “find a source for this claim”"
+          placeholder={`Tag ${agentName(ed.cfg.ui)}: e.g. “make this more concise” or “find a source for this claim”`}
           onChange={(e) => setBody(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) add(false); }} />
         <div className="flex gap-2 mt-2">
           <button className="btn btn-primary" data-testid="comment-add" disabled={!body.trim()} onClick={() => add(false)}>
-            <MessageSquarePlus size={14} /> Queue for agent</button>
+            <MessageSquarePlus size={14} /> Queue for {agentName(ed.cfg.ui, false)}</button>
           <button className="btn btn-agent" disabled={!body.trim() || !ed.cfg.chat_available} onClick={() => add(true)}>
             <Bot size={14} /> Ask now</button>
         </div>
@@ -77,7 +78,7 @@ function CommentCard({ c }: { c: Comment }) {
   return (
     <div className={`panel-section ${c.status === "resolved" ? "opacity-60" : ""}`} data-testid="comment-card">
       <div className="flex items-center gap-2 mb-1">
-        <span className={`chip ${c.author === "agent" ? "chip-agent" : ""}`}>{c.author}</span>
+        <span className={`chip ${c.author === "agent" ? "chip-agent" : ""}`}>{authorLabel(ed.cfg.ui, c.author)}</span>
         {block ? (
           <button className="text-xs text-[var(--ui-accent)] truncate max-w-[180px]" onClick={() => ed.select(block.id)}>
             {block.type}: {blockText(block.type, block.content).slice(0, 40) || "(empty)"}
@@ -88,7 +89,7 @@ function CommentCard({ c }: { c: Comment }) {
       <div className="whitespace-pre-wrap">{c.body}</div>
       {c.replies.map((r, i) => (
         <div key={i} className={`mt-2 ml-3 pl-2 border-l-2 ${r.author === "agent" ? "border-[var(--color-primary)]" : "border-[var(--color-border)]"}`}>
-          <span className={`text-[11px] font-semibold ${r.author === "agent" ? "text-[var(--color-primary)]" : "text-[var(--color-text-secondary)]"}`}>{r.author}</span>
+          <span className={`text-[11px] font-semibold ${r.author === "agent" ? "text-[var(--color-primary)]" : "text-[var(--color-text-secondary)]"}`}>{authorLabel(ed.cfg.ui, r.author)}</span>
           <div className="whitespace-pre-wrap">{r.body}</div>
         </div>
       ))}
@@ -103,7 +104,7 @@ function CommentCard({ c }: { c: Comment }) {
                   setReply("");
                 }
               }} />
-            <button className="btn btn-icon" title="Ask the agent about this comment" disabled={!ed.cfg.chat_available || ed.agentRunning}
+            <button className="btn btn-icon" title={`Ask ${agentName(ed.cfg.ui)} about this comment`} disabled={!ed.cfg.chat_available || ed.agentRunning}
               onClick={() => ed.ask(`Address comment ${c.id}${c.block_id ? ` on block ${c.block_id}` : ""}: ${c.body}`)}><Bot size={14} /></button>
             <button className="btn btn-icon" title="Resolve" data-testid="comment-resolve"
               onClick={() => ed.run(api.setCommentStatus(c.id, "resolved"))}><Check size={14} /></button>

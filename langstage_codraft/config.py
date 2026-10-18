@@ -24,6 +24,7 @@ class CodraftConfig(HostConfig):
     approval: str = "required"            # default approval mode for new documents
     data_dir: Path = Path(".codraft")     # SQLite store, uploads, checkpoints, renders
     templates_dir: Path | None = None
+    default_page_size: str = ""          # letter | a4 | legal | a5 | slide (new documents)
     default_theme: str = "classic"
     demo: bool = False
     theme: str = "auto"                   # app chrome: light | dark | auto (same as langstage web)
@@ -50,6 +51,7 @@ class CodraftConfig(HostConfig):
         "default_theme": ("LANGSTAGE_CODRAFT_THEME", str),
         "demo": ("LANGSTAGE_CODRAFT_DEMO", _env_bool),
         "theme": ("LANGSTAGE_THEME", str),
+        "default_page_size": ("LANGSTAGE_CODRAFT_DEFAULT_PAGE_SIZE", str),
         "subtitle": ("LANGSTAGE_SUBTITLE", str),
         "agent_name": ("LANGSTAGE_AGENT_NAME", str),
         "welcome_message": ("LANGSTAGE_WELCOME_MESSAGE", str),
@@ -71,6 +73,7 @@ class CodraftConfig(HostConfig):
         "default_theme": "codraft.default_theme",
         "demo": "codraft.demo",
         "theme": "ui.theme",
+        "default_page_size": "codraft.default_page_size",
         "subtitle": "ui.subtitle",
         "agent_name": "ui.agent_name",
         "welcome_message": "ui.welcome_message",

@@ -263,6 +263,10 @@ def _demo_revise(block_text: str, comment: str) -> str:
     return text + f"\n\n*Revised to address: “{comment.strip()}”.*"
 
 
+# An open comment on a block in list_comments output; authors are names, so may contain spaces.
+_OPEN_COMMENT = r"\[(cmt_\w+)\] \(open\) block \[(blk_\w+)\].*? — [^:\n]+: (.*)"
+
+
 def demo_turn(messages: list) -> dict:
     """The scripted co-author: returns {"content": str, "tool_calls": [...]}.
 
@@ -294,14 +298,14 @@ def demo_turn(messages: list) -> dict:
         return {"content": "", "tool_calls": [_call("get_document", {})]}
 
     if last.name == "list_comments":
-        found = re.findall(r"\[(cmt_\w+)\] \(open\) block \[(blk_\w+)\].*? — \w+: (.*)", last.content)
+        found = re.findall(_OPEN_COMMENT, last.content)
         if not found:
             return {"content": "There are no open comments on blocks, so there is nothing to address.", "tool_calls": []}
         return {"content": "", "tool_calls": [_call("read_blocks", {"block_ids": [b for _, b, _ in found]})]}
 
     if last.name == "read_blocks" and "propose_edit" not in done:
         lc = next((m for m in tool_msgs if m.name == "list_comments"), None)
-        found = re.findall(r"\[(cmt_\w+)\] \(open\) block \[(blk_\w+)\].*? — \w+: (.*)", lc.content if lc else "")
+        found = re.findall(_OPEN_COMMENT, lc.content if lc else "")
         bodies: dict[str, str] = {}
         for chunk in re.split(r"\n\n(?=\[blk_)", last.content):
             m = re.match(r"\[(blk_\w+)\] (\w[\w-]*) [^\n]*\n(.*)", chunk, re.DOTALL)

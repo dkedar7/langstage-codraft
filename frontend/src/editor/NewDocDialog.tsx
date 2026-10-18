@@ -19,7 +19,7 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
   const [title, setTitle] = useState("");
   const [brief, setBrief] = useState<Record<string, string>>({ language: "English", output_format: "pdf" });
   const [notes, setNotes] = useState("");
-  const [layout, setLayout] = useState({ mode: "paged", page_size: "letter", columns: 0, theme: "" });
+  const [layout, setLayout] = useState({ mode: "paged", page_size: cfg.default_page_size || "letter", columns: 0, theme: "" });
   const [files, setFiles] = useState<{ file: File; purpose: "reference" | "template" }[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -37,8 +37,10 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
         const u = await api.upload(doc.id, f.file, f.purpose);
         if (f.purpose === "template") kickoff = `Use the uploaded template "${u.filename}" (${u.id}) to scaffold this document: mirror its structure as blocks, with placeholder text where content is specific to the original.`;
       }
-      if (!kickoff && notes.trim() && template === "blank") {
-        kickoff = `Here is what I want to write: ${notes.trim()}\nPropose an outline as heading and text blocks (short placeholder text only; I will write the content).`;
+      if (!kickoff && notes.trim()) {
+        kickoff = template === "blank"
+          ? `Here is what I want to write: ${notes.trim()}\nPropose an outline as heading and text blocks (short placeholder text only; I will write the content).`
+          : `Here is what I want to write: ${notes.trim()}\nAdapt this template's headings and placeholder text to fit it (short placeholders only; I will write the content).`;
       }
       onCreated(doc, cfg.chat_available ? kickoff : undefined);
     } catch (e: any) {
@@ -50,13 +52,13 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
 
   return (
     <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-6" onClick={onClose}>
-      <div className="bg-[var(--color-card)] rounded-xl shadow-2xl w-full max-w-3xl max-h-full overflow-auto scroll-thin" onClick={(e) => e.stopPropagation()}
+      <div className="bg-[var(--color-card)] rounded-xl shadow-2xl w-full max-w-3xl max-h-full flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}
         data-testid="new-doc-dialog">
-        <div className="flex items-center px-5 py-3 border-b border-[var(--color-border)]">
+        <div className="flex items-center px-5 py-3 border-b border-[var(--color-border)] flex-none">
           <div className="font-semibold text-[15px]">New document</div>
           <button className="btn btn-ghost btn-icon ml-auto" onClick={onClose}><X size={16} /></button>
         </div>
-        <div className="p-5 grid md:grid-cols-[1.1fr_1fr] gap-6">
+        <div className="p-5 grid md:grid-cols-[1.1fr_1fr] gap-6 flex-1 min-h-0 overflow-auto scroll-thin">
           <div>
             <span className="label" style={{ marginTop: 0 }}>Start from</span>
             <div className="grid grid-cols-2 gap-2">
@@ -123,7 +125,7 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-3 px-5 py-3 border-t border-[var(--color-border)]">
+        <div className="flex items-center gap-3 px-5 py-3 border-t border-[var(--color-border)] flex-none">
           {err && <span className="text-[var(--color-error)] text-xs">{err}</span>}
           <button className="btn ml-auto" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" data-testid="create-doc" disabled={busy} onClick={create}>

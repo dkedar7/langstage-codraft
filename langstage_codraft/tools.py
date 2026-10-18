@@ -20,7 +20,15 @@ from langchain_core.tools import StructuredTool, tool
 
 from . import textutil
 from .pages import MM, column_width, content_box, page_px
-from .store import BLOCK_TYPES, BLOCK_VARIANTS, Invalid, NotFound, get_store, plain_text
+from .store import (
+    BLOCK_TYPES,
+    BLOCK_VARIANTS,
+    DEFAULT_CONTENT,
+    Invalid,
+    NotFound,
+    get_store,
+    plain_text,
+)
 
 _MAX_READ = 6000
 
@@ -56,6 +64,19 @@ def parse_content(block_type: str, content: Any) -> dict:
     if isinstance(content, dict):
         return content
     s = "" if content is None else str(content)
+    # Agents often send structured content as a JSON string ({"markdown": …, "tone": …} for a
+    # callout, {"title": …} for references). Accept it when it uses this block type's own
+    # keys; anything else is literal text (Markdown that happens to start with "{" stays text).
+    st = s.strip()
+    if st.startswith("{") and block_type in DEFAULT_CONTENT:
+        try:
+            data = json.loads(st)
+        except ValueError:
+            data = None
+        if isinstance(data, dict) and set(data) & set(DEFAULT_CONTENT[block_type]):
+            if block_type == "heading" and isinstance(data.get("text"), str):
+                data["text"] = data["text"].lstrip("#").strip()
+            return data
     if block_type in ("text",):
         return {"markdown": s}
     if block_type == "callout":

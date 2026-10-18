@@ -6,7 +6,8 @@ import { DocEditor } from "./DocEditor";
 import { NewDocDialog } from "./NewDocDialog";
 import { ThemeToggle } from "./ThemeToggle";
 import { useIdentity } from "./useLive";
-import { appPath, withBase } from "../base";
+import { IN_FRAME, appPath, notifyHost, withBase } from "../base";
+import { SessionExpired, setAuthor } from "../api";
 import { applyBranding, feature, isEmbedded } from "../branding";
 
 const TABS_KEY = "codraft.tabs";
@@ -25,7 +26,9 @@ function docFromPath(): string | null {
 
 /** The family's brand tile: langstage-web's gradient square, with Codraft's pen. */
 export function BrandTile({ size = 24, icon }: { size?: number; icon?: string }) {
-  if (icon) return <img src={withBase(icon)} alt="" className="flex-none object-contain" style={{ width: size, height: size }} />;
+  const [broken, setBroken] = useState(false);
+  if (icon && !broken) return <img src={withBase(icon)} alt="" onError={() => setBroken(true)}
+    className="flex-none object-contain" style={{ width: size, height: size }} />;
   return (
     <div className="rounded-md bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-dark)] flex items-center justify-center flex-none"
       style={{ width: size, height: size }}>
@@ -41,10 +44,24 @@ export function App() {
   const [active, setActive] = useState<string | null>(docFromPath());
   const [titles, setTitles] = useState<Record<string, string>>({});
   const [newOpen, setNewOpen] = useState(false);
-  const [sidebar, setSidebar] = useState(true);
+  // The document list starts closed on narrow screens, where it would cover the page.
+  const [sidebar, setSidebar] = useState(() => typeof window === "undefined" || window.innerWidth >= 900);
   const [kickoff, setKickoff] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
+  const [sessionLost, setSessionLost] = useState(false);
+  useEffect(() => {
+    // Background refreshes hit the lapsed session too; one banner, no unhandled errors.
+    const lost = () => setSessionLost(true);
+    const swallow = (e: PromiseRejectionEvent) => { if (e.reason instanceof SessionExpired) e.preventDefault(); };
+    window.addEventListener("codraft:session-expired", lost);
+    window.addEventListener("unhandledrejection", swallow);
+    return () => {
+      window.removeEventListener("codraft:session-expired", lost);
+      window.removeEventListener("unhandledrejection", swallow);
+    };
+  }, []);
   const identity = useIdentity(cfg?.user?.name);
+  useEffect(() => { setAuthor(identity.name); }, [identity.name]);
 
   const reloadDocs = useCallback(() => api.listDocs().then((d) => {
     setDocs(d);
@@ -74,7 +91,14 @@ export function App() {
   useEffect(() => {
     if (active && !tabs.includes(active)) setTabs((t) => [...t, active]);
     const want = active ? `/d/${active}` : "/";
-    if (appPath() !== want) window.history.pushState({}, "", withBase(want) + window.location.search);
+    if (appPath() !== want) {
+      // In a frame, replace rather than push: the host page's Back button should leave the
+      // page, not step through documents. The host hears where we are and can deep-link it.
+      const url = withBase(want) + window.location.search;
+      if (IN_FRAME) window.history.replaceState({}, "", url);
+      else window.history.pushState({}, "", url);
+    }
+    notifyHost({ type: "codraft:location", path: want, doc: active, title: active ? titles[active] || "" : "" });
     const app = cfg?.ui?.title || cfg?.title || "Codraft";
     document.title = active ? `${titles[active] || "Document"} · ${app}` : app;
   }, [active, tabs, titles, cfg]);
@@ -102,6 +126,12 @@ export function App() {
 
   return (
     <div className="h-full flex flex-col bg-[var(--color-surface)]">
+      {sessionLost && (
+        <div role="alert" data-testid="session-lost"
+          className="flex-none px-4 py-2 text-[13px] text-[var(--color-warning)] bg-[color-mix(in_srgb,var(--color-warning)_12%,transparent)] border-b border-[var(--color-border)]">
+          {new SessionExpired().message}
+        </div>
+      )}
       {/* Header: langstage-web's quiet 44px bar */}
       <header data-testid="app-header" className={`flex items-center gap-3 px-4 border-b border-[var(--color-border)] bg-[var(--ui-header,var(--color-surface))] text-[var(--ui-header-text,var(--color-text))] flex-none ${embedded ? "h-10" : "h-11"}`}>
         {docList && <button onClick={() => setSidebar(!sidebar)} data-testid="toggle-doc-list"

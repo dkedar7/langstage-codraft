@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.2 — 2026-10-18
+
+Fixes from dogfooding Codraft embedded in Lighthouse (a real host app, two signed-in users,
+the host's own agent).
+
+- **Fixed: the agent could loop after looking at pages.** Page screenshots from `view_pages`
+  were re-appended as the newest message on every model call in the turn, so the agent kept
+  reacting to them as fresh input ("Now I can see the pages…") instead of acting. Images now
+  sit right after the tool results that produced them.
+- **Fixed: structured content sent as a JSON string became literal text.** A references block
+  showed `{"title": …}` as its heading, and the documented callout form `{"markdown", "tone"}`
+  was read as Markdown. JSON using the block type's own keys is now read as content.
+- **A failing tool no longer ends the turn.** `CodraftMiddleware(tool_errors=True)` (default)
+  hands a tool's exception back to the model as its result, so the agent can work around it.
+- **Names:** comments, replies and new blocks credit the signed-in user (`user_header`) or the
+  collaborator's display name instead of "user"; the agent appears under `ui.agent_name` in
+  comments, history and help text. A mounted app with no `info` labels the agent by name.
+- **Embedding:** in an iframe Codraft posts `codraft:location` (for deep links) and
+  `codraft:auth-required` to the host page, and navigates with `replaceState` so the host's
+  Back button leaves the page. An expired host session shows a clear banner instead of
+  "Unexpected token '<'". Deleting a document stays under the mount path.
+- **Deployers:** `create_app(..., doc_themes={...})` adds document themes in code;
+  `default_page_size` (`[codraft]`) sets the paper for new documents. A partial `[ui.colors]`
+  palette derives the panel, canvas, border and hover shades from `surface` and `primary`, and
+  light colours no longer leak into dark mode. A broken `icon_url` falls back to the pen tile.
+- **Small screens:** the new-document dialog keeps its buttons in view (they were below the fold
+  at 768px); the document list starts closed under 900px wide.
+- **Templates:** describing what you want when starting from a template now asks the agent to
+  adapt the template's headings, as it already did for blank documents.
+- The README's embedding example is now a complete, runnable `host.py`.
+
 ## 0.4.1 — 2026-10-18
 
 - **Fixed:** a trusted proxy's `X-Forwarded-Prefix` (sent with the proxy secret) now takes effect

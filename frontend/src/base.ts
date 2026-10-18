@@ -23,6 +23,15 @@ export function appPath(): string {
   return BASE && p.startsWith(BASE) ? p.slice(BASE.length) || "/" : p;
 }
 
+/** Embedded in another page (an iframe): navigation must not pile up in the host's history. */
+export const IN_FRAME: boolean = typeof window !== "undefined" && window.parent !== window;
+
+/** Tell the host page something (same origin only): where we are, or that sign-in lapsed. */
+export function notifyHost(msg: { type: string; [k: string]: unknown }) {
+  if (!IN_FRAME) return;
+  try { window.parent.postMessage(msg, window.location.origin); } catch { /* cross-origin host */ }
+}
+
 /** Query-string flags the host can pass, e.g. ?embed=1 when shown inside another app. */
 export function urlFlag(name: string): boolean {
   try {

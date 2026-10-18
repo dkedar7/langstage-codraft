@@ -115,18 +115,21 @@ def _load_css(value: str) -> str:
 
 
 def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
-               *, store: Store | None = None, ui: dict | None = None) -> FastAPI:
-    """The Codraft ASGI app. ``ui`` overrides branding in code (for hosts that embed Codraft).
-    To serve it under another FastAPI app, use :func:`mount`."""
+               *, store: Store | None = None, ui: dict | None = None,
+               doc_themes: dict[str, dict] | None = None) -> FastAPI:
+    """The Codraft ASGI app. ``ui`` overrides app branding in code (for hosts that embed
+    Codraft); ``doc_themes`` adds or overrides document themes (same keys as
+    ``[codraft.themes.*]``, which it extends). To serve it under another FastAPI app, use
+    :func:`mount`."""
     data_dir = Path(cfg.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     store = store or Store(data_dir / "codraft.db")
     set_store(store)
     table = codraft_toml_table()
-    themes.configure(table.get("themes") if isinstance(table.get("themes"), dict) else None,
-                     table.get("allowed_themes"))
+    toml_themes = table.get("themes") if isinstance(table.get("themes"), dict) else {}
+    themes.configure({**toml_themes, **(doc_themes or {})} or None, table.get("allowed_themes"))
     tpl.configure(cfg.templates_dir)
-    st = AppState(cfg, graph, info or {"kind": "none"})
+    st = AppState(cfg, graph, info or _default_info(graph, ui or {}, cfg))
     st.ui = resolve_ui(cfg, ui)
 
     @asynccontextmanager
@@ -198,6 +201,11 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
 
     st.current_user = current_user
 
+    def human(request: Request, body: dict) -> str:
+        """Who made a human change: the host's signed-in user if it says, else the name the
+        browser reports for this collaborator, else "user"."""
+        return _human_author(_display_name(current_user(request)) or body.get("author"))
+
     # ------------------------------------------------------------- lifecycle
     async def _startup() -> None:
         if st.graph is not None:
@@ -245,6 +253,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             "user": {"name": _display_name(user), "id": user} if user else None,
             "title": cfg.title, "version": __version__, "agent": st.info,
             "approval_default": cfg.approval, "default_theme": cfg.default_theme,
+            "default_page_size": cfg.default_page_size or "letter",
             "themes": themes.all_themes(), "templates": tpl.summaries(),
             "chat_available": st.graph is not None,
             "ui_theme": getattr(cfg, "theme", "auto"),
@@ -260,7 +269,10 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     def create_doc(body: dict = Body(default={})) -> dict:
         try:
             template = tpl.all_templates().get(body.get("template") or "blank", tpl.BUILTIN_TEMPLATES["blank"])
-            settings = _deep(_deep({"approval": cfg.approval, "theme": cfg.default_theme},
+            base = {"approval": cfg.approval, "theme": cfg.default_theme}
+            if cfg.default_page_size:
+                base["page_size"] = cfg.default_page_size
+            settings = _deep(_deep(base,
                                    template.get("settings", {})), body.get("settings") or {})
             is_blank = body.get("template") in (None, "", "blank")
             title = body.get("title") or ("Untitled document" if is_blank else template.get("name", "Untitled"))
@@ -367,12 +379,12 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
 
     # ---------------------------------------------------------------- blocks
     @app.post("/api/docs/{doc_id}/blocks")
-    def add_block(doc_id: str, body: dict = Body(...)) -> dict:
+    def add_block(doc_id: str, request: Request, body: dict = Body(...)) -> dict:
         try:
             return store.insert_block(
                 doc_id, body.get("type", "text"), body.get("content"),
                 after=body.get("after", "__end__"), layout=body.get("layout"), refs=body.get("refs"),
-                author="user",
+                author=human(request, body),
             )
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
@@ -383,7 +395,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             b = None
             if "content" in body or "refs" in body:
                 b = store.edit_block(block_id, content=body.get("content"), refs=body.get("refs"),
-                                     author=_human_author(_display_name(current_user(request)) or body.get("author")),
+                                     author=human(request, body),
                                      note=body.get("note", "edited"),
                                      base=body.get("base"))
             if "layout" in body:
@@ -432,18 +444,19 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
 
     # -------------------------------------------------------------- comments
     @app.post("/api/docs/{doc_id}/comments")
-    def add_comment(doc_id: str, body: dict = Body(...)) -> dict:
+    def add_comment(doc_id: str, request: Request, body: dict = Body(...)) -> dict:
         try:
             return store.add_comment(doc_id, body.get("body", ""), block_id=body.get("block_id"),
+                                     author=human(request, body),
                                      for_agent=bool(body.get("for_agent", True)))
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
 
     @app.patch("/api/comments/{comment_id}")
-    def patch_comment(comment_id: str, body: dict = Body(...)) -> dict:
+    def patch_comment(comment_id: str, request: Request, body: dict = Body(...)) -> dict:
         try:
             if body.get("reply") is not None:
-                return store.reply_comment(comment_id, body["reply"], author="user",
+                return store.reply_comment(comment_id, body["reply"], author=human(request, body),
                                            resolve=bool(body.get("resolve")))
             return store.set_comment_status(comment_id, body.get("status", "resolved"))
         except Exception as exc:  # noqa: BLE001
@@ -649,6 +662,21 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     return app
 
 
+def _default_info(graph: Any, ui: dict, cfg: CodraftConfig) -> dict:
+    """Agent info for a host that passes a graph but no ``info`` (e.g. when mounting)."""
+    if graph is None:
+        return {"kind": "none", "label": "No agent", "missing_tools": [],
+                "hint": "Pass an agent graph to create_app to turn on chat."}
+    from .agent import missing_tools
+
+    name = ui.get("agent_name") or (cfg.agent_name if cfg.agent_name != "Co-author" else "") or "Agent"
+    try:
+        missing = missing_tools(graph)
+    except Exception:  # noqa: BLE001
+        missing = []
+    return {"kind": "spec", "label": name, "missing_tools": missing}
+
+
 def _secrets_equal(a: str, b: str) -> bool:
     import hmac
 
@@ -744,7 +772,7 @@ def _history(values: dict) -> list[dict]:
         content = m.content if isinstance(m.content, str) else " ".join(
             p.get("text", "") for p in m.content if isinstance(p, dict) and p.get("type") == "text")
         if t == "human":
-            if content.startswith(("[Rendered pages", "[Images from your last")):
+            if content.startswith(("[Rendered pages", "[Images from your last", "[Images returned by")):
                 continue
             out.append({"role": "user", "content": content, "id": m.id})
         elif t == "ai":

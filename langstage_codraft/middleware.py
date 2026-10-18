@@ -72,17 +72,49 @@ def _doc_brief(state_config: Any) -> str:
             + (f"\nBrief: {brief}." if brief else ""))
 
 
-def _images_for_turn(messages: list) -> list[str]:
-    """Screenshot paths from view_pages results after the last human message."""
-    paths: list[str] = []
-    for m in reversed(messages):
-        if isinstance(m, HumanMessage):
+def _tool_images(m: Any) -> list[str]:
+    if not isinstance(m, ToolMessage):
+        return []
+    art = getattr(m, "artifact", None) or {}
+    return list(art.get("images") or []) if isinstance(art, dict) else []
+
+
+def _with_images(messages: list) -> list:
+    """The turn's messages with each batch of tool images shown right after the tool results
+    that produced it, not appended at the end. Appended images read as a fresh user message
+    on every later model call in the turn, and agents kept re-reacting to them ("Now I can
+    see the pages…") in a loop. In place, they are history. Only this turn's newest
+    ``_MAX_IMAGES`` images are sent."""
+    start = 0
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            start = i + 1
             break
-        if isinstance(m, ToolMessage):
-            art = getattr(m, "artifact", None) or {}
-            if isinstance(art, dict):
-                paths = list(art.get("images") or []) + paths
-    return paths[-_MAX_IMAGES:]
+    budget = _MAX_IMAGES
+    keep: dict[int, list[str]] = {}  # index of a batch's last ToolMessage -> its images
+    i = len(messages) - 1
+    while i >= start and budget > 0:
+        if isinstance(messages[i], ToolMessage):
+            end = i
+            batch: list[str] = []
+            while i >= start and isinstance(messages[i], ToolMessage):
+                batch = _tool_images(messages[i]) + batch
+                i -= 1
+            if batch:
+                keep[end] = batch[-budget:]
+                budget -= len(keep[end])
+            continue
+        i -= 1
+    if not keep:
+        return list(messages)
+    out: list = []
+    for idx, m in enumerate(messages):
+        out.append(m)
+        if idx in keep:
+            img = _image_message(keep[idx])
+            if img is not None:
+                out.append(img)
+    return out
 
 
 def _image_message(paths: list[str]) -> HumanMessage | None:
@@ -97,17 +129,22 @@ def _image_message(paths: list[str]) -> HumanMessage | None:
                        "image_url": {"url": f"data:{mime};base64,{base64.b64encode(data).decode()}"}})
     if not blocks:
         return None
-    return HumanMessage(content=[{"type": "text", "text": "[Images from your last tool calls]"}] + blocks)
+    return HumanMessage(content=[{"type": "text", "text": "[Images returned by the tool calls above]"}] + blocks)
 
 
 class CodraftMiddleware(AgentMiddleware):
     """Co-author prompt, tools and page images for a ``create_agent`` agent."""
 
-    def __init__(self, *, extra_prompt: str = "", attach_images: bool = True, tools: list | None = None):
+    def __init__(self, *, extra_prompt: str = "", attach_images: bool = True, tools: list | None = None,
+                 tool_errors: bool = True):
+        """``tool_errors``: when any tool (yours or Codraft's) raises, hand the error back to
+        the model as the tool's result instead of ending the turn, so one failing lookup
+        doesn't throw away a half-drafted document."""
         super().__init__()
         self.tools = list(CODRAFT_TOOLS if tools is None else tools)
         self.extra_prompt = extra_prompt
         self.attach_images = attach_images
+        self.tool_errors = tool_errors
 
     def _prepare(self, request: Any) -> Any:
         from langgraph.config import get_config
@@ -123,9 +160,10 @@ class CodraftMiddleware(AgentMiddleware):
             prompt = (existing + "\n\n" + prompt) if existing else prompt
         overrides: dict[str, Any] = {"system_message": SystemMessage(content=prompt)}
         if self.attach_images:
-            img = _image_message(_images_for_turn(list(request.messages)))
-            if img is not None:
-                overrides["messages"] = list(request.messages) + [img]
+            msgs = list(request.messages)
+            with_imgs = _with_images(msgs)
+            if len(with_imgs) != len(msgs):
+                overrides["messages"] = with_imgs
         return request.override(**overrides)
 
     def wrap_model_call(self, request, handler):  # type: ignore[override]
@@ -133,3 +171,36 @@ class CodraftMiddleware(AgentMiddleware):
 
     async def awrap_model_call(self, request, handler):  # type: ignore[override]
         return await handler(self._prepare(request))
+
+    def wrap_tool_call(self, request, handler):  # type: ignore[override]
+        if not self.tool_errors:
+            return handler(request)
+        try:
+            return handler(request)
+        except Exception as exc:  # noqa: BLE001
+            return _tool_error(request, exc)
+
+    async def awrap_tool_call(self, request, handler):  # type: ignore[override]
+        if not self.tool_errors:
+            return await handler(request)
+        try:
+            return await handler(request)
+        except Exception as exc:  # noqa: BLE001
+            return _tool_error(request, exc)
+
+
+def _tool_error(request: Any, exc: Exception) -> ToolMessage:
+    """A failed tool call as a result the model can read and work around. Interrupts and
+    other graph control flow are re-raised untouched."""
+    from langgraph.errors import GraphBubbleUp
+
+    if isinstance(exc, GraphBubbleUp):
+        raise exc
+    call = getattr(request, "tool_call", None) or {}
+    name = call.get("name", "tool")
+    msg = f"{type(exc).__name__}: {exc}"[:600]
+    return ToolMessage(
+        content=f"ERROR: {name} failed ({msg}). Carry on without it: try another source or tool, "
+                "or tell the author what you couldn't do.",
+        tool_call_id=call.get("id", ""), name=name, status="error",
+    )

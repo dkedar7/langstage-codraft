@@ -109,3 +109,37 @@ def test_forwarded_prefix_wins_over_loopback(tmp_path):
         page = c.get("/", headers={"X-Codraft-Proxy-Secret": "k", "X-Forwarded-Prefix": "/api/proxy/codraft"}).text
         assert '<base href="/api/proxy/codraft/">' in page
         assert '<base href="/">' in c.get("/", headers={"X-Forwarded-Prefix": "/evil"}).text
+
+
+def test_comments_and_blocks_credit_the_signed_in_user(tmp_path):
+    """Dogfood 0.4.1: comments were authored "user" even with a trusted user header."""
+    with TestClient(_app(tmp_path, user_header="X-User-Email")) as c:
+        h = {"X-User-Email": "sam.okafor@example.org"}
+        doc = c.post("/api/docs", json={"template": "memo"}).json()
+        com = c.post(f"/api/docs/{doc['id']}/comments", json={"body": "Source?", "author": "Mallory"}, headers=h).json()
+        assert com["author"] == "Sam Okafor"
+        rep = c.patch(f"/api/comments/{com['id']}", json={"reply": "On it", "author": "Mallory"}, headers=h).json()
+        assert rep["replies"][-1]["author"] == "Sam Okafor"
+        blk = c.post(f"/api/docs/{doc['id']}/blocks", json={"type": "text"}, headers=h).json()
+        assert blk["author"] == "Sam Okafor"
+        # Without the header, the browser's display name is used (standalone collaboration).
+        com2 = c.post(f"/api/docs/{doc['id']}/comments", json={"body": "x", "author": "Dana"}).json()
+        assert com2["author"] == "Dana"
+
+
+def test_default_page_size_doc_themes_and_agent_label(tmp_path):
+    from langstage_codraft.agent import build_demo_agent
+
+    cfg = CodraftConfig.resolve(overrides={"data_dir": tmp_path / "d", "port": 8797, "default_page_size": "a4"},
+                                use_toml=False)
+    app = create_app(cfg, build_demo_agent(), store=Store(tmp_path / "d" / "c.db"),
+                     ui={"agent_name": "Harbor"},
+                     doc_themes={"harbor": {"label": "Harbor", "color_accent": "#002f58"}})
+    with TestClient(app) as c:
+        conf = c.get("/api/config").json()
+        assert conf["default_page_size"] == "a4"
+        assert conf["themes"]["harbor"]["color_accent"] == "#002f58"
+        assert conf["themes"]["harbor"]["font_body"]  # inherits from classic
+        assert conf["agent"]["label"] == "Harbor" and conf["agent"]["missing_tools"] == []
+        assert c.post("/api/docs", json={}).json()["settings"]["page_size"] == "a4"
+        assert c.post("/api/docs", json={"settings": {"page_size": "letter"}}).json()["settings"]["page_size"] == "letter"

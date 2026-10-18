@@ -173,6 +173,7 @@ export interface AppConfig {
   version: string;
   agent: { kind: string; label: string; missing_tools: string[]; hint?: string };
   approval_default: string;
+  default_page_size?: string;
   default_theme: string;
   themes: Record<string, Theme>;
   templates: { id: string; name: string; description: string }[];

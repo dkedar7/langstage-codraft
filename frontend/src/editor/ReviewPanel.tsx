@@ -2,6 +2,7 @@ import { CheckCheck, Sparkles, XCircle } from "lucide-react";
 import { api } from "../api";
 import { blockText, SuggestionDiff } from "./Diff";
 import { useEditorApi } from "./context";
+import { agentName } from "../branding";
 
 export function ReviewPanel() {
   const ed = useEditorApi();
@@ -36,7 +37,7 @@ export function ReviewPanel() {
       </div>
       <div className="flex-1 overflow-auto scroll-thin">
         {!pending.length && (
-          <div className="p-4 text-[var(--color-text-muted)] text-xs">Nothing to review. When the agent proposes a change it shows up here and on the block.</div>
+          <div className="p-4 text-[var(--color-text-muted)] text-xs">Nothing to review. When {agentName(ed.cfg.ui)} proposes a change it shows up here and on the block.</div>
         )}
         {pending.map((s) => {
           const block = doc.blocks.find((b) => b.id === s.block_id);

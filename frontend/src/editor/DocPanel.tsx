@@ -7,6 +7,7 @@ import { NumberInput, TextInput } from "./BlockPanel";
 import { useEditorApi } from "./context";
 import { BRIEF_OPTIONS } from "./NewDocDialog";
 import { withBase } from "../base";
+import { agentName } from "../branding";
 
 export function DocPanel({ identity }: { identity: { name: string; setName: (n: string) => void; managed?: boolean } }) {
   const ed = useEditorApi();
@@ -123,13 +124,13 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
             )}
           </div>
         ))}
-        <span className="label">Anything else the agent should know</span>
+        <span className="label">Anything else {agentName(cfg.ui)} should know</span>
         <BriefNotes value={s.brief.notes || ""} onCommit={(v) => set({ brief: { notes: v } })} />
       </div>
 
       <div className="panel-section">
         <div className="font-semibold mb-1">Uploads</div>
-        <div className="text-[11.5px] text-[var(--color-text-muted)] mb-2">Reference material the agent can search, or a document to use as a template.</div>
+        <div className="text-[11.5px] text-[var(--color-text-muted)] mb-2">Reference material {agentName(cfg.ui)} can search, or a document to use as a template.</div>
         {doc.uploads.filter((u) => u.purpose !== "asset").map((u) => (
           <div key={u.id} className="flex items-center gap-2 py-1">
             <FileText size={14} className="text-[var(--color-text-muted)]" />
@@ -177,7 +178,7 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
       )}
 
       <div className="panel-section">
-        <div className="font-semibold">About the agent</div>
+        <div className="font-semibold">About {agentName(cfg.ui)}</div>
         <div className="text-xs text-[var(--color-text-secondary)] mt-1">{cfg.agent.label} <span className="chip">{cfg.agent.kind}</span></div>
         {cfg.agent.missing_tools?.length > 0 && cfg.agent.kind !== "none" && (
           <div className="text-xs text-[var(--color-warning)] bg-[color-mix(in_srgb,var(--color-warning)_12%,transparent)] rounded p-2 mt-2">
@@ -187,7 +188,7 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
         <button className="btn btn-danger mt-3" onClick={async () => {
           if (!confirm(`Delete “${doc.title}”?`)) return;
           await api.deleteDoc(doc.id);
-          window.location.href = "/";
+          window.location.replace(withBase("/") + window.location.search);
         }}><Trash2 size={14} /> Delete document</button>
       </div>
     </div>

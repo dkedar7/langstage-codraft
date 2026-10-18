@@ -1,5 +1,26 @@
 import type { AppConfig, Block, Comment, Doc, DocSummary, Suggestion, Upload, VersionTree } from "./types";
-import { withBase } from "./base";
+import { notifyHost, withBase } from "./base";
+
+/** The collaborator's display name, sent with human changes (the server prefers a trusted
+ *  host header when it has one). */
+let author = "";
+export function setAuthor(name: string) { author = name; }
+
+/** The host app's sign-in has lapsed (it answered 401, or sent its login page instead of JSON). */
+export class SessionExpired extends Error {
+  constructor() { super("Your session has ended. Sign in again to keep working; nothing you saved is lost."); }
+}
+
+function sessionLost(r: Response): boolean {
+  const type = r.headers.get("content-type") || "";
+  return r.status === 401 || (r.ok && type.includes("text/html") && !r.url.includes("/print/"));
+}
+
+function expired(): never {
+  notifyHost({ type: "codraft:auth-required" });
+  window.dispatchEvent(new Event("codraft:session-expired"));
+  throw new SessionExpired();
+}
 
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
   const r = await fetch(withBase(url), {
@@ -7,6 +28,7 @@ async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
     headers: body instanceof FormData || body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
   });
+  if (sessionLost(r)) expired();
   if (!r.ok) {
     let msg = `${r.status} ${r.statusText}`;
     try {
@@ -32,7 +54,7 @@ export const api = {
   reportLayout: (id: string, body: any) => req("POST", `/api/docs/${id}/layout`, body),
 
   addBlock: (docId: string, body: { type: string; content?: any; after?: string | null; layout?: any }) =>
-    req<Block>("POST", `/api/docs/${docId}/blocks`, body),
+    req<Block>("POST", `/api/docs/${docId}/blocks`, { author, ...body }),
   patchBlock: (id: string, body: { content?: any; refs?: any; layout?: any; note?: string; base?: string; author?: string }) =>
     req<Block & { conflict?: boolean }>("PATCH", `/api/blocks/${id}`, body),
   deleteBlock: (id: string) => req("DELETE", `/api/blocks/${id}`),
@@ -43,9 +65,9 @@ export const api = {
     req<Block>("POST", `/api/blocks/${id}/checkout`, body),
 
   addComment: (docId: string, body: { body: string; block_id?: string | null; for_agent?: boolean }) =>
-    req<Comment>("POST", `/api/docs/${docId}/comments`, body),
+    req<Comment>("POST", `/api/docs/${docId}/comments`, { author, ...body }),
   replyComment: (id: string, reply: string, resolve = false) =>
-    req<Comment>("PATCH", `/api/comments/${id}`, { reply, resolve }),
+    req<Comment>("PATCH", `/api/comments/${id}`, { reply, resolve, author }),
   setCommentStatus: (id: string, status: "open" | "resolved") => req<Comment>("PATCH", `/api/comments/${id}`, { status }),
   deleteComment: (id: string) => req("DELETE", `/api/comments/${id}`),
 
@@ -75,6 +97,11 @@ export async function streamChat(docId: string, message: string, onFrame: (f: Fr
     body: JSON.stringify({ message }),
     signal,
   });
+  if (sessionLost(r)) {
+    notifyHost({ type: "codraft:auth-required" });
+    onFrame({ type: "error", error: new SessionExpired().message });
+    return;
+  }
   if (!r.ok || !r.body) {
     let msg = `${r.status}`;
     try {

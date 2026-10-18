@@ -97,3 +97,15 @@ def test_show_config_masks_secrets(monkeypatch):
     monkeypatch.setenv("LANGSTAGE_AUTH_PASSWORD", "pw999")
     text = CodraftConfig.resolve(use_toml=False).describe()
     assert "topsecret123" not in text and "pw999" not in text and "********" in text
+
+
+def test_forwarded_prefix_wins_over_loopback(tmp_path):
+    """A host that proxies over localhost still gets its public prefix."""
+    if not (STATIC_DIR / "index.html").is_file():
+        import pytest
+
+        pytest.skip("frontend not built")
+    with TestClient(_app(tmp_path, proxy_secret="k"), client=("127.0.0.1", 9)) as c:
+        page = c.get("/", headers={"X-Codraft-Proxy-Secret": "k", "X-Forwarded-Prefix": "/api/proxy/codraft"}).text
+        assert '<base href="/api/proxy/codraft/">' in page
+        assert '<base href="/">' in c.get("/", headers={"X-Forwarded-Prefix": "/evil"}).text

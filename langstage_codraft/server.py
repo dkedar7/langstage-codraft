@@ -676,15 +676,16 @@ def _display_name(user: str) -> str:
 
 
 def _public_base(request: Request, cfg: CodraftConfig) -> str:
-    """The URL prefix the browser uses. Requests from this machine (the renderer) use the
-    mount path; others use the trusted X-Forwarded-Prefix, then ``base_path``, then the mount path."""
-    client = (request.client.host if request.client else "") or ""
+    """The URL prefix the browser uses: a trusted proxy's X-Forwarded-Prefix (only with the
+    proxy secret); else the mount path for requests from this machine (the export renderer);
+    else ``base_path``, then the mount path."""
     root = (request.scope.get("root_path") or "").rstrip("/")
-    if client in ("127.0.0.1", "::1"):
-        return root
     fwd = request.headers.get("x-forwarded-prefix", "")
     if fwd and cfg.proxy_secret and _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
         return fwd.rstrip("/")
+    client = (request.client.host if request.client else "") or ""
+    if client in ("127.0.0.1", "::1"):
+        return root
     return (cfg.base_path or root).rstrip("/")
 
 

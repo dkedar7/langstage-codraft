@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 — 2026-10-18
+
+- **Fixed:** a trusted proxy's `X-Forwarded-Prefix` (sent with the proxy secret) now takes effect
+  even when the proxy connects over localhost. Before, such requests were treated as the export
+  renderer and the page loaded its assets from the wrong path (a blank page).
+
 ## 0.4.0 — 2026-10-18
 
 Embed Codraft in another app, with that app's look.

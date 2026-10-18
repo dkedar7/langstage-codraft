@@ -1,5 +1,5 @@
 export type BlockType =
-  | "text" | "heading" | "image" | "video" | "table" | "chart" | "callout" | "divider" | "references" | "page-break";
+  | "text" | "heading" | "image" | "video" | "table" | "chart" | "callout" | "divider" | "references" | "page-break" | "spacer";
 
 export interface Pin {
   page: number;

@@ -364,7 +364,8 @@ def propose_insert(
     variant: str | None = None,
 ) -> str:
     """Propose a new block. block_type is one of: text, heading, image, video, table,
-    chart, callout, divider, references, page-break. It is inserted after `after_block_id`,
+    chart, callout, divider, references, page-break, spacer. A callout's tone (content
+    JSON {"markdown", "tone"}) is info, note, success, warn or dark (white on black). It is inserted after `after_block_id`,
     or at the start if at_start=True, or at the end otherwise. `content` uses the
     same formats as propose_edit. full_width=True makes it span all columns."""
     try:
@@ -644,6 +645,29 @@ view_sketch = StructuredTool.from_function(
 )
 
 
+@tool
+def reserve_area(config: RunnableConfig, page: int, x_px: int, y_px: int, w_px: int, h_px: int,
+                 repeat: str | None = None, label: str = "") -> str:
+    """Keep part of a page empty so flowing text avoids it, for example a column's top
+    half under hero art, a margin for a later figure, or white space in a layout. The
+    rectangle is in px from the page's top-left corner (see get_document geometry). It
+    prints as blank space; editors see it hatched. repeat: 'all', 'odd', 'even' or page
+    numbers. Styling, so it applies directly. Returns the spacer block id."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        lay: dict[str, Any] = {"pin": {"anchor": "page", "page": int(page), "x": int(x_px), "y": int(y_px),
+                                       "w": int(w_px), "h": int(h_px)}}
+        if repeat:
+            r = repeat.strip().lower()
+            lay["repeat"] = r if r in ("all", "odd", "even") else [int(v) for v in re.findall(r"\d+", r)]
+        b = store.insert_block(doc_id, "spacer", {"label": label}, layout=lay, author="agent",
+                               note="reserved area")
+        return f"Reserved {w_px}x{h_px}px at ({x_px},{y_px}) on page {page}: {b['id']}"
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 def _view_upload(upload_id: str, config: RunnableConfig = None) -> tuple[str, Any]:
     try:
         store = get_store()
@@ -783,6 +807,7 @@ CODRAFT_TOOLS = [
     view_upload,
     draw_figure,
     insert_blocks,
+    reserve_area,
 ]
 
 TOOL_NAMES = frozenset(t.name for t in CODRAFT_TOOLS)

@@ -314,3 +314,14 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .cd-refs-hanging { list-style: none; padding: 0; margin: .4em 0 0; font-family: var(--cd-font-label); font-size: .78em; line-height: 1.32; }
 .cd-refs-hanging li { padding-left: 1.4em; text-indent: -1.4em; margin: 0 0 .55em; }
 .cd-ref-url { word-break: break-all; }
+
+/* dark callouts (tone "dark" or variant "dark") */
+.cd-tone-dark, .cd-v-dark .cd-callout { background: #111 !important; color: #fff; border-left-color: #111 !important; border-radius: 0;
+  text-align: center; font-family: var(--cd-font-display); }
+.cd-tone-dark .cd-md p, .cd-v-dark .cd-callout .cd-md p { text-align: center; text-indent: 0; hyphens: none; }
+.cd-tone-dark a, .cd-v-dark .cd-callout a { color: #fff; }
+
+/* reserved areas (spacer blocks) */
+.cd-spacer { display: flex; align-items: center; justify-content: center; border: 1px dashed #b6bcc8; border-radius: 3px;
+  background: repeating-linear-gradient(135deg, rgba(37,99,235,.05), rgba(37,99,235,.05) 6px, transparent 6px, transparent 12px);
+  font: 500 10px/1 Inter, sans-serif; color: #8a93a3; text-transform: uppercase; letter-spacing: .08em; }

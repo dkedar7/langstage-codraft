@@ -37,6 +37,8 @@ Work in this order, and batch with insert_blocks (one call per page or section, 
    (generate_image, then set_block_layout to anchor it to the page; it may bleed), a byline
    (text "byline"), a big title (heading "display"), a pull quote (text "pullquote") pinned in
    the left column so body text flows beside it, and body text whose first block has dropcap.
+   Use reserve_area to keep part of a page empty (for example the left column under the hero
+   art) instead of inserting empty blocks.
 4. Body: section headings use heading variant "section"; body paragraphs are plain text blocks
    (several paragraphs per block is fine). Aim for the reference's length and density.
 5. Figures: labelled diagrams with draw_figure (SVG, crisp text, figure_box, label
@@ -49,7 +51,9 @@ Work in this order, and batch with insert_blocks (one call per page or section, 
 7. End matter: a heading with variant "rule" for "About the author" with a small generated
    portrait illustration (a generic, non-identifiable person) and a text block (variant "bio");
    then "References" (heading "section") and a references block with variant "hanging". Put
-   sources on the blocks that cite them (references=...).
+   sources on the blocks that cite them (references=...). Cite only sources you are sure
+   exist; leave the url empty rather than guess one. A boxed note (for example a feedback
+   invitation) is a callout with tone "dark" (white on black).
 8. Check: view_pages (a few pages at a time) and fix overflow, stranded headings, empty gaps
    and figures that cover text, until the pages read like the reference.
 Keep going until the whole report is built; do not stop to ask for permission.

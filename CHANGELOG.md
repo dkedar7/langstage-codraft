@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-10-18
+
+Magazine-quality layout, and an agent that designs reports from reference pages.
+
+- **Page setup:** custom page sizes (`page_w_mm`/`page_h_mm`), `page_number_start`, and `{page}`,
+  `{pages}`, `{title}` tokens in running headers and footers.
+- **Typography:** a `journal` theme (justified, hyphenated, indented paragraphs); block styles
+  (`lead`, `pullquote`, `kicker`, `byline`, `small`, `caption`, `footer`, `bio`; headings `display`,
+  `section`, `rule`, `label`; `figure-box`; `hanging` references; `dark` callouts) and drop caps.
+- **Placement:** page-anchored pins that can bleed past the margins, and reserved areas
+  (`spacer` blocks, `reserve_area`) that keep part of a page empty.
+- **Figures:** a label / title / source frame; reference lists split across columns and pages.
+- **Agent tools:** `view_upload` (see reference pages), `draw_figure` (sanitized SVG diagrams),
+  `insert_blocks` (batch), `reserve_area`; `generate_image` can create new figures with an aspect
+  ratio. Up to 8 tool images reach the model per call.
+- **Example:** `examples/report_designer.py`, an OpenRouter agent (Claude Sonnet 5.5 + Gemini image
+  model) that writes and lays out a report like uploaded reference pages.
+- **Security:** uploaded files are served with a strict content security policy (SVG can carry script).
+
 ## 0.2.0 — 2026-10-18
 
 The remaining backlog items from the 0.1 scoping (#45–#49) plus a redesign.

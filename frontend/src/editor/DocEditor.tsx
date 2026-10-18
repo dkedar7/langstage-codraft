@@ -4,7 +4,7 @@ import "allotment/dist/style.css";
 import {
   BarChart3, ChevronDown, Download, Eye, FileText, Film, GitPullRequestArrow, Heading, Image, Lightbulb,
   ListOrdered, MessageSquare, MessagesSquare, Minus, PanelRightClose, PanelRightOpen, Plus,
-  SeparatorHorizontal, Settings2, SquareDashedMousePointer, Table, ZoomIn, ZoomOut,
+  SeparatorHorizontal, Settings2, SquareDashed, SquareDashedMousePointer, Table, ZoomIn, ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
@@ -31,6 +31,8 @@ const ADD_TYPES: { type: string; label: string; icon: React.JSX.Element; content
   { type: "divider", label: "Divider", icon: <Minus size={14} /> },
   { type: "references", label: "References", icon: <ListOrdered size={14} /> },
   { type: "page-break", label: "Page break", icon: <SeparatorHorizontal size={14} /> },
+  { type: "spacer", label: "Reserved area", icon: <SquareDashed size={14} />,
+    layout: { pin: { anchor: "page", page: 1, x: 96, y: 96, w: 240, h: 160 } } },
 ];
 
 const EXPORTS: [string, string, string][] = [
@@ -205,7 +207,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
     const beforeRefs = !sel && last?.type === "references" && t.type !== "references";
     const after = sel ? sel.id : beforeRefs ? (flow.length > 1 ? flow[flow.length - 2].id : null) : "__end__";
     const b = await run(api.addBlock(doc.id, { type: t.type, content: t.content, after,
-      layout: sel && sel.layout.role !== "flow" ? { role: sel.layout.role } : undefined }));
+      layout: t.layout ?? (sel && sel.layout.role !== "flow" ? { role: sel.layout.role } : undefined) }));
     if (b) {
       select(b.id);
       if (["text", "heading", "callout"].includes(t.type)) setEditing(b.id);

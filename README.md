@@ -102,17 +102,40 @@ langstage-codraft check --agent my_agent.py:graph  # preflight; --live runs one 
 A graph built without the Codraft tools still chats, but it can't touch the document. `check`
 tells you when that's the case.
 
-The agent's toolset (`CODRAFT_TOOLS`) has 16 tools. Each one reads and writes through the same
+The agent's toolset (`CODRAFT_TOOLS`) has 20 tools. Each one reads and writes through the same
 API the editor uses, so the agent has no private path, and nothing the agent can do is out of
 the author's reach:
 
 | Read | Write (suggestions) | Style (applies directly) | Other |
 |---|---|---|---|
-| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move` | `set_block_layout`, `set_document_style` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch` |
+| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload` |
 
 Each document has its own agent thread (the AG-UI thread id is the document id). Conversations
 are stored in SQLite and survive restarts. The same agent is also served at `POST /agui` for any
 AG-UI client.
+
+## Magazine-quality reports
+
+Codraft lays out more than memos. Give `examples/report_designer.py` (an OpenRouter agent with
+image generation) a few pages of a report you like and a topic, and it builds a report with the
+same look: custom page size, justified three-column type with hyphenation, drop caps, pull
+quotes, page-anchored hero art that bleeds past the margins, framed figures (`FIGURE 1`, title,
+source line), running footers with `{page}` numbers that alternate left and right, and a
+hanging-indent reference list that flows across columns. Diagrams are drawn as SVG
+(`draw_figure`) so labels stay crisp; photos and illustrations come from an image model.
+
+![Two pages of a magazine-style feature on smart water networks, built by the report designer agent](https://raw.githubusercontent.com/dkedar7/langstage-codraft/main/docs/assets/report-example.png)
+
+```bash
+export OPENROUTER_API_KEY=...
+langstage-codraft run --agent examples/report_designer.py:make --approval auto
+# upload reference pages (PNG/JPG), then ask: "Make a report like the attached pages about <topic>"
+```
+
+Every layout feature is available to people too (Block and Document panels) and to any agent:
+block styles (`lead`, `pullquote`, `kicker`, `byline`, `footer`, `bio`; headings `display`,
+`section`, `rule`; `figure-box`; `hanging` references; `dark` callouts), drop caps, custom page
+sizes, page-anchored pins, and reserved areas (`reserve_area`) that keep part of a page empty.
 
 ## Bring any agent: MCP
 

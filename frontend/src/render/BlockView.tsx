@@ -198,6 +198,12 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
     case "page-break":
       inner = ctx.editing ? <div className="cd-pagebreak">Page break</div> : <div />;
       break;
+    case "spacer":
+      // A reserved area: blank in print, hatched in the editor so it can be found and moved.
+      inner = ctx.editing
+        ? <div className="cd-spacer" style={{ height: fixedHeight || 48 }}><span>{c.label || "Reserved area"}</span></div>
+        : <div style={{ height: fixedHeight || 48 }} />;
+      break;
     default:
       inner = <div className="cd-muted">Unsupported block type: {block.type}</div>;
   }

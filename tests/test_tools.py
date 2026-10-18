@@ -26,7 +26,7 @@ def call(tool, cfg, **args):
 
 def test_tool_names_unique():
     names = [t.name for t in CODRAFT_TOOLS]
-    assert len(names) == len(set(names)) == 19
+    assert len(names) == len(set(names)) == 20
 
 
 def test_config_param_hidden_from_model():
@@ -171,3 +171,15 @@ def test_page_anchored_pin_and_custom_page(store, cfg_for):
     assert '"anchor": "page"' in out
     outline = call(get_document, cfg_for(d["id"]))
     assert "page 768x1032" in outline and "Variants:" in outline
+
+
+def test_reserve_area_and_dark_callout(store, cfg_for):
+    from langstage_codraft.tools import reserve_area
+
+    d = store.create_document("Res", {"approval": "auto", "columns": 3})
+    out = call(reserve_area, cfg_for(d["id"]), page=1, x_px=64, y_px=470, w_px=199, h_px=170, repeat="odd")
+    assert "Reserved 199x170px" in out
+    sp = store.list_blocks(d["id"])[0]
+    assert sp["type"] == "spacer" and sp["layout"]["pin"]["anchor"] == "page" and sp["layout"]["repeat"] == "odd"
+    c = store.insert_block(d["id"], "callout", {"markdown": "Hi", "tone": "dark"}, layout={"variant": "dark"})
+    assert c["layout"]["variant"] == "dark" and c["content"]["tone"] == "dark"

@@ -259,6 +259,7 @@ function ContentEditor({ block, patch }: { block: Block; patch: (c: any, note?: 
               <select className="select" value={c.tone || "info"} onChange={(e) => patch({ tone: e.target.value })}>
                 <option value="info">Info</option><option value="note">Note</option>
                 <option value="success">Success</option><option value="warn">Warning</option>
+                <option value="dark">Dark (white on black)</option>
               </select>
             </>
           )}
@@ -524,6 +525,6 @@ const VARIANTS: Record<string, string[]> = {
   image: ["figure-box"],
   chart: ["figure-box"],
   table: ["figure-box"],
-  callout: ["figure-box"],
+  callout: ["figure-box", "dark"],
   references: ["hanging"],
 };

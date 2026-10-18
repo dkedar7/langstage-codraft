@@ -24,7 +24,7 @@ from typing import Any
 
 BLOCK_TYPES = (
     "text", "heading", "image", "video", "table", "chart", "callout", "divider",
-    "references", "page-break",
+    "references", "page-break", "spacer",
 )
 ROLES = ("flow", "cover", "back")
 
@@ -65,6 +65,7 @@ DEFAULT_CONTENT: dict[str, dict[str, Any]] = {
     "divider": {},
     "references": {"title": "References", "style": "numbered"},
     "page-break": {},
+    "spacer": {"label": ""},   # an empty reserved area (pin it so text flows around it)
 }
 
 DEFAULT_LAYOUT: dict[str, Any] = {
@@ -84,7 +85,7 @@ BLOCK_VARIANTS: dict[str, tuple[str, ...]] = {
     "image": ("figure-box",),
     "chart": ("figure-box",),
     "table": ("figure-box",),
-    "callout": ("figure-box",),
+    "callout": ("figure-box", "dark"),
     "references": ("hanging",),
 }
 

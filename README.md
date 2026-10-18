@@ -191,6 +191,72 @@ masthead (`newsletter`). Each new document
 records the author's brief (writing style, objective, platform, audience, language, output
 format), and the agent reads it before writing.
 
+### Brand the app, or embed it in yours
+
+The app's chrome (header, panels, buttons, chat) can take on your product's look; the documents keep
+their own themes. The `[ui]` keys are the same as langstage-web's, so one `langstage.toml` brands both.
+
+```toml
+[ui]
+title = "Acme Write"
+subtitle = "drafting studio"
+agent_name = "Acme Assistant"        # "Ask Acme Assistant…"
+welcome_message = "Start a brief, a memo or a report."
+icon_url = "https://acme.example/logo.svg"
+font_family = "Raleway"
+font_url = "https://fonts.googleapis.com/css2?family=Raleway:wght@400;600;700&display=swap"
+starter_prompts = ["Draft an executive summary", "Turn my notes into a memo"]
+custom_css = "brand.css"             # inline CSS or a .css file, applied last
+embedded = false                     # true: no Codraft header brand or theme toggle
+
+[ui.colors]                          # any langstage-web token: primary, primary_dark, surface,
+primary = "#002f58"                  # surface_2, surface_3, border, text, text_secondary,
+primary_dark = "#001f3d"             # text_muted, panel, card, accent_soft, success, warning,
+surface = "#faf7f1"                  # error, plus canvas, header, header_text
+accent_soft = "#fff1d6"
+
+[ui.colors_dark]                     # the same keys for dark mode
+
+[ui.features]                        # switch parts of the app off
+mcp = false
+chat = true
+doc_list = true
+theme_toggle = true
+```
+
+To put Codraft inside another FastAPI app, mount it and pass the branding in code:
+
+```python
+from langstage_codraft import CODRAFT_TOOLS, CodraftMiddleware
+from langstage_codraft.config import CodraftConfig
+from langstage_codraft.server import create_app, mount
+
+cfg = CodraftConfig.resolve(overrides={
+    "data_dir": "/data/codraft",
+    "renderer_url": "http://127.0.0.1:8080/write",   # how exports reach the mounted print route
+    "proxy_secret": os.environ["CODRAFT_PROXY_SECRET"],  # import os
+    "user_header": "X-User-Email",                   # the signed-in user, set by your proxy
+})
+graph = create_deep_agent(model=..., tools=[*my_tools, *CODRAFT_TOOLS], middleware=[CodraftMiddleware()])
+mount(app, "/write", create_app(cfg, graph, ui={"agent_name": "Acme Assistant", "embedded": True,
+                                                "colors": {"primary": "#002f58"}}))
+```
+
+`mount` runs Codraft's startup and shutdown inside your app's lifespan. The page works under any
+URL prefix. If a proxy serves it under a different public path, it sends that path as
+`X-Forwarded-Prefix`, which is honoured only alongside the proxy secret. `?embed=1` turns on
+embedded mode for one page, for example in an `<iframe>`.
+
+Access settings:
+
+| Setting | Env | Effect |
+|---|---|---|
+| `proxy_secret` | `LANGSTAGE_CODRAFT_PROXY_SECRET` | Requests must carry `X-Codraft-Proxy-Secret`. Requests from the machine itself (the export renderer) are exempt. |
+| `auth_username` / `auth_password` | `LANGSTAGE_AUTH_USERNAME` / `LANGSTAGE_AUTH_PASSWORD` | HTTP basic auth, as in langstage-web. |
+| `user_header` | `LANGSTAGE_CODRAFT_USER_HEADER` | A trusted header with the signed-in user: it names them on edits and in presence. |
+
+`--show-config` masks the secrets.
+
 ## CLI
 
 ```

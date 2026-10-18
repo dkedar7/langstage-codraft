@@ -14,8 +14,9 @@ function stored(): Theme | null {
 }
 
 /** langstage-web's light / dark / auto toggle (cycles on click), remembered per browser. */
-export function ThemeToggle({ initialTheme = "auto" }: { initialTheme?: string }) {
-  const [theme, setTheme] = useState<Theme>(() => stored() ?? (["light", "dark", "auto"].includes(initialTheme) ? initialTheme as Theme : "auto"));
+export function ThemeToggle({ initialTheme = "auto", fixed = false }: { initialTheme?: string; fixed?: boolean }) {
+  const initial: Theme = ["light", "dark", "auto"].includes(initialTheme) ? initialTheme as Theme : "auto";
+  const [theme, setTheme] = useState<Theme>(() => (fixed ? initial : stored() ?? initial));
 
   const applyTheme = useCallback((t: Theme) => {
     const isDark = t === "dark" || (t === "auto" && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -24,15 +25,16 @@ export function ThemeToggle({ initialTheme = "auto" }: { initialTheme?: string }
 
   useEffect(() => {
     applyTheme(theme);
-    try { localStorage.setItem(KEY, theme); } catch { /* private mode */ }
+    if (!fixed) try { localStorage.setItem(KEY, theme); } catch { /* private mode */ }
     if (theme === "auto") {
       const mq = window.matchMedia("(prefers-color-scheme: dark)");
       const handler = () => applyTheme("auto");
       mq.addEventListener("change", handler);
       return () => mq.removeEventListener("change", handler);
     }
-  }, [theme, applyTheme]);
+  }, [theme, applyTheme, fixed]);
 
+  if (fixed) return null;
   const cycle = () => setTheme((p) => (p === "light" ? "dark" : p === "dark" ? "auto" : "light"));
   const Icon = theme === "light" ? Sun : theme === "dark" ? Moon : Monitor;
   return (

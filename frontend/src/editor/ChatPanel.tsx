@@ -136,7 +136,8 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
   const abort = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const agentName = cfg.agent.kind === "demo" ? "Demo co-author" : "Co-author";
+  const branded = cfg.ui?.agent_name && cfg.ui.agent_name !== "Co-author" ? cfg.ui.agent_name : "";
+  const agentName = branded || (cfg.agent.kind === "demo" ? "Demo co-author" : "Co-author");
 
   useEffect(() => {
     let alive = true;
@@ -206,6 +207,7 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
     "List the references",
     "Tighten the writing without changing the meaning",
   ].filter(Boolean) as string[];
+  if (cfg.ui?.starter_prompts?.length) starters.splice(openComments ? 1 : 0, 3, ...cfg.ui.starter_prompts);
 
   return (
     <div className="flex flex-col h-full bg-[var(--color-surface)]">
@@ -286,7 +288,7 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
         )}
         <div className="flex items-end gap-2 rounded-xl border border-[var(--color-border)] bg-[var(--color-card)] shadow-[var(--shadow-xs)] px-3 py-2 transition-colors focus-within:border-[var(--color-primary)] focus-within:ring-1 focus-within:ring-[var(--color-primary)]">
           <textarea ref={inputRef} value={input} rows={1} data-testid="chat-input" disabled={!cfg.chat_available}
-            placeholder={cfg.chat_available ? "Ask the co-author…" : "No agent configured"}
+            placeholder={cfg.chat_available ? (branded ? `Ask ${branded}…` : "Ask the co-author…") : "No agent configured"}
             className="flex-1 resize-none bg-transparent text-sm text-[var(--color-text)] placeholder:text-[var(--color-text-muted)] focus:outline-none leading-relaxed"
             onChange={(e) => {
               setInput(e.target.value);

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { withBase } from "../base";
 
 export interface Peer {
   client_id: string;
@@ -18,7 +19,7 @@ function save(key: string, v: string) {
 }
 
 /** This browser's identity for presence: a stable id, a display name and a colour. */
-export function useIdentity() {
+export function useIdentity(serverName?: string | null) {
   const [id] = useState(() => {
     // One id per tab, so two tabs of the same person show as two collaborators.
     const k = "codraft.client";
@@ -32,12 +33,13 @@ export function useIdentity() {
   const [name, setNameState] = useState(() => load("codraft.name") || `Guest ${Math.floor(10 + Math.random() * 90)}`);
   const color = PALETTE[Math.abs([...id].reduce((h, c) => h * 31 + c.charCodeAt(0), 7)) % PALETTE.length];
   const setName = (n: string) => {
+    if (serverName) return; // the host app owns identity
     const v = n.trim().slice(0, 40) || name;
     setNameState(v);
     save("codraft.name", v);
   };
-  useEffect(() => { save("codraft.name", name); }, [name]);
-  return { id, name, color, setName };
+  useEffect(() => { if (!serverName) save("codraft.name", name); }, [name, serverName]);
+  return { id, name: serverName || name, color, setName, managed: !!serverName };
 }
 
 /**
@@ -66,7 +68,7 @@ export function useLive(docId: string, me: { id: string; name: string; color: st
       if (poll || closed) return;
       poll = setInterval(async () => {
         try {
-          const r = await fetch(`/api/docs/${docId}/events?once=1`);
+          const r = await fetch(withBase(`/api/docs/${docId}/events?once=1`));
           const text = await r.text();
           const line = text.split("\n").find((l) => l.startsWith("data: "));
           if (line) handle(JSON.parse(line.slice(6)));
@@ -77,7 +79,7 @@ export function useLive(docId: string, me: { id: string; name: string; color: st
       }, 2000);
     };
     try {
-      es = new EventSource(`/api/docs/${docId}/events`);
+      es = new EventSource(withBase(`/api/docs/${docId}/events`));
       es.onopen = () => setConnected(true);
       es.onmessage = (e) => {
         try { handle(JSON.parse(e.data)); } catch { /* ignore */ }
@@ -100,10 +102,10 @@ export function useLive(docId: string, me: { id: string; name: string; color: st
     const body = JSON.stringify({ client_id: me.id, name: me.name, color: me.color, block_id: selected,
       editing: !!editing, leave });
     if (leave && navigator.sendBeacon) {
-      navigator.sendBeacon(`/api/docs/${docId}/presence`, new Blob([body], { type: "application/json" }));
+      navigator.sendBeacon(withBase(`/api/docs/${docId}/presence`), new Blob([body], { type: "application/json" }));
       return;
     }
-    fetch(`/api/docs/${docId}/presence`, { method: "POST", headers: { "Content-Type": "application/json" }, body })
+    fetch(withBase(`/api/docs/${docId}/presence`), { method: "POST", headers: { "Content-Type": "application/json" }, body })
       .catch(() => {});
   }, [docId, me.id, me.name, me.color, selected, editing]);
 

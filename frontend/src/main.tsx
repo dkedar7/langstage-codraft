@@ -17,8 +17,9 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./editor/App";
 import { PrintView } from "./print/PrintView";
+import { appPath } from "./base";
 
-const path = window.location.pathname;
+const path = appPath();
 const print = path.match(/^\/print\/([\w-]+)/);
 
 createRoot(document.getElementById("root")!).render(

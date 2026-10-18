@@ -149,7 +149,26 @@ export interface Theme {
   paragraph_indent?: number;
 }
 
+export interface UiConfig {
+  title?: string;
+  subtitle?: string;
+  agent_name?: string;
+  welcome_message?: string;
+  icon_url?: string;
+  theme?: string;
+  embedded?: boolean;
+  font_family?: string;
+  font_url?: string;
+  colors?: Record<string, string>;
+  colors_dark?: Record<string, string>;
+  starter_prompts?: string[];
+  features?: { chat?: boolean; mcp?: boolean; doc_list?: boolean; theme_toggle?: boolean };
+  custom_css?: string;
+}
+
 export interface AppConfig {
+  ui?: UiConfig;
+  user?: { name: string; id: string } | null;
   title: string;
   version: string;
   agent: { kind: string; label: string; missing_tools: string[]; hint?: string };

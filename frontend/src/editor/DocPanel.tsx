@@ -6,8 +6,9 @@ import type { Settings } from "../types";
 import { NumberInput, TextInput } from "./BlockPanel";
 import { useEditorApi } from "./context";
 import { BRIEF_OPTIONS } from "./NewDocDialog";
+import { withBase } from "../base";
 
-export function DocPanel({ identity }: { identity: { name: string; setName: (n: string) => void } }) {
+export function DocPanel({ identity }: { identity: { name: string; setName: (n: string) => void; managed?: boolean } }) {
   const ed = useEditorApi();
   const { doc, cfg } = ed;
   const s = doc.settings;
@@ -158,7 +159,9 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
       <div className="panel-section">
         <div className="font-semibold">You</div>
         <div className="text-[11.5px] text-[var(--color-text-muted)] mb-1">How collaborators see you on the page.</div>
-        <TextInput value={identity.name} onCommit={identity.setName} testid="my-name" />
+        {identity.managed
+          ? <div className="text-[13px]" data-testid="my-name">{identity.name}</div>
+          : <TextInput value={identity.name} onCommit={identity.setName} testid="my-name" />}
       </div>
 
       {cfg.mcp_url && (
@@ -167,8 +170,8 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
           <div className="text-[11.5px] text-[var(--color-text-muted)] mt-0.5 mb-2">
             Claude Code, Cursor or any MCP client can co-author this document. Its edits arrive here as suggestions.
           </div>
-          <CopyLine text={`${window.location.origin}${cfg.mcp_url}`} />
-          <div className="mt-2"><CopyLine text={`claude mcp add --transport http codraft ${window.location.origin}${cfg.mcp_url}`} /></div>
+          <CopyLine text={`${window.location.origin}${withBase(cfg.mcp_url)}`} />
+          <div className="mt-2"><CopyLine text={`claude mcp add --transport http codraft ${window.location.origin}${withBase(cfg.mcp_url)}`} /></div>
           <div className="text-[11px] text-[var(--color-text-muted)] mt-2">This document's id: <code className="kbd">{doc.id}</code></div>
         </div>
       )}

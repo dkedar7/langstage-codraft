@@ -5,9 +5,12 @@ import tailwindcss from "@tailwindcss/vite";
 const backend = process.env.CODRAFT_BACKEND || "http://127.0.0.1:8060";
 
 export default defineConfig({
+  base: "./",
   plugins: [react(), tailwindcss()],
   build: {
     outDir: "../langstage_codraft/static",
+    // Relative asset URLs + a <base href> the server injects, so the app works under any sub-path.
+    assetsDir: "assets",
     emptyOutDir: true,
     chunkSizeWarningLimit: 3000,
   },

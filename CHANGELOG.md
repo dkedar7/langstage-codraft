@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.0 — 2026-10-18
+
+Embed Codraft in another app, with that app's look.
+
+- **App branding** (the chrome only; documents keep their themes): `[ui]` title, subtitle,
+  agent name, welcome message, icon, font (`font_family`, `font_url`), starter prompts,
+  `custom_css`, and `[ui.colors]` / `[ui.colors_dark]` overriding any design token. The same keys
+  can be passed in code as `create_app(..., ui={...})`. `[ui.features]` turns off chat, MCP, the
+  document list or the theme toggle.
+- **Embedded mode** (`ui.embedded`, or `?embed=1`) drops the Codraft brand and theme toggle, so
+  the host page's navigation frames the editor.
+- **Sub-path hosting:** the frontend works under any prefix. `mount(host_app, "/write", app)`
+  serves Codraft inside another FastAPI app and runs its startup and shutdown inside the host's
+  lifespan. `renderer_url` points exports at the mounted print route.
+- **Access:** `proxy_secret` (a shared header from a trusted proxy; local render requests are
+  exempt), HTTP basic auth (`auth_username` / `auth_password`, as in langstage-web), and
+  `user_header`. With `user_header`, the host's signed-in user names edits and presence, and
+  can't be impersonated from the browser. `--show-config` masks secrets.
+- The server now uses a FastAPI lifespan instead of the deprecated `on_event` hooks.
+
 ## 0.3.1 — 2026-10-18
 
 - **Fixed: blank pages at the end of PDF exports.** The hidden copy of the document used to measure

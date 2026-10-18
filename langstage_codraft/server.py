@@ -11,7 +11,9 @@ import asyncio
 import json
 import logging
 import mimetypes
+import re
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -60,8 +62,62 @@ def _json_error(exc: Exception) -> HTTPException:
     return HTTPException(500, f"{type(exc).__name__}: {exc}")
 
 
+# App-chrome design tokens a deployer can set ([ui.colors] / [ui.colors_dark], or ui=...).
+UI_COLOR_KEYS = (
+    "primary", "primary_light", "primary_dark", "surface", "surface_2", "surface_3", "border",
+    "text", "text_secondary", "text_muted", "success", "error", "warning", "panel", "card",
+    "accent_soft", "canvas", "header", "header_text",
+)
+UI_FEATURES = ("chat", "mcp", "doc_list", "theme_toggle")
+
+
+def resolve_ui(cfg: CodraftConfig, overrides: dict | None = None) -> dict:
+    """Everything the browser needs to brand the app: names, logo, fonts, colours,
+    starter prompts and feature switches. Config file < CodraftConfig fields < ``overrides``."""
+    from .config import ui_toml_table
+
+    t = ui_toml_table()
+    ui: dict[str, Any] = {
+        "title": cfg.title, "subtitle": cfg.subtitle, "agent_name": cfg.agent_name,
+        "welcome_message": cfg.welcome_message, "icon_url": cfg.icon_url, "theme": cfg.theme,
+        "embedded": cfg.embedded,
+        "font_family": t.get("font_family", ""), "font_url": t.get("font_url", ""),
+        "colors": {k: v for k, v in (t.get("colors") or {}).items() if k in UI_COLOR_KEYS},
+        "colors_dark": {k: v for k, v in (t.get("colors_dark") or {}).items() if k in UI_COLOR_KEYS},
+        "starter_prompts": [str(x) for x in (t.get("starter_prompts") or [])][:8],
+        "features": {f: True for f in UI_FEATURES},
+        "custom_css": _load_css(cfg.custom_css),
+    }
+    ui["features"].update({k: bool(v) for k, v in (t.get("features") or {}).items() if k in UI_FEATURES})
+    for k, v in (overrides or {}).items():
+        if k in ("colors", "colors_dark") and isinstance(v, dict):
+            ui[k] = {**ui[k], **{kk: vv for kk, vv in v.items() if kk in UI_COLOR_KEYS}}
+        elif k == "features" and isinstance(v, dict):
+            ui["features"].update({kk: bool(vv) for kk, vv in v.items() if kk in UI_FEATURES})
+        elif k == "custom_css":
+            ui[k] = _load_css(v)
+        else:
+            ui[k] = v
+    return ui
+
+
+def _load_css(value: str) -> str:
+    """Inline CSS, or the contents of a .css file path."""
+    v = (value or "").strip()
+    if v.endswith(".css") and "\n" not in v and "{" not in v:
+        p = Path(v).expanduser()
+        try:
+            return p.read_text(encoding="utf-8")
+        except OSError:
+            log.warning("codraft: custom_css file not found: %s", p)
+            return ""
+    return v
+
+
 def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
-               *, store: Store | None = None) -> FastAPI:
+               *, store: Store | None = None, ui: dict | None = None) -> FastAPI:
+    """The Codraft ASGI app. ``ui`` overrides branding in code (for hosts that embed Codraft).
+    To serve it under another FastAPI app, use :func:`mount`."""
     data_dir = Path(cfg.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     store = store or Store(data_dir / "codraft.db")
@@ -71,7 +127,17 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                      table.get("allowed_themes"))
     tpl.configure(cfg.templates_dir)
     st = AppState(cfg, graph, info or {"kind": "none"})
-    app = FastAPI(title="langstage-codraft")
+    st.ui = resolve_ui(cfg, ui)
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        await _startup()
+        try:
+            yield
+        finally:
+            await _shutdown()
+
+    app = FastAPI(title="langstage-codraft", lifespan=lifespan)
     app.state.codraft = st
     # Codraft over MCP at /mcp (streamable HTTP): any agent harness can co-author.
     mcp_server = None
@@ -108,8 +174,31 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                                         status_code=404)
         return await call_next(request)
 
+    # ------------------------------------------------------------- access
+    @app.middleware("http")
+    async def _access_guard(request: Request, call_next):
+        """Proxy secret and basic auth. The server's own render requests (loopback)
+        are always allowed: headless Chromium has no credentials."""
+        client = (request.client.host if request.client else "") or ""
+        local = client in ("127.0.0.1", "::1", "localhost", "testclient")
+        if not local and cfg.proxy_secret:
+            if not _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
+                return JSONResponse({"detail": "forbidden"}, status_code=403)
+        elif not local and cfg.auth_password:
+            if not _basic_ok(request.headers.get("authorization", ""), cfg.auth_username, cfg.auth_password):
+                return Response("authentication required", status_code=401,
+                                headers={"WWW-Authenticate": 'Basic realm="Codraft"'})
+        return await call_next(request)
+
+    def current_user(request: Request) -> str:
+        """The signed-in user's name from the host's trusted header, if configured."""
+        if not cfg.user_header:
+            return ""
+        return (request.headers.get(cfg.user_header) or "").strip()[:120]
+
+    st.current_user = current_user
+
     # ------------------------------------------------------------- lifecycle
-    @app.on_event("startup")
     async def _startup() -> None:
         if st.graph is not None:
             st.graph = await _durable_checkpointer(st, data_dir)
@@ -118,14 +207,13 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             st.agent = build_agent(st.graph, name="Codraft co-author")
             add_agui_endpoint(app, st.agent, path="/agui", name="Codraft co-author")
         host = "127.0.0.1" if cfg.host in ("localhost", "0.0.0.0", "::") else cfg.host
-        set_renderer(Renderer(f"http://{host}:{cfg.port}", data_dir / "renders", STATIC_DIR))
+        set_renderer(Renderer(cfg.renderer_url or f"http://{host}:{cfg.port}", data_dir / "renders", STATIC_DIR))
         if st.mcp is not None:
             from contextlib import AsyncExitStack
 
             st.exit_stack = AsyncExitStack()
             await st.exit_stack.enter_async_context(st.mcp.session_manager.run())
 
-    @app.on_event("shutdown")
     async def _shutdown() -> None:
         if getattr(st, "exit_stack", None) is not None:
             try:
@@ -148,16 +236,19 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         return {"status": "ok", "agent": st.info.get("label"), "kind": st.info.get("kind")}
 
     @app.get("/api/config")
-    def app_config() -> dict:
+    def app_config(request: Request) -> dict:
         from . import __version__
 
+        user = current_user(request)
         return {
+            "ui": st.ui,
+            "user": {"name": _display_name(user), "id": user} if user else None,
             "title": cfg.title, "version": __version__, "agent": st.info,
             "approval_default": cfg.approval, "default_theme": cfg.default_theme,
             "themes": themes.all_themes(), "templates": tpl.summaries(),
             "chat_available": st.graph is not None,
             "ui_theme": getattr(cfg, "theme", "auto"),
-            "mcp_url": "/mcp" if st.mcp is not None else None,
+            "mcp_url": "/mcp" if (st.mcp is not None and st.ui["features"].get("mcp", True)) else None,
         }
 
     # ------------------------------------------------------------- documents
@@ -287,12 +378,13 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             raise _json_error(exc) from exc
 
     @app.patch("/api/blocks/{block_id}")
-    def patch_block(block_id: str, body: dict = Body(...)) -> dict:
+    def patch_block(block_id: str, request: Request, body: dict = Body(...)) -> dict:
         try:
             b = None
             if "content" in body or "refs" in body:
                 b = store.edit_block(block_id, content=body.get("content"), refs=body.get("refs"),
-                                     author=_human_author(body.get("author")), note=body.get("note", "edited"),
+                                     author=_human_author(_display_name(current_user(request)) or body.get("author")),
+                                     note=body.get("note", "edited"),
                                      base=body.get("base"))
             if "layout" in body:
                 b = store.set_layout(block_id, body["layout"])
@@ -541,7 +633,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
 
     # ------------------------------------------------------------------- SPA
     @app.get("/{path:path}", include_in_schema=False)
-    def spa(path: str) -> Response:
+    def spa(path: str, request: Request) -> Response:
         if path.startswith(("api/", "agui", "mcp")):
             raise HTTPException(404)
         f = STATIC_DIR / path
@@ -549,12 +641,80 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             return FileResponse(f)
         index = STATIC_DIR / "index.html"
         if index.is_file():
-            return FileResponse(index, headers={"Cache-Control": "no-cache"})
+            return HTMLResponse(_index_html(index, _public_base(request, cfg)), headers={"Cache-Control": "no-cache"})
         return HTMLResponse(
             "<h1>langstage-codraft</h1><p>The web UI is not built. Run "
             "<code>cd frontend &amp;&amp; npm ci &amp;&amp; npm run build</code>.</p>", status_code=200)
 
     return app
+
+
+def _secrets_equal(a: str, b: str) -> bool:
+    import hmac
+
+    return hmac.compare_digest(a.encode(), b.encode())
+
+
+def _basic_ok(header: str, user: str, password: str) -> bool:
+    import base64
+
+    if not header.lower().startswith("basic "):
+        return False
+    try:
+        u, _, p = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+    except Exception:  # noqa: BLE001
+        return False
+    return _secrets_equal(u, user) and _secrets_equal(p, password)
+
+
+def _display_name(user: str) -> str:
+    """'dana.rivera@example.org' -> 'Dana Rivera'; other values pass through."""
+    if "@" in user:
+        local = user.split("@", 1)[0]
+        return " ".join(w.capitalize() for w in re.split(r"[._+-]+", local) if w) or user
+    return user
+
+
+def _public_base(request: Request, cfg: CodraftConfig) -> str:
+    """The URL prefix the browser uses. Requests from this machine (the renderer) use the
+    mount path; others use the trusted X-Forwarded-Prefix, then ``base_path``, then the mount path."""
+    client = (request.client.host if request.client else "") or ""
+    root = (request.scope.get("root_path") or "").rstrip("/")
+    if client in ("127.0.0.1", "::1"):
+        return root
+    fwd = request.headers.get("x-forwarded-prefix", "")
+    if fwd and cfg.proxy_secret and _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
+        return fwd.rstrip("/")
+    return (cfg.base_path or root).rstrip("/")
+
+
+def _index_html(index: Path, base: str) -> str:
+    html = index.read_text(encoding="utf-8")
+    inject = (f'<base href="{_attr(base)}/"><script>window.__CODRAFT__={json.dumps({"base": base})};</script>')
+    return html.replace("<head>", "<head>" + inject, 1)
+
+
+def _attr(s: str) -> str:
+    return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+
+def mount(host: FastAPI, path: str, app: FastAPI) -> FastAPI:
+    """Serve a Codraft app under ``path`` inside another FastAPI app, running Codraft's
+    startup and shutdown inside the host's lifespan (Starlette doesn't run a mounted
+    app's lifespan on its own). Call before the host starts."""
+    from contextlib import asynccontextmanager as _acm
+
+    host.mount(path, app)
+    inner = host.router.lifespan_context
+
+    @_acm
+    async def wrapped(a: Any):
+        async with app.router.lifespan_context(app):
+            async with inner(a) as state:
+                yield state
+
+    host.router.lifespan_context = wrapped
+    return host
 
 
 async def _durable_checkpointer(st: AppState, data_dir: Path) -> Any:

@@ -1,7 +1,8 @@
 import type { AppConfig, Block, Comment, Doc, DocSummary, Suggestion, Upload, VersionTree } from "./types";
+import { withBase } from "./base";
 
 async function req<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const r = await fetch(url, {
+  const r = await fetch(withBase(url), {
     method,
     headers: body instanceof FormData || body === undefined ? undefined : { "Content-Type": "application/json" },
     body: body instanceof FormData ? body : body === undefined ? undefined : JSON.stringify(body),
@@ -68,7 +69,7 @@ export type Frame = { type: string; [k: string]: any };
 /** Stream one agent turn (SSE frames from langstage-core's AG-UI stream). */
 export async function streamChat(docId: string, message: string, onFrame: (f: Frame) => void,
   signal?: AbortSignal): Promise<void> {
-  const r = await fetch(`/api/docs/${docId}/chat`, {
+  const r = await fetch(withBase(`/api/docs/${docId}/chat`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message }),

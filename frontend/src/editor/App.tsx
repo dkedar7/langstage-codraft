@@ -6,6 +6,8 @@ import { DocEditor } from "./DocEditor";
 import { NewDocDialog } from "./NewDocDialog";
 import { ThemeToggle } from "./ThemeToggle";
 import { useIdentity } from "./useLive";
+import { appPath, withBase } from "../base";
+import { applyBranding, feature, isEmbedded } from "../branding";
 
 const TABS_KEY = "codraft.tabs";
 
@@ -18,11 +20,12 @@ function loadTabs(): string[] {
 }
 
 function docFromPath(): string | null {
-  return window.location.pathname.match(/^\/d\/([\w-]+)/)?.[1] ?? null;
+  return appPath().match(/^\/d\/([\w-]+)/)?.[1] ?? null;
 }
 
 /** The family's brand tile: langstage-web's gradient square, with Codraft's pen. */
-export function BrandTile({ size = 24 }: { size?: number }) {
+export function BrandTile({ size = 24, icon }: { size?: number; icon?: string }) {
+  if (icon) return <img src={withBase(icon)} alt="" className="flex-none object-contain" style={{ width: size, height: size }} />;
   return (
     <div className="rounded-md bg-gradient-to-br from-[var(--color-primary)] to-[var(--color-primary-dark)] flex items-center justify-center flex-none"
       style={{ width: size, height: size }}>
@@ -41,7 +44,7 @@ export function App() {
   const [sidebar, setSidebar] = useState(true);
   const [kickoff, setKickoff] = useState<Record<string, string>>({});
   const [err, setErr] = useState<string | null>(null);
-  const identity = useIdentity();
+  const identity = useIdentity(cfg?.user?.name);
 
   const reloadDocs = useCallback(() => api.listDocs().then((d) => {
     setDocs(d);
@@ -57,7 +60,7 @@ export function App() {
   }, [reloadDocs]);
 
   useEffect(() => {
-    api.config().then(setCfg).catch((e) => setErr(String(e.message || e)));
+    api.config().then((c) => { applyBranding(c.ui); setCfg(c); }).catch((e) => setErr(String(e.message || e)));
     reloadDocs();
     const onPop = () => setActive(docFromPath());
     window.addEventListener("popstate", onPop);
@@ -71,8 +74,9 @@ export function App() {
   useEffect(() => {
     if (active && !tabs.includes(active)) setTabs((t) => [...t, active]);
     const want = active ? `/d/${active}` : "/";
-    if (window.location.pathname !== want) window.history.pushState({}, "", want);
-    document.title = active ? `${titles[active] || "Document"} · ${cfg?.title || "Codraft"}` : cfg?.title || "Codraft";
+    if (appPath() !== want) window.history.pushState({}, "", withBase(want) + window.location.search);
+    const app = cfg?.ui?.title || cfg?.title || "Codraft";
+    document.title = active ? `${titles[active] || "Document"} · ${app}` : app;
   }, [active, tabs, titles, cfg]);
 
   useEffect(() => {
@@ -91,24 +95,30 @@ export function App() {
 
   if (err) return <div className="p-8 text-[var(--color-error)]">Could not reach the Codraft server: {err}</div>;
   if (!cfg) return <div className="p-8 text-[var(--color-text-muted)]">Loading…</div>;
+  const ui = cfg.ui ?? {};
+  const embedded = isEmbedded(ui);
+  const docList = feature(ui, "doc_list");
+  const showSidebar = sidebar && docList;
 
   return (
     <div className="h-full flex flex-col bg-[var(--color-surface)]">
       {/* Header: langstage-web's quiet 44px bar */}
-      <header className="flex items-center gap-3 px-4 h-11 border-b border-[var(--color-border)] bg-[var(--color-surface)] flex-none">
-        <button onClick={() => setSidebar(!sidebar)} data-testid="toggle-doc-list"
+      <header data-testid="app-header" className={`flex items-center gap-3 px-4 border-b border-[var(--color-border)] bg-[var(--ui-header,var(--color-surface))] text-[var(--ui-header-text,var(--color-text))] flex-none ${embedded ? "h-10" : "h-11"}`}>
+        {docList && <button onClick={() => setSidebar(!sidebar)} data-testid="toggle-doc-list"
           className="p-1 rounded hover:bg-[var(--color-surface-3)] transition-colors"
           title={sidebar ? "Hide the document list" : "Show the document list"}>
           {sidebar ? <PanelLeftClose size={15} className="text-[var(--color-text-secondary)]" />
             : <PanelLeftOpen size={15} className="text-[var(--color-text-secondary)]" />}
-        </button>
-        <div className="flex items-center gap-2.5">
-          <BrandTile />
-          <h1 className="text-sm font-semibold tracking-tight text-[var(--color-text)]">{cfg.title}</h1>
-          <span className="text-[11px] text-[var(--color-text-muted)] hidden md:inline border-l border-[var(--color-border)] pl-2.5">
-            the document stage
-          </span>
-        </div>
+        </button>}
+        {!embedded && (
+          <div className="flex items-center gap-2.5" data-testid="brand">
+            <BrandTile icon={ui.icon_url} />
+            <h1 className="text-sm font-semibold tracking-tight">{ui.title || cfg.title}</h1>
+            <span className="text-[11px] text-[var(--color-text-muted)] hidden md:inline border-l border-[var(--color-border)] pl-2.5">
+              {ui.subtitle || "the document stage"}
+            </span>
+          </div>
+        )}
         {/* Open documents as pill tabs */}
         <div className="flex items-center gap-1 ml-3 min-w-0 overflow-x-auto">
           {tabs.map((id) => (
@@ -129,12 +139,12 @@ export function App() {
             <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle ${cfg.chat_available ? "bg-[var(--color-success)]" : "bg-[var(--color-text-muted)]"}`} />
             {cfg.agent.label}
           </span>
-          <div className="w-px h-4 bg-[var(--color-border)]" />
-          <ThemeToggle initialTheme={cfg.ui_theme} />
+          {!embedded && feature(ui, "theme_toggle") && <div className="w-px h-4 bg-[var(--color-border)]" />}
+          <ThemeToggle initialTheme={ui.theme || cfg.ui_theme} fixed={embedded || !feature(ui, "theme_toggle")} />
         </div>
       </header>
       <div className="flex flex-1 min-h-0">
-        {sidebar && (
+        {showSidebar && (
           <aside className="w-60 flex-none bg-[var(--color-panel)] border-r border-[var(--color-border)] flex flex-col">
             <div className="p-3">
               <button className="btn btn-primary w-full justify-center" data-testid="new-doc" onClick={() => setNewOpen(true)}>
@@ -195,12 +205,11 @@ function Home({ cfg, onNew, docs, open }: { cfg: AppConfig; onNew: () => void; d
   return (
     <div className="h-full overflow-auto">
       <div className="flex flex-col items-center justify-center py-24 gap-5 px-6">
-        <BrandTile size={48} />
+        <BrandTile size={48} icon={cfg.ui?.icon_url} />
         <div className="text-center">
           <p className="text-base font-semibold text-[var(--color-text)]">What are you writing?</p>
-          <p className="text-sm text-[var(--color-text-muted)] mt-1 max-w-md">
-            You own the thinking; your agent owns the styling. Draft block by block, tag the agent in comments,
-            approve every change, and export exactly what you see.
+          <p className="text-sm text-[var(--color-text-muted)] mt-1 max-w-md whitespace-pre-line" data-testid="welcome">
+            {cfg.ui?.welcome_message || `You own the thinking; ${cfg.ui?.agent_name && cfg.ui.agent_name !== "Co-author" ? cfg.ui.agent_name : "your agent"} owns the styling. Draft block by block, tag the agent in comments, approve every change, and export exactly what you see.`}
           </p>
         </div>
         <div className="flex flex-wrap items-center justify-center gap-2 max-w-md">

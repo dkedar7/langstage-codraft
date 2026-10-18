@@ -5,6 +5,7 @@ import type { Block, Ref, VersionTree } from "../types";
 import { blockText } from "./Diff";
 import { useEditorApi } from "./context";
 import { SketchPad } from "./SketchPad";
+import { withBase } from "../base";
 
 export function BlockPanel() {
   const ed = useEditorApi();
@@ -324,7 +325,7 @@ function ContentEditor({ block, patch }: { block: Block; patch: (c: any, note?: 
             {c.sketch && <button className="btn btn-ghost" onClick={() => patch({ sketch: "" }, "sketch removed")}>Remove sketch</button>}
           </div>
           {sketching && (
-            <SketchPad initial={c.sketch ? `/api/uploads/${c.sketch}/file` : undefined} onClose={() => setSketching(false)}
+            <SketchPad initial={c.sketch ? withBase(`/api/uploads/${c.sketch}/file`) : undefined} onClose={() => setSketching(false)}
               onSave={async (png) => {
                 const file = new File([png], `sketch-${block.id}.png`, { type: "image/png" });
                 const u = await ed.run(api.upload(ed.doc.id, file, "asset"));
@@ -350,7 +351,7 @@ function ContentEditor({ block, patch }: { block: Block; patch: (c: any, note?: 
               // Capture a poster frame in the browser: the PDF/PNG export shows it.
               let poster = "";
               if (f.type.startsWith("video/")) {
-                const blob = await posterFrame(`/api/uploads/${u.id}/file`).catch(() => null);
+                const blob = await posterFrame(withBase(`/api/uploads/${u.id}/file`)).catch(() => null);
                 if (blob) {
                   const p = await api.upload(ed.doc.id, new File([blob], `poster-${block.id}.jpg`, { type: "image/jpeg" }), "asset").catch(() => null);
                   poster = p?.id || "";

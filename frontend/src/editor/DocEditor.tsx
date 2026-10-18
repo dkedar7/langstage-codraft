@@ -17,6 +17,7 @@ import { EditorContext, type EditorApi, type PanelTab } from "./context";
 import { DocPanel } from "./DocPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { useLive } from "./useLive";
+import { withBase } from "../base";
 
 const ADD_TYPES: { type: string; label: string; icon: React.JSX.Element; content?: any; layout?: any }[] = [
   { type: "text", label: "Text", icon: <FileText size={14} /> },
@@ -67,14 +68,14 @@ function TabButton({ active, onClick, icon: Icon, label, count, testid }: {
 }
 
 export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk, clearAsk }: {
-  docId: string; cfg: AppConfig; identity: { id: string; name: string; color: string; setName: (n: string) => void };
+  docId: string; cfg: AppConfig; identity: { id: string; name: string; color: string; setName: (n: string) => void; managed?: boolean };
   onTitle: (t: string) => void; onChanged: () => void; pendingAsk?: string; clearAsk: () => void;
 }) {
   const [doc, setDoc] = useState<Doc | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [selected, select] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
-  const [tab, setTab] = useState<PanelTab>("chat");
+  const [tab, setTab] = useState<PanelTab>(cfg.ui?.features?.chat === false ? "comments" : "chat");
   const [commentFilter, setCommentFilter] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; msg: string; kind: string }[]>([]);
@@ -219,7 +220,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
     setExportOpen(false);
     toast(`Rendering ${fmt.toUpperCase()}…`);
     try {
-      const r = await fetch(`/api/docs/${doc.id}/export?format=${fmt}`);
+      const r = await fetch(withBase(`/api/docs/${doc.id}/export?format=${fmt}`));
       if (!r.ok) {
         const j = await r.json().catch(() => ({ detail: r.statusText }));
         throw new Error(j.detail);
@@ -280,7 +281,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
                       <span>{l}</span><span className="text-[11px] text-[var(--color-text-muted)]">{hint}</span></button>
                   ))}
                   <button className="menu-item border-t border-[var(--color-border)] mt-1 rounded-none"
-                    onClick={() => { setExportOpen(false); window.open(`/print/${doc.id}?autoprint=1`, "_blank"); }}>Print from browser…</button>
+                    onClick={() => { setExportOpen(false); window.open(withBase(`/print/${doc.id}?autoprint=1`), "_blank"); }}>Print from browser…</button>
                 </div>
               )}
             </div>
@@ -308,7 +309,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
             <Allotment.Pane minSize={340} preferredSize={480} visible={panelOpen}>
               <div className="flex flex-col h-full bg-[var(--color-panel)]">
                 <div className="flex items-center gap-1 px-2 h-11 border-b border-[var(--color-border)] overflow-x-auto flex-none">
-                  <TabButton testid="tab-chat" active={tab === "chat"} onClick={() => setTab("chat")} icon={MessageSquare} label="Chat" />
+                  {cfg.ui?.features?.chat !== false && <TabButton testid="tab-chat" active={tab === "chat"} onClick={() => setTab("chat")} icon={MessageSquare} label="Chat" />}
                   <TabButton testid="tab-comments" active={tab === "comments"} onClick={() => setTab("comments")} icon={MessagesSquare} label="Comments" count={openComments} />
                   <TabButton testid="tab-review" active={tab === "review"} onClick={() => setTab("review")} icon={GitPullRequestArrow} label="Review" count={pending} />
                   <TabButton testid="tab-block" active={tab === "block"} onClick={() => setTab("block")} icon={SquareDashedMousePointer} label="Block" />
@@ -334,7 +335,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
             <span className="text-xs text-[var(--color-text-muted)]">exactly what export renders · Esc to close</span>
             <button className="btn ml-auto" onClick={() => setPreview(false)}>Close</button>
           </div>
-          <iframe title="preview" src={`/print/${doc.id}`} className="flex-1 bg-[var(--ui-canvas)]" data-testid="preview-frame" />
+          <iframe title="preview" src={withBase(`/print/${doc.id}`)} className="flex-1 bg-[var(--ui-canvas)]" data-testid="preview-frame" />
         </div>
       )}
       <div className="fixed bottom-4 right-4 z-[60] space-y-2">

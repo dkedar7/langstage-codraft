@@ -3,6 +3,7 @@ import { memo, useMemo } from "react";
 import type { Block, Ref } from "../types";
 import { Chart, DEFAULT_CHART_HEIGHT } from "./Chart";
 import { mdToHtml } from "./markdown";
+import { withBase } from "../base";
 
 export interface RenderCtx {
   /** de-duplicated references in reading order, for `references` blocks */
@@ -46,7 +47,7 @@ function frameHeight(c: Record<string, any>, boxed: boolean): number {
 
 function imageSrc(src: string): string {
   if (!src) return "";
-  if (/^upl_[a-z0-9]+$/i.test(src)) return `/api/uploads/${src}/file`;
+  if (/^upl_[a-z0-9]+$/i.test(src)) return withBase(`/api/uploads/${src}/file`);
   return src;
 }
 

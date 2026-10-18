@@ -33,7 +33,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "page_size": "letter",           # letter | a4 | legal | a5 | slide | custom
     "page_w_mm": None,               # custom page width (mm)
     "page_h_mm": None,               # custom page height (mm)
-    "page_number_start": 1,          # number printed on the first body page ({page})
+    "page_number_start": 1,          # number printed on the first numbered page ({page})
+    "number_cover_pages": False,     # count cover and back pages when numbering
+    "unnumbered_pages": [],          # page positions (1-based) that show no number and don't use one
     "orientation": "portrait",       # portrait | landscape
     "margins": {"top": 20, "right": 20, "bottom": 20, "left": 20},  # mm
     "columns": 1,                    # 1..3
@@ -276,6 +278,9 @@ class Store:
             raise Invalid("settings.approval must be 'required' or 'auto'")
         if s["orientation"] not in ("portrait", "landscape"):
             raise Invalid("settings.orientation must be 'portrait' or 'landscape'")
+        up = s.get("unnumbered_pages") or []
+        if not isinstance(up, list) or not all(isinstance(n, int) and n >= 1 for n in up):
+            raise Invalid("settings.unnumbered_pages must be a list of page positions (1, 2, ...)")
         if s.get("page_size") == "custom":
             for k in ("page_w_mm", "page_h_mm"):
                 v = s.get(k)

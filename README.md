@@ -136,6 +136,8 @@ Every layout feature is available to people too (Block and Document panels) and 
 block styles (`lead`, `pullquote`, `kicker`, `byline`, `footer`, `bio`; headings `display`,
 `section`, `rule`; `figure-box`; `hanging` references; `dark` callouts), drop caps, custom page
 sizes, page-anchored pins, and reserved areas (`reserve_area`) that keep part of a page empty.
+Page numbers: put `{page}` (and `{pages}`) in a repeating footer; cover and closing pages are
+skipped unless you turn on "Number cover and closing pages", and any page can be left unnumbered.
 
 ## Bring any agent: MCP
 

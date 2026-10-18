@@ -183,3 +183,10 @@ def test_reserve_area_and_dark_callout(store, cfg_for):
     assert sp["type"] == "spacer" and sp["layout"]["pin"]["anchor"] == "page" and sp["layout"]["repeat"] == "odd"
     c = store.insert_block(d["id"], "callout", {"markdown": "Hi", "tone": "dark"}, layout={"variant": "dark"})
     assert c["layout"]["variant"] == "dark" and c["content"]["tone"] == "dark"
+
+
+def test_numbering_settings_via_tool(store, cfg_for):
+    d = store.create_document("N")
+    call(set_document_style, cfg_for(d["id"]), number_cover_pages=True, unnumbered_pages="3, 7", page_number_start=5)
+    s = store.get_document(d["id"])["settings"]
+    assert s["number_cover_pages"] is True and s["unnumbered_pages"] == [3, 7] and s["page_number_start"] == 5

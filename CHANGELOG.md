@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1 — 2026-10-18
+
+- **Fixed: blank pages at the end of PDF exports.** The hidden copy of the document used to measure
+  blocks extended the page, and Chromium's print-to-PDF added a blank page for every page of it
+  (a 7-page report exported as 15). It is now zero-sized; layout and other exports are unchanged.
+  A regression test checks that PDF and PNG exports have the same number of pages.
+- **Page numbering options.** Cover and closing (back) pages are no longer counted, so the first
+  body page is page 1 (or your starting number), and `{pages}` counts only numbered pages. Turn on
+  "Number cover and closing pages" to count them. "Pages without a number" lists positions whose
+  page-number footer is hidden and which don't use a number. Available in the Document panel and
+  through `set_document_style` (`number_cover_pages`, `unnumbered_pages`).
+  **Behavior change:** in documents with a cover page, body pages now number from 1 instead of 2.
+
 ## 0.3.0 — 2026-10-18
 
 Magazine-quality layout, and an agent that designs reports from reference pages.

@@ -195,3 +195,39 @@ def test_html_zip_includes_video_and_poster(server):
     c.post(f"/api/docs/{did}/blocks", json={"type": "image", "content": {"src": up["id"]}})
     z = zipfile.ZipFile(io.BytesIO(c.get(f"/api/docs/{did}/export", params={"format": "html"}).content))
     assert "index.html" in z.namelist() and any(n.startswith("assets/api_uploads") for n in z.namelist())
+
+
+def test_long_document_pdf_has_no_blank_trailing_pages(server):
+    """Regression: the hidden measuring copy used to make print-to-PDF add blank pages."""
+    import zipfile as _zip
+
+    from pypdf import PdfReader
+
+    c = api(server)
+    did = c.post("/api/docs", json={"title": "Long", "settings": {"columns": 3}}).json()["id"]
+    para = ("Utilities measure flow, pressure and quality across the network. " * 12 + "\n\n") * 6
+    c.post(f"/api/docs/{did}/blocks", json={"type": "text", "content": {"markdown": para * 4}})
+    pdf = c.get(f"/api/docs/{did}/export", params={"format": "pdf"}).content
+    png = c.get(f"/api/docs/{did}/export", params={"format": "png"}).content
+    n_png = len(_zip.ZipFile(io.BytesIO(png)).namelist()) if png[:2] == b"PK" else 1
+    assert len(PdfReader(io.BytesIO(pdf)).pages) == n_png >= 2
+
+
+def test_page_numbers_skip_cover_and_unnumbered_pages(page, server):
+    c = api(server)
+    did = c.post("/api/docs", json={"title": "Numbers", "settings": {"unnumbered_pages": [3]}}).json()["id"]
+    c.post(f"/api/docs/{did}/blocks", json={"type": "heading", "content": {"text": "Cover", "level": 1},
+                                            "layout": {"role": "cover"}})
+    c.post(f"/api/docs/{did}/blocks", json={"type": "text", "content": {"markdown": "Page {page} of {pages}"},
+                                            "layout": {"variant": "footer", "repeat": "all",
+                                                       "pin": {"page": 1, "top": 900, "column": 0, "span": 1}}})
+    for _ in range(3):
+        c.post(f"/api/docs/{did}/blocks", json={"type": "text", "content": {"markdown": "x"}})
+        c.post(f"/api/docs/{did}/blocks", json={"type": "page-break", "content": {}})
+    page.goto(f"{server}/print/{did}")
+    page.wait_for_function("window.__codraftReady === true")
+    texts = page.eval_on_selector_all(".cd-page", "ps => ps.map(p => p.textContent.trim())")  # textContent ignores CSS uppercase
+    assert "Page" not in texts[0]                     # cover: no footer
+    assert "Page 1 of 3" in texts[1]                   # first body page is 1
+    assert "Page" not in texts[2]                      # position 3 is unnumbered
+    assert "Page 2 of 3" in texts[3]

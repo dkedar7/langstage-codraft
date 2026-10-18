@@ -59,6 +59,8 @@ export interface Settings {
   page_w_mm?: number | null;
   page_h_mm?: number | null;
   page_number_start?: number;
+  number_cover_pages?: boolean;
+  unnumbered_pages?: number[];
   orientation: "portrait" | "landscape";
   margins: { top: number; right: number; bottom: number; left: number };
   columns: number;

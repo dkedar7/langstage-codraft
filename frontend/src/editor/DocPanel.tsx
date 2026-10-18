@@ -58,6 +58,14 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
               )}
               <div><span className="label">First page number</span>
                 <NumberInput value={s.page_number_start ?? 1} min={0} onCommit={(v) => set({ page_number_start: v })} /></div>
+              <div><span className="label">Pages without a number</span>
+                <TextInput value={(s.unnumbered_pages || []).join(", ")} placeholder="e.g. 7"
+                  onCommit={(v) => set({ unnumbered_pages: (v.match(/\d+/g) || []).map(Number).filter((n) => n >= 1) })} /></div>
+              <label className="col-span-2 flex items-center gap-2 mt-2 text-[12.5px]">
+                <input type="checkbox" data-testid="number-cover-pages" checked={!!s.number_cover_pages}
+                  onChange={(e) => set({ number_cover_pages: e.target.checked })} />
+                Number cover and closing pages too
+              </label>
               <div>
                 <span className="label">Orientation</span>
                 <select className="select" value={s.orientation} onChange={(e) => set({ orientation: e.target.value as any })}>

@@ -503,12 +503,15 @@ def set_document_style(
     page_w_mm: float | None = None, page_h_mm: float | None = None,
     margin_top_mm: float | None = None, margin_right_mm: float | None = None,
     margin_bottom_mm: float | None = None, margin_left_mm: float | None = None,
-    page_number_start: int | None = None,
+    page_number_start: int | None = None, number_cover_pages: bool | None = None,
+    unnumbered_pages: str | None = None,
 ) -> str:
     """Change document-wide styling (applies immediately): theme (see get_document
     for the list), columns 1-3, page_size (letter, a4, legal, a5, slide; or page_w_mm +
     page_h_mm for a custom size), orientation, per-side margins, page_number_start (the
-    number {page} prints on the first body page),
+    number {page} prints on the first numbered page), number_cover_pages (count cover and
+    back pages; default no), unnumbered_pages ("7" or "3, 7": positions whose page-number
+    footer is hidden and that don't use up a number),
     mode (paged or pageless), uniform margin in mm, the inter-block gap, the column gap,
     or the title."""
     try:
@@ -543,6 +546,10 @@ def set_document_style(
             s["page_h_mm"] = float(page_h_mm or cur.get("page_h_mm") or 279.4)
         if page_number_start is not None:
             s["page_number_start"] = int(page_number_start)
+        if number_cover_pages is not None:
+            s["number_cover_pages"] = bool(number_cover_pages)
+        if unnumbered_pages is not None:
+            s["unnumbered_pages"] = [int(v) for v in re.findall(r"\d+", unnumbered_pages)]
         if block_gap_mm is not None:
             s["block_gap"] = float(block_gap_mm)
         if column_gap_mm is not None:

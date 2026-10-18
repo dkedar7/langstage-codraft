@@ -7,6 +7,7 @@ import { BlockView } from "../render/BlockView";
 import { Fragment, Page } from "../render/Page";
 import { themeVars } from "../render/theme";
 import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
+import { pageNumbers, usesPageToken } from "../layout/numbering";
 import type { Block, Suggestion } from "../types";
 import { useEditorApi } from "./context";
 import { SuggestionDiff } from "./Diff";
@@ -221,11 +222,17 @@ export function Canvas() {
   };
   const editingAt = ed.editing ? firstFragment(ed.editing) : null;
 
-  const pageStart = doc.settings.page_number_start ?? 1;
-  const pctx = { ...ctx, title: doc.title, pageCount: pageStart + layout.pages.length - 1 };
+  const numbering = pageNumbers(layout.pages, {
+    start: doc.settings.page_number_start ?? 1,
+    numberCoverPages: !!doc.settings.number_cover_pages,
+    unnumbered: doc.settings.unnumbered_pages || [],
+  });
+  const pctx = { ...ctx, title: doc.title, pageCount: numbering.last };
   const renderItem = (it: Placed, page: PageLayout) => {
     const b = byId[it.id];
     if (!b) return null;
+    // Page-number blocks hide on unnumbered pages (same rule as the export).
+    if (b.layout.pin && numbering.map[page.number] == null && usesPageToken(b.content)) return null;
     const sel = ed.selected === b.id;
     const pend = pendingByBlock[b.id] || [];
     const nComments = commentsByBlock[b.id] || 0;
@@ -260,7 +267,7 @@ export function Canvas() {
           else if (!isVirtual) ed.setTab("block");
         }}>
         <Fragment item={it}>
-          <BlockView block={b} width={it.w} ctx={pctx} fixedHeight={fixed} pageNo={pageStart + page.number - 1} />
+          <BlockView block={b} width={it.w} ctx={pctx} fixedHeight={fixed} pageNo={numbering.map[page.number] ?? undefined} />
         </Fragment>
         {it.continued && <div className="ed-cont top" />}
         {showChrome && (peersByBlock[b.id] || []).slice(0, 1).map((p) => (
@@ -328,6 +335,8 @@ export function Canvas() {
             <div key={p.number} ref={(el) => { pageRefs.current[p.number] = el; }} style={{ position: "relative" }}>
               <div className="ed-page-label">
                 {p.kind === "cover" ? "Cover" : p.kind === "back" ? "Back page" : `Page ${p.number}`}
+                {numbering.map[p.number] != null && numbering.map[p.number] !== p.number ? ` · printed as ${numbering.map[p.number]}` : ""}
+                {numbering.map[p.number] == null && p.kind === "body" ? " · unnumbered" : ""}
                 {doc.settings.mode === "pageless" ? " (pageless)" : ""}
               </div>
               <Page page={p} geo={geo} renderItem={renderItem}>

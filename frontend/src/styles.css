@@ -152,7 +152,10 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 }
 .cd-pages { display: flex; flex-direction: column; align-items: safe center; gap: 28px; padding: 28px 0 80px; }
 .cd-page { background: var(--cd-page); box-shadow: 0 1px 3px rgba(0,0,0,.08), 0 8px 24px rgba(0,0,0,.06); flex: none; }
-.cd-measure { position: absolute; left: -100000px; top: 0; visibility: hidden; pointer-events: none; }
+/* The measuring copy of every block: laid out (so it can be measured) but zero-sized and clipped,
+   so it never adds scrollable or printable area. A tall document used to make print-to-PDF add
+   blank pages after the last real page. */
+.cd-measure { position: absolute; left: 0; top: 0; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
 .cd-measure-item { display: block; }
 
 .cd-block { box-sizing: border-box; overflow-wrap: anywhere; }

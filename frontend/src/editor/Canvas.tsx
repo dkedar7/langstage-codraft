@@ -6,7 +6,7 @@ import type { LayoutResult, PageLayout, Placed } from "../layout/paginate";
 import { BlockView } from "../render/BlockView";
 import { Fragment, Page } from "../render/Page";
 import { themeVars } from "../render/theme";
-import { useDocLayout } from "../render/useDocLayout";
+import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
 import type { Block, Suggestion } from "../types";
 import { useEditorApi } from "./context";
 import { SuggestionDiff } from "./Diff";
@@ -221,6 +221,8 @@ export function Canvas() {
   };
   const editingAt = ed.editing ? firstFragment(ed.editing) : null;
 
+  const pageStart = doc.settings.page_number_start ?? 1;
+  const pctx = { ...ctx, title: doc.title, pageCount: pageStart + layout.pages.length - 1 };
   const renderItem = (it: Placed, page: PageLayout) => {
     const b = byId[it.id];
     if (!b) return null;
@@ -229,7 +231,7 @@ export function Canvas() {
     const nComments = commentsByBlock[b.id] || 0;
     const isVirtual = !!b.virtual;
     const meas = measured[b.id];
-    const fixed = b.layout.pin?.height || b.layout.height;
+    const fixed = pinHeight(b) || b.layout.height;
     const contentOverflow = !!fixed && !!meas && meas.natural > fixed + 1 && ["text", "callout"].includes(b.type);
     const cls = ["ed-item", sel && "selected", pend.length && "has-suggestion", isVirtual && "virtual",
       (it.overflow || contentOverflow) && "overflow", it.pinned && "pinned"].filter(Boolean).join(" ");
@@ -258,7 +260,7 @@ export function Canvas() {
           else if (!isVirtual) ed.setTab("block");
         }}>
         <Fragment item={it}>
-          <BlockView block={b} width={it.w} ctx={ctx} fixedHeight={fixed} />
+          <BlockView block={b} width={it.w} ctx={pctx} fixedHeight={fixed} pageNo={pageStart + page.number - 1} />
         </Fragment>
         {it.continued && <div className="ed-cont top" />}
         {showChrome && (peersByBlock[b.id] || []).slice(0, 1).map((p) => (
@@ -321,7 +323,7 @@ export function Canvas() {
     <div className="relative" onPointerMove={onPointerMove} onPointerUp={onPointerUp}
       onClick={() => { ed.select(null); setOpenSugg(null); }}>
       <div style={{ zoom: ed.zoom }}>
-        <div className="cd-doc cd-pages" style={themeVars(theme)}>
+        <div className="cd-doc cd-pages" style={themeVars(theme)} lang={langCode(doc.settings)}>
           {layout.pages.map((p) => (
             <div key={p.number} ref={(el) => { pageRefs.current[p.number] = el; }} style={{ position: "relative" }}>
               <div className="ed-page-label">

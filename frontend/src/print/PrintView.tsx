@@ -5,7 +5,7 @@ import { BlockView } from "../render/BlockView";
 import { pendingCharts } from "../render/Chart";
 import { Fragment, Page } from "../render/Page";
 import { themeVars } from "../render/theme";
-import { useDocLayout } from "../render/useDocLayout";
+import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
 import type { AppConfig, Doc } from "../types";
 
 declare global {
@@ -37,6 +37,8 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
   const theme = cfg.themes[doc.settings.theme];
   const { layout, geo, ctx, measureNode, ready, measured } = useDocLayout(doc.blocks, doc.settings, theme, false, true);
   const byId = Object.fromEntries(doc.blocks.map((b) => [b.id, b]));
+  const start = doc.settings.page_number_start ?? 1;
+  const pctx = { ...ctx, title: doc.title, pageCount: start + layout.pages.length - 1 };
   const [w, h] = pageMm(doc.settings);
   const pageless = doc.settings.mode === "pageless";
 
@@ -72,15 +74,16 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
   return (
     <div id="cd-print-root" className="cd-print">
       <style>{pageCss}</style>
-      <div className="cd-doc cd-pages" style={themeVars(theme)}>
+      <div className="cd-doc cd-pages" style={themeVars(theme)} lang={langCode(doc.settings)}>
         {layout.pages.map((p) => (
           <Page key={p.number} page={p} geo={geo} kind={p.kind} renderItem={(it) => {
             const b = byId[it.id];
             if (!b) return null;
+            const pageNo = start + p.number - 1;
             return (
               <div key={`${it.id}-${it.offset}`} className="cd-item" data-block-id={it.id} data-type={b.type} data-fragment={it.fragment ? "1" : "0"} style={{ position: "absolute", left: it.x, top: it.y, width: it.w, height: it.h }}>
                 <Fragment item={it}>
-                  <BlockView block={b} width={it.w} ctx={ctx} fixedHeight={b.layout.pin?.height || b.layout.height} />
+                  <BlockView block={b} width={it.w} ctx={pctx} fixedHeight={pinHeight(b) || b.layout.height} pageNo={pageNo} />
                 </Fragment>
               </div>
             );

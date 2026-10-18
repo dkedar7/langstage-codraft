@@ -35,7 +35,7 @@ MCP_INSTRUCTIONS = (
 )
 
 # Tools whose LangChain signature we expose 1:1, plus a leading doc_id.
-_SKIP = {"view_pages", "view_sketch"}
+_SKIP = {"view_pages", "view_sketch", "view_upload"}
 
 
 def _cfg(doc_id: str) -> dict:
@@ -92,6 +92,16 @@ def build_mcp_server() -> Any:
         out: list = [f"Rendered {pages_seen} of {shots[0]['total']}."]
         out += [Image(data=Path(s["path"]).read_bytes(), format="jpeg") for s in shots]
         return out
+
+    @server.tool(description="Look at an uploaded file: images come back as images (e.g. reference pages to match).")
+    def view_upload(doc_id: str, upload_id: str) -> list:
+        u = get_store().get_upload(upload_id, with_text=True)
+        if u["doc_id"] != doc_id:
+            return ["ERROR: that upload belongs to another document"]
+        if u["mime"].startswith("image/") and not u["mime"].endswith("svg+xml"):
+            fmt = "png" if u["mime"].endswith("png") else "jpeg"
+            return [f"{u['filename']}:", Image(data=Path(u["path"]).read_bytes(), format=fmt)]
+        return [u["text"][:3000] or "(no extractable text)"]
 
     @server.tool(description="Look at the author's sketch on an image block (returns the drawing).")
     def view_sketch(doc_id: str, block_id: str) -> list:

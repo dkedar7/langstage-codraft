@@ -5,6 +5,14 @@ import type { Block, Settings, Theme } from "../types";
 import { BlockView, compileReferences, type RenderCtx } from "./BlockView";
 import { themeVars } from "./theme";
 
+/** A BCP-47 code for hyphenation, from the brief's language. */
+export function langCode(s: Settings): string {
+  const l = (s.brief?.language || "en").toLowerCase();
+  const map: Record<string, string> = { english: "en", spanish: "es", french: "fr", german: "de", portuguese: "pt",
+    italian: "it", dutch: "nl", hindi: "hi", marathi: "mr", japanese: "ja", chinese: "zh" };
+  return map[l] || (l.length <= 3 ? l : "en");
+}
+
 export interface Measured {
   height: number;
   natural: number;
@@ -16,10 +24,20 @@ const SPLITTABLE_UNITS = new Set(["P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H
 /** Break points inside a rendered text block: between paragraphs/list items, and
  *  between lines of a paragraph (keeping at least 2 lines on each side). */
 function textSplits(root: HTMLElement): Split[] {
-  const md = root.querySelector(".cd-md");
-  if (!md) return [];
   const top = root.getBoundingClientRect().top;
   const units: HTMLElement[] = [];
+  const refs = root.querySelector(".cd-refs");
+  if (refs) {
+    // References split between entries (the list title stays with the first one).
+    units.push(...(Array.from(refs.querySelectorAll(":scope > ol > li, :scope > ul > li")) as HTMLElement[]));
+    return units.slice(0, -1).map((li, i) => {
+      const b = li.getBoundingClientRect().bottom - top;
+      const n = units[i + 1].getBoundingClientRect().top - top;
+      return { end: b, next: Math.max(b, n) };
+    }).filter((s) => s.end > 0);
+  }
+  const md = root.querySelector(".cd-md");
+  if (!md) return [];
   for (const el of Array.from(md.children) as HTMLElement[]) {
     if ((el.tagName === "UL" || el.tagName === "OL") && el.children.length) {
       units.push(...(Array.from(el.children) as HTMLElement[]));
@@ -50,19 +68,30 @@ function textSplits(root: HTMLElement): Split[] {
   return splits.sort((a, b) => a.end - b.end);
 }
 
+/** The fixed height a pinned block reserves, if any. */
+export function pinHeight(b: Block): number | null {
+  const p = b.layout.pin;
+  if (!p) return null;
+  return (p.anchor === "page" ? p.h : p.height) || null;
+}
+
 export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>): MeasuredBlock[] {
   return blocks.map((b) => {
     const meas = m[b.id] || { height: 24, natural: 24, splits: [] };
-    const fixed = b.layout.pin?.height || b.layout.height;
+    const fixed = pinHeight(b) || b.layout.height;
     return {
       id: b.id,
-      kind: b.type === "page-break" ? "break" : b.type === "text" && !fixed ? "text" : "atomic",
+      kind: b.type === "page-break" ? "break" : (b.type === "text" || b.type === "references") && !fixed && !b.layout.pin ? "text" : "atomic",
       role: b.layout.role || "flow",
       full: b.layout.span === "full",
       height: fixed || meas.height,
       splits: meas.splits,
       pin: b.layout.pin && b.layout.role === "flow"
-        ? { ...b.layout.pin, height: b.layout.pin.height || meas.height } : null,
+        ? b.layout.pin.anchor === "page"
+          ? { anchor: "page" as const, page: b.layout.pin.page, top: b.layout.pin.y ?? 0, x: b.layout.pin.x ?? 0,
+              w: b.layout.pin.w ?? 300, column: 0, span: 1, height: b.layout.pin.h || meas.height }
+          : { ...b.layout.pin, height: b.layout.pin.height || meas.height }
+        : null,
       repeat: b.layout.repeat,
     };
   });
@@ -75,7 +104,8 @@ export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>): 
  */
 export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme | undefined, editing: boolean, print = false) {
   const geo = useMemo(() => geometry(settings), [settings]);
-  const ctx: RenderCtx = useMemo(() => ({ references: compileReferences(blocks), editing, print }), [blocks, editing, print]);
+  const ctx: RenderCtx = useMemo(() => ({ references: compileReferences(blocks), editing, print, pageCount: 0 }),
+    [blocks, editing, print]);
   const boxRef = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState<Record<string, Measured>>({});
   const [tick, setTick] = useState(0);
@@ -100,7 +130,7 @@ export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme |
       if (!root) continue;
       const natural = root.getBoundingClientRect().height;
       const b = blocks.find((x) => x.id === id);
-      const splits = b && b.type === "text" ? textSplits(root) : [];
+      const splits = b && (b.type === "text" || b.type === "references") ? textSplits(root) : [];
       out[id] = { height: Math.ceil(natural), natural, splits };
     }
     setMeasured((prev) => (JSON.stringify(prev) === JSON.stringify(out) ? prev : out));
@@ -139,11 +169,11 @@ export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme |
   );
 
   const measureNode: ReactNode = (
-    <div ref={boxRef} className="cd-doc cd-measure" aria-hidden style={themeVars(theme)}>
+    <div ref={boxRef} className="cd-doc cd-measure" aria-hidden style={themeVars(theme)} lang={langCode(settings)}>
       {blocks.map((b) => (
         <div key={b.id} className="cd-measure-item" data-id={b.id} style={{ width: widths[b.id] }}>
           <BlockView block={b} width={widths[b.id]} ctx={ctx}
-            fixedHeight={b.layout.pin?.height || b.layout.height} />
+            fixedHeight={pinHeight(b) || b.layout.height} />
         </div>
       ))}
     </div>

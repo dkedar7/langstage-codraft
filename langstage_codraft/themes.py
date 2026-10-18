@@ -17,7 +17,8 @@ from typing import Any
 THEME_KEYS = (
     "font_body", "font_heading", "font_mono", "font_size", "line_height", "heading_scale",
     "color_text", "color_muted", "color_accent", "color_page", "color_rule", "color_callout",
-    "heading_weight", "heading_case",
+    "heading_weight", "heading_case", "font_display", "display_weight", "font_label",
+    "text_align", "hyphens", "color_figure", "paragraph_gap", "paragraph_indent",
 )
 
 BUILTIN_THEMES: dict[str, dict[str, Any]] = {
@@ -30,6 +31,21 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
         "color_text": "#1d1d1f", "color_muted": "#5f6368", "color_accent": "#1a4d8f",
         "color_page": "#ffffff", "color_rule": "#d6d6d6", "color_callout": "#eef3fa",
         "heading_weight": 700, "heading_case": "none",
+        "font_display": "Inter, system-ui, sans-serif", "display_weight": 300,
+        "font_label": "'Roboto Condensed', 'Arial Narrow', sans-serif",
+        "text_align": "left", "hyphens": "manual", "color_figure": "#eef0f2",
+    },
+    "journal": {
+        "label": "Journal (magazine feature)",
+        "font_body": "'Source Serif 4', 'Times New Roman', serif",
+        "font_heading": "'Roboto Condensed', 'Arial Narrow', sans-serif",
+        "font_display": "Inter, 'Helvetica Neue', Arial, sans-serif", "display_weight": 300,
+        "font_label": "'Roboto Condensed', 'Arial Narrow', sans-serif",
+        "font_size": 13, "line_height": 1.42, "heading_scale": 1.12,
+        "color_text": "#1a1a1a", "color_muted": "#444444", "color_accent": "#2b8fd0",
+        "color_rule": "#9a9a9a", "color_callout": "#eceeef", "color_figure": "#eceeef",
+        "heading_weight": 700, "heading_case": "uppercase",
+        "text_align": "justify", "hyphens": "auto", "paragraph_gap": 0, "paragraph_indent": 1.1,
     },
     "modern": {
         "label": "Modern",

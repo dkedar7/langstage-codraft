@@ -19,8 +19,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool, tool
 
 from . import textutil
-from .pages import column_width, content_box
-from .store import BLOCK_TYPES, Invalid, NotFound, get_store, plain_text
+from .pages import MM, column_width, content_box, page_px
+from .store import BLOCK_TYPES, BLOCK_VARIANTS, Invalid, NotFound, get_store, plain_text
 
 _MAX_READ = 6000
 
@@ -145,6 +145,16 @@ def get_document(config: RunnableConfig) -> str:
             f"Approval: {s['approval']} ({'your edits wait for the author' if s['approval'] == 'required' else 'your edits apply immediately'}).",
             "Brief: " + ("; ".join(f"{k}={v}" for k, v in s.get("brief", {}).items() if v) or "(none)"),
         ]
+        pw, ph = page_px(s)
+        cw, chh = content_box(s)
+        m = s["margins"]
+        ncol = int(s["columns"])
+        colw = column_width(s)
+        gap = s.get("column_gap", 8) * MM
+        cols = ", ".join(f"col {i}: x={round(m['left'] * MM + i * (colw + gap))}" for i in range(ncol))
+        lines.append(f"Geometry (px, 96/in): page {round(pw)}x{round(ph)}; content box x={round(m['left'] * MM)} "
+                     f"y={round(m['top'] * MM)} w={round(cw)} h={round(chh)}; column width {round(colw)}; {cols}.")
+        lines.append("Variants: " + "; ".join(f"{t}: {', '.join(v)}" for t, v in BLOCK_VARIANTS.items()))
         if place.get("_pages"):
             lines.append(f"Rendered pages: {place['_pages']}")
         if open_c.get("_doc"):
@@ -160,8 +170,13 @@ def get_document(config: RunnableConfig) -> str:
                 bits.append(f"role={lay['role']}")
             if lay.get("span") == "full":
                 bits.append("full-width")
+            if lay.get("variant"):
+                bits.append(f"variant={lay['variant']}")
+            if lay.get("dropcap"):
+                bits.append("dropcap")
             if lay.get("pin"):
-                bits.append(f"pinned p{lay['pin']['page']}" + (f" repeat={lay['repeat']}" if lay.get("repeat") else ""))
+                bits.append(f"pinned p{lay['pin']['page']}" + (" (page-anchored)" if lay["pin"].get("anchor") == "page" else "")
+                            + (f" repeat={lay['repeat']}" if lay.get("repeat") else ""))
             if b["id"] in place:
                 bits.append(f"page {'-'.join(map(str, sorted(set(place[b['id']]))))}")
             budget = _block_word_budget(s, b)
@@ -346,6 +361,7 @@ def propose_insert(
     block_type: str, content: str, config: RunnableConfig, after_block_id: str | None = None,
     at_start: bool = False, note: str = "", references: list[dict] | None = None,
     full_width: bool = False, heading_level: int = 2, comment_id: str | None = None,
+    variant: str | None = None,
 ) -> str:
     """Propose a new block. block_type is one of: text, heading, image, video, table,
     chart, callout, divider, references, page-break. It is inserted after `after_block_id`,
@@ -362,7 +378,7 @@ def propose_insert(
         payload: dict[str, Any] = {
             "type": block_type, "content": c,
             "after": None if at_start else (after_block_id or "__end__"),
-            "layout": {"span": "full" if full_width else "column"},
+            "layout": {"span": "full" if full_width else "column", **({"variant": variant} if variant else {})},
         }
         if references:
             payload["refs"] = references
@@ -419,13 +435,23 @@ def set_block_layout(
     height_px: int | None = None, auto_height: bool = False, role: str | None = None,
     pin_page: int | None = None, pin_top_px: int | None = None, pin_column: int = 0,
     pin_span: int = 1, unpin: bool = False, repeat: str | None = None,
+    variant: str | None = None, dropcap: bool | None = None,
+    page_x_px: int | None = None, page_y_px: int | None = None,
+    page_w_px: int | None = None, page_h_px: int | None = None,
 ) -> str:
     """Change a block's layout (styling; applies immediately). full_width spans all
     columns. height_px fixes its height (auto_height=True clears it). role: flow,
     cover or back (cover and back pages are exempt from columns). pin_page/pin_top_px
-    pin it to a page position so other blocks flow around it; unpin=True releases it.
-    repeat ('all', 'odd', 'even' or comma-separated page numbers) repeats a pinned
-    block, for headers, footers and logos."""
+    pin it to a column position so other blocks flow around it; unpin=True releases it.
+    page_x_px/page_y_px/page_w_px/page_h_px (with pin_page) instead anchor it to the
+    PAGE in px from the page's top-left corner, so it can bleed past the margins (hero
+    art, a full-width band, a footer in the bottom margin). repeat ('all', 'odd', 'even'
+    or comma-separated page numbers) repeats a pinned block, for headers and footers;
+    text in repeated blocks may use {page}, {pages} and {title}.
+    variant sets the typographic style (get_document lists them per block type), e.g.
+    text: lead, pullquote, kicker, byline, small, caption, footer, bio; heading: display,
+    section, rule, label; image/chart/table: figure-box. dropcap=True gives a text block a
+    large initial letter. variant='none' clears it."""
     try:
         store = get_store()
         _doc_id(config)
@@ -438,8 +464,20 @@ def set_block_layout(
             lay["height"] = int(height_px)
         if role:
             lay["role"] = role
+        if variant is not None:
+            lay["variant"] = None if variant.strip().lower() in ("", "none", "default") else variant.strip()
+        if dropcap is not None:
+            lay["dropcap"] = bool(dropcap)
         if unpin:
             lay["pin"] = None
+        elif page_x_px is not None or page_y_px is not None or page_w_px is not None:
+            cur = store.get_block(block_id)["layout"].get("pin") or {}
+            cur = cur if cur.get("anchor") == "page" else {}
+            lay["pin"] = {"anchor": "page", "page": pin_page or cur.get("page", 1),
+                          "x": page_x_px if page_x_px is not None else cur.get("x", 0),
+                          "y": page_y_px if page_y_px is not None else cur.get("y", 0),
+                          "w": page_w_px if page_w_px is not None else cur.get("w", 300),
+                          "h": page_h_px if page_h_px is not None else cur.get("h", 200)}
         elif pin_page is not None or pin_top_px is not None:
             cur = store.get_block(block_id)["layout"].get("pin") or {}
             lay["pin"] = {**cur, "page": pin_page or cur.get("page", 1),
@@ -461,9 +499,15 @@ def set_document_style(
     page_size: str | None = None, orientation: str | None = None, mode: str | None = None,
     margin_mm: float | None = None, block_gap_mm: float | None = None,
     column_gap_mm: float | None = None, title: str | None = None,
+    page_w_mm: float | None = None, page_h_mm: float | None = None,
+    margin_top_mm: float | None = None, margin_right_mm: float | None = None,
+    margin_bottom_mm: float | None = None, margin_left_mm: float | None = None,
+    page_number_start: int | None = None,
 ) -> str:
     """Change document-wide styling (applies immediately): theme (see get_document
-    for the list), columns 1-3, page_size (letter, a4, legal, a5, slide), orientation,
+    for the list), columns 1-3, page_size (letter, a4, legal, a5, slide; or page_w_mm +
+    page_h_mm for a custom size), orientation, per-side margins, page_number_start (the
+    number {page} prints on the first body page),
     mode (paged or pageless), uniform margin in mm, the inter-block gap, the column gap,
     or the title."""
     try:
@@ -487,6 +531,17 @@ def set_document_style(
         if margin_mm is not None:
             m = float(margin_mm)
             s["margins"] = {"top": m, "right": m, "bottom": m, "left": m}
+        sides = {"top": margin_top_mm, "right": margin_right_mm, "bottom": margin_bottom_mm, "left": margin_left_mm}
+        if any(v is not None for v in sides.values()):
+            cur = store.get_document(doc_id)["settings"]["margins"]
+            s["margins"] = {**cur, **s.get("margins", {}), **{k: float(v) for k, v in sides.items() if v is not None}}
+        if page_w_mm is not None or page_h_mm is not None:
+            cur = store.get_document(doc_id)["settings"]
+            s["page_size"] = "custom"
+            s["page_w_mm"] = float(page_w_mm or cur.get("page_w_mm") or 215.9)
+            s["page_h_mm"] = float(page_h_mm or cur.get("page_h_mm") or 279.4)
+        if page_number_start is not None:
+            s["page_number_start"] = int(page_number_start)
         if block_gap_mm is not None:
             s["block_gap"] = float(block_gap_mm)
         if column_gap_mm is not None:
@@ -589,6 +644,125 @@ view_sketch = StructuredTool.from_function(
 )
 
 
+def _view_upload(upload_id: str, config: RunnableConfig = None) -> tuple[str, Any]:
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        u = store.get_upload(upload_id, with_text=True)
+        if u["doc_id"] != doc_id:
+            return (f"ERROR: upload {upload_id} belongs to another document", None)
+        if u["mime"].startswith("image/") and not u["mime"].endswith("svg+xml"):
+            return (f"{u['filename']} ({u['purpose']}) is attached to this turn as an image.", {"images": [u["path"]]})
+        text = u["text"][:3000]
+        return (f"{u['filename']} ({u['purpose']}, {len(u['text'])} chars):\n{text or '(no extractable text)'}", None)
+    except Exception as exc:  # noqa: BLE001
+        return (_err(exc), None)
+
+
+view_upload = StructuredTool.from_function(
+    func=_view_upload,
+    name="view_upload",
+    description=("Look at an uploaded file. Images (for example reference pages whose look you should "
+                 "match, or photos) are attached so you can see them; text files return their opening text."),
+    response_format="content_and_artifact",
+)
+
+
+_SVG_BAD = re.compile(r"(?is)<script.*?</script>|<foreignObject.*?</foreignObject>|\son\w+\s*=\s*(\"[^\"]*\"|'[^']*')")
+
+
+def sanitize_svg(svg: str) -> str:
+    """Strip scripts, event handlers, foreignObject and external references from SVG."""
+    s = svg.strip()
+    if not s.startswith("<svg") and "<svg" in s:
+        s = s[s.index("<svg"):]
+    if not s.startswith("<svg") or "</svg>" not in s:
+        raise ValueError("expected a complete <svg>...</svg> document")
+    s = _SVG_BAD.sub("", s)
+    s = re.sub(r'(?i)(xlink:href|href)\s*=\s*"(?!#|data:image/)[^"]*"', "", s)
+    if "xmlns=" not in s[:200]:
+        s = s.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"', 1)
+    return s
+
+
+@tool
+def draw_figure(
+    svg: str, config: RunnableConfig, block_id: str | None = None, after_block_id: str | None = None,
+    label: str = "", title: str = "", source: str = "", caption: str = "", full_width: bool = False,
+    figure_box: bool = True, note: str = "",
+) -> str:
+    """Draw a diagram yourself as SVG (crisp vector text: use it for labelled diagrams,
+    layered architectures, maps, flowcharts, timelines; use generate_image for photos and
+    illustrations). Give a complete <svg viewBox=...> with explicit fills; keep fonts
+    generic (Arial, Helvetica, sans-serif). It lands in `block_id` (an image block) or as
+    a new image block after `after_block_id` (end of document if neither). label (for
+    example "FIGURE 1"), title, source and caption fill the figure's frame; figure_box
+    gives it the grey figure panel."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        clean = sanitize_svg(svg)
+        up = store.add_upload(doc_id, f"figure-{len(clean)}.svg", clean.encode("utf-8"), purpose="asset",
+                              mime="image/svg+xml")
+        content = {"src": up["id"], "alt": title or label or "figure", "label": label, "title": title,
+                   "source": source, "caption": caption}
+        variant = {"variant": "figure-box"} if figure_box else {}
+        if block_id:
+            b = store.get_block(block_id)
+            if b["type"] != "image":
+                return f"ERROR: {block_id} is a {b['type']} block; draw into an image block or insert a new one"
+            s = store.propose(doc_id, "edit", {"content": content, "layout": variant}, block_id=block_id,
+                              note=note or f"Figure: {title or label}")
+        else:
+            s = store.propose(doc_id, "insert", {
+                "type": "image", "content": content, "after": after_block_id or "__end__",
+                "layout": {"span": "full" if full_width else "column", **variant}}, note=note or f"Figure: {title or label}")
+        return _sugg_result(s)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: str | None = None,
+                  note: str = "") -> str:
+    """Insert several blocks in one call (drafting a section, an outline, a whole page).
+    Each item: {"type": "text"|"heading"|..., "content": <same formats as propose_edit, or a
+    content dict>, "level": 1-3 for headings, "layout": {"span": "full"|"column",
+    "variant": "...", "dropcap": true, "pin": {...}, "repeat": "odd"}, "references":
+    [{title, url, note}]}. They go in order after `after_block_id` (or at the end). Each is
+    a suggestion; with approval "auto" they apply immediately and the new ids come back."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        after = after_block_id or "__end__"
+        out = []
+        for i, item in enumerate(blocks or []):
+            t = item.get("type", "text")
+            if t not in BLOCK_TYPES:
+                out.append(f"{i}: ERROR unknown type {t!r}")
+                continue
+            c = parse_content(t, item.get("content", ""))
+            if t == "heading" and item.get("level"):
+                c["level"] = max(1, min(int(item["level"]), 3))
+            payload = {"type": t, "content": c, "after": after, "layout": item.get("layout") or {}}
+            if item.get("references"):
+                payload["refs"] = item["references"]
+            try:
+                sg = store.propose(doc_id, "insert", payload, note=note or f"Insert {t}")
+            except (Invalid, NotFound, ValueError) as exc:
+                out.append(f"{i}: ERROR {exc}")
+                continue
+            new_id = sg["payload"].get("result", {}).get("block_id")
+            if new_id:
+                after = new_id  # keep the batch in order
+                out.append(f"{i}: {t} -> {new_id}")
+            else:
+                out.append(f"{i}: {t} suggested ({sg['id']}, waiting for approval)")
+        return "\n".join(out) or "Nothing to insert."
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 CODRAFT_TOOLS = [
     get_document,
     read_blocks,
@@ -606,6 +780,9 @@ CODRAFT_TOOLS = [
     compile_references,
     view_pages,
     view_sketch,
+    view_upload,
+    draw_figure,
+    insert_blocks,
 ]
 
 TOOL_NAMES = frozenset(t.name for t in CODRAFT_TOOLS)

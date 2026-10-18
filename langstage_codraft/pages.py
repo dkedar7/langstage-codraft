@@ -15,8 +15,15 @@ PAGE_SIZES_MM: dict[str, tuple[float, float]] = {
 }
 
 
+def page_size_mm(settings: dict) -> tuple[float, float]:
+    """Unrotated (width, height) in mm; ``custom`` uses page_w_mm / page_h_mm."""
+    if settings.get("page_size") == "custom":
+        return float(settings.get("page_w_mm") or 215.9), float(settings.get("page_h_mm") or 279.4)
+    return PAGE_SIZES_MM.get(settings.get("page_size", "letter"), PAGE_SIZES_MM["letter"])
+
+
 def page_px(settings: dict) -> tuple[float, float]:
-    w, h = PAGE_SIZES_MM.get(settings.get("page_size", "letter"), PAGE_SIZES_MM["letter"])
+    w, h = page_size_mm(settings)
     if settings.get("orientation") == "landscape":
         w, h = h, w
     return w * MM, h * MM

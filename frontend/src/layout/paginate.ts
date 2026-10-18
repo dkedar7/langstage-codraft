@@ -33,7 +33,8 @@ export interface MeasuredBlock {
   full: boolean;
   height: number;
   splits?: Split[];
-  pin?: { page: number; top: number; column: number; span: number; height: number } | null;
+  /** Column pin (top/column/span) or, with anchor "page", a page-relative rectangle (x/y/w) that may bleed past the margins. */
+  pin?: { page: number; top: number; column: number; span: number; height: number; anchor?: "page"; x?: number; w?: number } | null;
   repeat?: "all" | "odd" | "even" | number[] | null;
 }
 
@@ -107,6 +108,7 @@ export function blockWidth(b: Pick<MeasuredBlock, "full" | "role" | "pin">, geo:
   const { contentW, colW } = contentSize(geo);
   if (geo.mode === "pageless") return Math.min(contentW, 720);
   if (b.role !== "flow") return contentW;
+  if (b.pin?.anchor === "page") return b.pin.w || contentW;
   if (b.pin) return b.pin.span * colW + (b.pin.span - 1) * geo.colGap;
   return b.full ? contentW : colW;
 }
@@ -122,6 +124,10 @@ function repeatsOn(rep: MeasuredBlock["repeat"], page: number, pinPage: number):
 function pinRect(b: MeasuredBlock, geo: Geometry): Rect {
   const { colW } = contentSize(geo);
   const p = b.pin!;
+  if (p.anchor === "page") {
+    // page coordinates -> content-box coordinates (negative = in the margin / bleed)
+    return { x: (p.x || 0) - geo.margin.left, y: p.top - geo.margin.top, w: p.w || 100, h: p.height || b.height };
+  }
   return {
     x: p.column * (colW + geo.colGap),
     y: p.top,

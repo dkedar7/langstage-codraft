@@ -273,3 +273,44 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 /* Sketch pad */
 .sketch-canvas { background: #fff; border-radius: var(--radius-md); border: 1px solid var(--color-border); touch-action: none; cursor: crosshair; }
 .cd-sketch-tag { position: absolute; left: 6px; top: 6px; z-index: 2; font: 600 10px/1 Inter, sans-serif; background: rgba(17,24,39,.75); color: #fff; padding: 4px 6px; border-radius: 4px; }
+
+/* ------------------------------------------------- typography: theme-driven paragraphs */
+.cd-md p { text-align: var(--cd-align, left); hyphens: var(--cd-hyphens, manual); -webkit-hyphens: var(--cd-hyphens, manual);
+  margin: 0 0 var(--cd-par-gap, .7em); }
+.cd-md p + p { text-indent: var(--cd-par-indent, 0); }
+.cd-print .cd-page { overflow: hidden; }
+
+/* ------------------------------------------------- block variants (layout.variant) */
+.cd-v-lead .cd-md { font-size: 1.15em; line-height: 1.45; }
+.cd-v-pullquote .cd-md { font-family: var(--cd-font-display); font-weight: 400; text-transform: uppercase; letter-spacing: .03em;
+  font-size: 1.04em; line-height: 1.6; }
+.cd-v-pullquote .cd-md p { text-align: right; text-indent: 0; hyphens: none; }
+.cd-v-kicker .cd-md { font-family: var(--cd-font-display); font-weight: var(--cd-display-weight); font-size: 1.9em; line-height: 1.1; letter-spacing: -.01em; }
+.cd-v-kicker .cd-md p, .cd-v-byline .cd-md p, .cd-v-footer .cd-md p, .cd-v-caption .cd-md p { text-align: inherit; text-indent: 0; hyphens: none; margin: 0; }
+.cd-v-byline .cd-md { font-family: var(--cd-font-display); text-transform: uppercase; letter-spacing: .14em; font-size: .8em; color: var(--cd-muted); }
+.cd-v-small .cd-md { font-family: var(--cd-font-label); font-size: .82em; line-height: 1.35; }
+.cd-v-caption .cd-md { font-family: var(--cd-font-label); font-weight: 700; font-size: .78em; line-height: 1.3; }
+.cd-v-footer .cd-md { font-family: var(--cd-font-display); text-transform: uppercase; letter-spacing: .16em; font-size: .6em; line-height: 1.4; }
+.cd-v-footer .cd-md strong { letter-spacing: .04em; font-size: 1.25em; }
+.cd-v-bio .cd-md { font-style: italic; }
+.cd-v-bio .cd-md p { text-indent: 0; }
+.cd-dropcap .cd-md > p:first-child::first-letter { float: left; font-family: var(--cd-font-body); font-size: 4.6em; line-height: .8;
+  padding: .04em .07em 0 0; color: var(--cd-accent); font-weight: 400; }
+
+.cd-v-display .cd-h { font-family: var(--cd-font-display); font-weight: var(--cd-display-weight); text-transform: none;
+  font-size: 3.1em; line-height: 1.04; letter-spacing: -.015em; color: var(--cd-text) !important; }
+.cd-v-section .cd-h, .cd-v-rule .cd-h { font-family: var(--cd-font-label); font-weight: 700; text-transform: uppercase;
+  font-size: 1.02em; line-height: 1.2; letter-spacing: .005em; color: var(--cd-text) !important; }
+.cd-v-rule .cd-h { border-top: 1px solid var(--cd-rule); padding-top: .55em; }
+.cd-v-label .cd-h { font-family: var(--cd-font-label); font-size: .8em; text-transform: uppercase; letter-spacing: .1em; color: var(--cd-muted) !important; }
+
+.cd-v-figure-box .cd-figure, .cd-v-figure-box .cd-table-wrap, .cd-v-figure-box.cd-type-callout .cd-callout {
+  background: var(--cd-figure); padding: 12px; border-radius: 0; border-left: 0; }
+.cd-fig-head { display: flex; gap: 14px; align-items: baseline; font-family: var(--cd-font-label); margin-bottom: 8px; height: 18px; overflow: hidden; }
+.cd-fig-label { font-weight: 700; font-size: 1em; letter-spacing: .02em; text-transform: uppercase; }
+.cd-fig-title { font-size: .85em; }
+.cd-fig-source { font-family: var(--cd-font-label); font-weight: 700; font-size: .72em; margin-top: 8px; height: 14px; overflow: hidden; }
+
+.cd-refs-hanging { list-style: none; padding: 0; margin: .4em 0 0; font-family: var(--cd-font-label); font-size: .78em; line-height: 1.32; }
+.cd-refs-hanging li { padding-left: 1.4em; text-indent: -1.4em; margin: 0 0 .55em; }
+.cd-ref-url { word-break: break-all; }

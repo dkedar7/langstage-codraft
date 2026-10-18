@@ -26,7 +26,7 @@ def call(tool, cfg, **args):
 
 def test_tool_names_unique():
     names = [t.name for t in CODRAFT_TOOLS]
-    assert len(names) == len(set(names)) == 16
+    assert len(names) == len(set(names)) == 19
 
 
 def test_config_param_hidden_from_model():
@@ -131,3 +131,43 @@ def test_view_pages_without_renderer(store, cfg_for):
     msg = view_pages.invoke({"type": "tool_call", "id": "1", "name": "view_pages", "args": {}},
                             config=cfg_for(d["id"]))
     assert "unavailable" in msg.content and msg.artifact is None
+
+
+def test_insert_blocks_in_order_with_layouts(store, cfg_for):
+    from langstage_codraft.tools import insert_blocks
+
+    d = store.create_document("Batch", {"approval": "auto", "columns": 3})
+    out = call(insert_blocks, cfg_for(d["id"]), blocks=[
+        {"type": "heading", "content": "An overview", "level": 1, "layout": {"variant": "display", "span": "full"}},
+        {"type": "text", "content": "Opening paragraph.", "layout": {"dropcap": True}},
+        {"type": "text", "content": "{page}", "layout": {"variant": "footer", "pin": {"page": 1, "top": 900}, "repeat": "odd"}},
+        {"type": "video", "content": "x", "layout": {"variant": "display"}},
+    ])
+    blocks = store.list_blocks(d["id"])
+    assert [b["type"] for b in blocks] == ["heading", "text", "text"]
+    assert blocks[0]["layout"]["variant"] == "display" and blocks[1]["layout"]["dropcap"] is True
+    assert blocks[2]["layout"]["repeat"] == "odd"
+    assert "3: ERROR" in out  # display is not a video variant
+
+
+def test_draw_figure_sanitizes_and_frames(store, cfg_for):
+    from langstage_codraft.tools import draw_figure
+
+    d = store.create_document("Fig", {"approval": "auto"})
+    svg = '<svg viewBox="0 0 10 10" onload="alert(1)"><script>x</script><rect width="10" height="10"/></svg>'
+    out = call(draw_figure, cfg_for(d["id"]), svg=svg, label="FIGURE 1", title="Layers", source="Source: us")
+    assert out.startswith("Applied")
+    b = store.list_blocks(d["id"])[0]
+    assert b["layout"]["variant"] == "figure-box" and b["content"]["label"] == "FIGURE 1"
+    data = open(store.get_upload(b["content"]["src"])["path"], encoding="utf-8").read()
+    assert "script" not in data and "onload" not in data and "<rect" in data
+
+
+def test_page_anchored_pin_and_custom_page(store, cfg_for):
+    d = store.create_document("Mag", {"page_size": "custom", "page_w_mm": 203.2, "page_h_mm": 273.05})
+    b = store.insert_block(d["id"], "image", {})
+    out = call(set_block_layout, cfg_for(d["id"]), block_id=b["id"], pin_page=1, page_x_px=0, page_y_px=0,
+               page_w_px=768, page_h_px=420)
+    assert '"anchor": "page"' in out
+    outline = call(get_document, cfg_for(d["id"]))
+    assert "page 768x1032" in outline and "Variants:" in outline

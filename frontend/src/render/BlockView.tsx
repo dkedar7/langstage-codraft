@@ -11,6 +11,37 @@ export interface RenderCtx {
   editing: boolean;
   /** read-only print route (export / view_pages) */
   print?: boolean;
+  /** for {pages} / {title} tokens in repeated headers and footers */
+  pageCount?: number;
+  title?: string;
+}
+
+/** Fill {page}, {pages} and {title} (running headers/footers). Measurement uses "00". */
+export function fillTokens(s: string, ctx: RenderCtx, pageNo?: number): string {
+  if (!s || !s.includes("{")) return s;
+  return s.replace(/\{page\}/g, pageNo != null ? String(pageNo) : "00")
+    .replace(/\{pages\}/g, ctx.pageCount ? String(ctx.pageCount) : "00")
+    .replace(/\{title\}/g, ctx.title || "");
+}
+
+/** Label/title strip above a figure and the source line below it. */
+function FigureFrame({ c, children }: { c: Record<string, any>; children: React.ReactNode }) {
+  return (
+    <>
+      {(c.label || c.title) && (
+        <div className="cd-fig-head">
+          {c.label ? <span className="cd-fig-label">{c.label}</span> : null}
+          {c.title ? <span className="cd-fig-title">{c.title}</span> : null}
+        </div>
+      )}
+      {children}
+      {c.source ? <div className="cd-fig-source">{c.source}</div> : null}
+    </>
+  );
+}
+
+function frameHeight(c: Record<string, any>, boxed: boolean): number {
+  return (c.caption ? 28 : 0) + (c.label || c.title ? 26 : 0) + (c.source ? 22 : 0) + (boxed ? 24 : 0);
 }
 
 function imageSrc(src: string): string {
@@ -21,13 +52,15 @@ function imageSrc(src: string): string {
 
 /** Read-only rendering of one block at a given width. Used by the measurer, the
  *  editor canvas, the preview and the export, so they always agree. */
-export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeight }: {
-  block: Block; width: number; ctx: RenderCtx; fixedHeight?: number | null;
+export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeight, pageNo }: {
+  block: Block; width: number; ctx: RenderCtx; fixedHeight?: number | null; pageNo?: number;
 }) {
   const c = block.content || {};
+  const variant = block.layout?.variant || "";
+  const boxed = variant === "figure-box";
   const html = useMemo(
-    () => (block.type === "text" || block.type === "callout" ? mdToHtml(c.markdown || "") : ""),
-    [block.type, c.markdown],
+    () => (block.type === "text" || block.type === "callout" ? mdToHtml(fillTokens(c.markdown || "", ctx, pageNo)) : ""),
+    [block.type, c.markdown, ctx, pageNo],
   );
   const empty = (s: string) => ctx.editing && !s.trim();
 
@@ -43,7 +76,7 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
     case "heading": {
       const L = Math.max(1, Math.min(3, Number(c.level) || 1));
       const Tag = (`h${L}`) as "h1" | "h2" | "h3";
-      inner = <Tag className={`cd-h cd-h${L}${empty(c.text || "") ? " cd-placeholder" : ""}`}>{c.text || (ctx.editing ? "Heading" : "")}</Tag>;
+      inner = <Tag className={`cd-h cd-h${L}${empty(c.text || "") ? " cd-placeholder" : ""}`}>{fillTokens(c.text || "", ctx, pageNo) || (ctx.editing ? "Heading" : "")}</Tag>;
       break;
     }
     case "callout":
@@ -82,9 +115,10 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
     case "image": {
       const src = imageSrc(c.src || "") || (c.sketch ? imageSrc(c.sketch) : "");
       const isSketch = !c.src && !!c.sketch;
-      const capH = c.caption ? 28 : 0;
+      const capH = frameHeight(c, boxed);
       inner = (
         <figure className="cd-figure" style={{ position: "relative" }}>
+          <FigureFrame c={{ ...c, caption: "" }}>
           {isSketch && ctx.editing && <span className="cd-sketch-tag">Sketch: ask the agent to turn it into an image</span>}
           {src ? (
             <img src={src} alt={c.alt || ""} style={fixedHeight
@@ -95,6 +129,7 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
               {ctx.editing ? "Image: upload, paste a URL, or draw a sketch in the Block panel" : ""}
             </div>
           )}
+          </FigureFrame>
           {c.caption ? <figcaption>{c.caption}</figcaption> : null}
         </figure>
       );
@@ -121,11 +156,13 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
       break;
     }
     case "chart": {
-      const capH = c.caption ? 28 : 0;
+      const capH = frameHeight(c, boxed);
       const h = (fixedHeight ? fixedHeight - capH : Number(c.spec?.height) || DEFAULT_CHART_HEIGHT);
       inner = (
         <figure className="cd-figure">
-          <Chart spec={c.spec} width={width} height={h} />
+          <FigureFrame c={{ ...c, caption: "" }}>
+            <Chart spec={c.spec} width={boxed ? width - 24 : width} height={h} />
+          </FigureFrame>
           {c.caption ? <figcaption>{c.caption}</figcaption> : null}
         </figure>
       );
@@ -137,13 +174,21 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
     case "references":
       inner = (
         <div className="cd-refs">
-          <div className="cd-h cd-h2">{c.title || "References"}</div>
+          {c.title !== "" ? <div className="cd-h cd-h2">{c.title || "References"}</div> : null}
           {ctx.references.length ? (
-            <ol>{ctx.references.map((r) => (
-              <li key={r.n} value={r.n}>
-                {r.title}{r.url ? <> <a href={r.url}>{r.url}</a></> : null}{r.note ? <span className="cd-muted"> ({r.note})</span> : null}
-              </li>
-            ))}</ol>
+            c.style === "hanging" || variant === "hanging" ? (
+              <ul className="cd-refs-hanging">{ctx.references.map((r) => (
+                <li key={r.n}>
+                  {r.title}{r.note ? <> {r.note}</> : null}{r.url ? <> <span className="cd-ref-url">{r.url}</span></> : null}
+                </li>
+              ))}</ul>
+            ) : (
+              <ol>{ctx.references.map((r) => (
+                <li key={r.n} value={r.n}>
+                  {r.title}{r.url ? <> <a href={r.url}>{r.url}</a></> : null}{r.note ? <span className="cd-muted"> ({r.note})</span> : null}
+                </li>
+              ))}</ol>
+            )
           ) : (
             <p className="cd-muted">{ctx.editing ? "No sources cited yet. Blocks' references are listed here automatically." : ""}</p>
           )}
@@ -157,7 +202,8 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
       inner = <div className="cd-muted">Unsupported block type: {block.type}</div>;
   }
   return (
-    <div className={`cd-block cd-type-${block.type}`} data-block={block.id} style={{ width }}>
+    <div className={`cd-block cd-type-${block.type}${variant ? ` cd-v-${variant}` : ""}${block.layout?.dropcap ? " cd-dropcap" : ""}`}
+      data-block={block.id} style={{ width }}>
       {inner}
     </div>
   );

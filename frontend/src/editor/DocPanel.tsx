@@ -41,10 +41,23 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
             <>
               <div>
                 <span className="label">Page size</span>
-                <select className="select" value={s.page_size} onChange={(e) => set({ page_size: e.target.value as any })}>
+                <select className="select" value={s.page_size} data-testid="page-size"
+                  onChange={(e) => set(e.target.value === "custom"
+                    ? { page_size: "custom", page_w_mm: s.page_w_mm || 203.2, page_h_mm: s.page_h_mm || 273.05 }
+                    : { page_size: e.target.value as any })}>
                   {Object.entries(PAGE_SIZE_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                 </select>
               </div>
+              {s.page_size === "custom" && (
+                <>
+                  <div><span className="label">Width (mm)</span>
+                    <NumberInput value={s.page_w_mm || 203.2} min={50} max={1200} step={0.1} onCommit={(v) => set({ page_w_mm: v })} /></div>
+                  <div><span className="label">Height (mm)</span>
+                    <NumberInput value={s.page_h_mm || 273.05} min={50} max={1200} step={0.1} onCommit={(v) => set({ page_h_mm: v })} /></div>
+                </>
+              )}
+              <div><span className="label">First page number</span>
+                <NumberInput value={s.page_number_start ?? 1} min={0} onCommit={(v) => set({ page_number_start: v })} /></div>
               <div>
                 <span className="label">Orientation</span>
                 <select className="select" value={s.orientation} onChange={(e) => set({ orientation: e.target.value as any })}>

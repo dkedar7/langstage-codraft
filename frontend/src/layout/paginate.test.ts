@@ -172,3 +172,15 @@ describe("paginate: determinism", () => {
     expect(JSON.stringify(paginate(blocks, g))).toBe(JSON.stringify(paginate(blocks, g)));
   });
 });
+
+describe("paginate: page-anchored pins", () => {
+  it("bleeds past the margins and reserves only the part inside the content box", () => {
+    // geo: page 600x500, margins 50 -> content 500x400. Hero at page (0,0) 600x200.
+    const hero = atom("hero", 0, { pin: { anchor: "page", page: 1, top: 0, x: 0, w: 600, column: 0, span: 1, height: 200 } });
+    const r = paginate([hero, atom("a", 50)], geo());
+    const h = r.pages[0].items.find((i) => i.id === "hero")!;
+    expect(h).toMatchObject({ x: -50, y: -50, w: 600, h: 200, pinned: true });
+    // content y of the hero's bottom = 150, so the first flowing block starts below it
+    expect(r.pages[0].items.find((i) => i.id === "a")!.y).toBe(160);
+  });
+});

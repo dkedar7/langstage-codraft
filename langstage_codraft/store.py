@@ -30,7 +30,10 @@ ROLES = ("flow", "cover", "back")
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "mode": "paged",                 # paged | pageless
-    "page_size": "letter",           # letter | a4 | legal | a5 | slide
+    "page_size": "letter",           # letter | a4 | legal | a5 | slide | custom
+    "page_w_mm": None,               # custom page width (mm)
+    "page_h_mm": None,               # custom page height (mm)
+    "page_number_start": 1,          # number printed on the first body page ({page})
     "orientation": "portrait",       # portrait | landscape
     "margins": {"top": 20, "right": 20, "bottom": 20, "left": 20},  # mm
     "columns": 1,                    # 1..3
@@ -53,13 +56,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 DEFAULT_CONTENT: dict[str, dict[str, Any]] = {
     "text": {"markdown": ""},
     "heading": {"text": "", "level": 1},
-    "image": {"src": "", "alt": "", "caption": "", "fit": "contain", "sketch": ""},
+    "image": {"src": "", "alt": "", "caption": "", "fit": "contain", "sketch": "",
+              "label": "", "title": "", "source": ""},
     "video": {"src": "", "poster": "", "caption": "", "loop": False, "muted": True},
     "table": {"rows": [["", ""], ["", ""]], "header": True, "caption": ""},
     "chart": {"spec": {}, "caption": ""},
     "callout": {"markdown": "", "tone": "info"},
     "divider": {},
-    "references": {"title": "References"},
+    "references": {"title": "References", "style": "numbered"},
     "page-break": {},
 }
 
@@ -67,8 +71,21 @@ DEFAULT_LAYOUT: dict[str, Any] = {
     "span": "column",    # column | full
     "height": None,      # fixed height in px, or None for auto
     "role": "flow",      # flow | cover | back
-    "pin": None,         # {"page": int, "top": px, "column": int, "span": int, "height": px|None}
+    "pin": None,         # {"page", "top", "column", "span", "height"} or page-anchored {"anchor": "page", "page", "x", "y", "w", "h"}
     "repeat": None,      # None | "all" | "odd" | "even" | [page numbers]
+    "variant": None,     # a typographic style, see BLOCK_VARIANTS
+    "dropcap": False,    # text blocks: a large initial letter
+}
+
+# Typographic styles a block can wear (the theme supplies fonts and colours).
+BLOCK_VARIANTS: dict[str, tuple[str, ...]] = {
+    "text": ("lead", "pullquote", "kicker", "byline", "small", "caption", "footer", "bio"),
+    "heading": ("display", "section", "rule", "label"),
+    "image": ("figure-box",),
+    "chart": ("figure-box",),
+    "table": ("figure-box",),
+    "callout": ("figure-box",),
+    "references": ("hanging",),
 }
 
 _SCHEMA = """
@@ -145,6 +162,13 @@ def plain_text(block_type: str, content: dict) -> str:
     return ""
 
 
+def check_variant(block_type: str, layout: dict) -> None:
+    v = layout.get("variant")
+    if v and v not in BLOCK_VARIANTS.get(block_type, ()):
+        raise Invalid(f"variant {v!r} doesn't apply to a {block_type} block; "
+                      f"options: {', '.join(BLOCK_VARIANTS.get(block_type, ())) or 'none'}")
+
+
 def validate_layout(layout: dict, columns: int = 3) -> dict:
     out = _merge(DEFAULT_LAYOUT, layout or {})
     if out["span"] not in ("column", "full"):
@@ -153,7 +177,20 @@ def validate_layout(layout: dict, columns: int = 3) -> dict:
         raise Invalid(f"layout.role must be one of {ROLES}")
     if out["height"] is not None:
         out["height"] = max(16, int(out["height"]))
+    v = out.get("variant")
+    if v in ("", "none", "default"):
+        out["variant"] = None
+    out["dropcap"] = bool(out.get("dropcap"))
     pin = out.get("pin")
+    if pin and pin.get("anchor") == "page":
+        # Page-anchored: px from the page's top-left corner (may bleed past the margins).
+        pin = {"anchor": "page", "page": 1, "x": 0, "y": 0, "w": 200, "h": 100, **pin}
+        pin["page"] = max(1, int(pin["page"]))
+        for k in ("x", "y"):
+            pin[k] = int(pin[k])
+        pin["w"], pin["h"] = max(8, int(pin["w"])), max(8, int(pin["h"]))
+        out["pin"] = {k: pin[k] for k in ("anchor", "page", "x", "y", "w", "h")}
+        pin = None
     if pin:
         pin = {"page": 1, "top": 0, "column": 0, "span": 1, "height": None, **pin}
         pin["page"] = max(1, int(pin["page"]))
@@ -238,6 +275,11 @@ class Store:
             raise Invalid("settings.approval must be 'required' or 'auto'")
         if s["orientation"] not in ("portrait", "landscape"):
             raise Invalid("settings.orientation must be 'portrait' or 'landscape'")
+        if s.get("page_size") == "custom":
+            for k in ("page_w_mm", "page_h_mm"):
+                v = s.get(k)
+                if not isinstance(v, (int, float)) or not 50 <= float(v) <= 1200:
+                    raise Invalid(f"settings.{k} must be 50-1200 mm for a custom page size")
 
     def list_documents(self) -> list[dict]:
         with self._lock:
@@ -317,6 +359,7 @@ class Store:
         block_id = _id("blk")
         now = time.time()
         lay = validate_layout(layout or {}, columns)
+        check_variant(block_type, lay)
         self._db.execute(
             "INSERT INTO blocks (id, doc_id, ord, type, layout, head, created_at) VALUES (?,?,?,?,?,NULL,?)",
             (block_id, doc_id, ord_, block_type, json.dumps(lay), now),
@@ -449,6 +492,7 @@ class Store:
                 merged["pin"] = None
                 merged["repeat"] = None
             lay = validate_layout(merged, cols)
+            check_variant(b["type"], lay)
             self._db.execute("UPDATE blocks SET layout = ? WHERE id = ?", (json.dumps(lay), block_id))
             self._bump(b["doc_id"])
             self._db.commit()
@@ -698,7 +742,7 @@ class Store:
                 blk = self.edit_block(s["block_id"], content=p.get("content"), refs=p.get("refs"),
                                       author=s["author"], note=note)
                 if p.get("layout"):
-                    blk = self.set_layout(s["block_id"], p["layout"])
+                    blk = self.set_layout(s["block_id"], p["layout"])  # styling rides along with the edit
                 result = {"block_id": blk["id"]}
             elif s["kind"] == "insert":
                 blk = self.insert_block(

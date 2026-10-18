@@ -69,6 +69,21 @@ function BlockInspector({ block }: { block: Block }) {
             </select>
           </>
         )}
+        {(VARIANTS[block.type] || []).length > 0 && (
+          <>
+            <span className="label">Style</span>
+            <select className="select" value={L.variant || ""} data-testid="variant-select"
+              onChange={(e) => patchLayout({ variant: e.target.value || null })}>
+              <option value="">Default</option>
+              {VARIANTS[block.type].map((v) => <option key={v} value={v}>{v}</option>)}
+            </select>
+          </>
+        )}
+        {block.type === "text" && (
+          <label className="flex items-center gap-2 mt-2">
+            <input type="checkbox" checked={!!L.dropcap} onChange={(e) => patchLayout({ dropcap: e.target.checked })} /> Drop cap
+          </label>
+        )}
         <span className="label">Height</span>
         <div className="flex gap-2 items-center">
           <select className="select" value={L.height ? "fixed" : "auto"}
@@ -88,6 +103,24 @@ function BlockInspector({ block }: { block: Block }) {
               Pin to a page position (other blocks flow around it)
             </label>
             {L.pin && (
+              <label className="flex items-center gap-2 mt-2">
+                <input type="checkbox" checked={L.pin.anchor === "page"} data-testid="pin-page-anchor"
+                  onChange={(e) => patchLayout({ pin: e.target.checked
+                    ? { anchor: "page", page: L.pin!.page, x: 0, y: 0, w: 400, h: L.pin!.height || 240 }
+                    : { page: L.pin!.page, top: 0, column: 0, span: 1, height: null } })} />
+                Anchor to the page (can bleed past the margins)
+              </label>
+            )}
+            {L.pin?.anchor === "page" && (
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <Field label="Page"><NumberInput value={L.pin.page} min={1} onCommit={(v) => patchLayout({ pin: { ...L.pin, page: v } })} /></Field>
+                <Field label="X"><NumberInput value={L.pin.x ?? 0} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, x: v } })} /></Field>
+                <Field label="Y"><NumberInput value={L.pin.y ?? 0} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, y: v } })} /></Field>
+                <Field label="Width"><NumberInput value={L.pin.w ?? 300} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, w: v } })} /></Field>
+                <Field label="Height"><NumberInput value={L.pin.h ?? 200} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, h: v } })} /></Field>
+              </div>
+            )}
+            {L.pin && L.pin.anchor !== "page" && (
               <div className="grid grid-cols-2 gap-2 mt-2">
                 <Field label="Page"><NumberInput value={L.pin.page} min={1} onCommit={(v) => patchLayout({ pin: { ...L.pin, page: v } })} /></Field>
                 <Field label="Top"><NumberInput value={L.pin.top} suffix="px" onCommit={(v) => patchLayout({ pin: { ...L.pin, top: v } })} /></Field>
@@ -259,6 +292,14 @@ function ContentEditor({ block, patch }: { block: Block; patch: (c: any, note?: 
               if (u) await patch({ src: u.id, alt: c.alt || f.name.replace(/\.[^.]+$/, "") }, "image uploaded");
             }} />
           </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div><span className="label">Label</span>
+              <TextInput value={c.label || ""} placeholder="FIGURE 1" onCommit={(v) => patch({ label: v })} /></div>
+            <div><span className="label">Title</span>
+              <TextInput value={c.title || ""} onCommit={(v) => patch({ title: v })} /></div>
+          </div>
+          <span className="label">Source line</span>
+          <TextInput value={c.source || ""} placeholder="Source: …" onCommit={(v) => patch({ source: v })} />
           <span className="label">Caption</span>
           <TextInput value={c.caption || ""} onCommit={(v) => patch({ caption: v })} />
           <span className="label">Alt text</span>
@@ -475,3 +516,14 @@ function posterFrame(url: string): Promise<Blob> {
     setTimeout(fail, 15000);
   });
 }
+
+/** Typographic styles per block type (mirrors BLOCK_VARIANTS in store.py). */
+const VARIANTS: Record<string, string[]> = {
+  text: ["lead", "pullquote", "kicker", "byline", "small", "caption", "footer", "bio"],
+  heading: ["display", "section", "rule", "label"],
+  image: ["figure-box"],
+  chart: ["figure-box"],
+  table: ["figure-box"],
+  callout: ["figure-box"],
+  references: ["hanging"],
+};

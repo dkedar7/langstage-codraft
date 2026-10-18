@@ -40,5 +40,13 @@ export function themeVars(t: Theme | undefined): CSSProperties {
     "--cd-callout": th.color_callout,
     "--cd-hw": String(th.heading_weight),
     "--cd-hcase": th.heading_case,
+    "--cd-font-display": th.font_display || th.font_heading,
+    "--cd-display-weight": String(th.display_weight ?? 300),
+    "--cd-font-label": th.font_label || "'Roboto Condensed', 'Arial Narrow', sans-serif",
+    "--cd-align": th.text_align || "left",
+    "--cd-hyphens": th.hyphens || "manual",
+    "--cd-figure": th.color_figure || th.color_callout,
+    "--cd-par-gap": th.paragraph_gap != null ? th.paragraph_gap + "em" : ".7em",
+    "--cd-par-indent": th.paragraph_indent ? th.paragraph_indent + "em" : "0",
   } as CSSProperties;
 }

@@ -1,7 +1,19 @@
 export type BlockType =
   | "text" | "heading" | "image" | "video" | "table" | "chart" | "callout" | "divider" | "references" | "page-break";
 
-export interface Pin { page: number; top: number; column: number; span: number; height: number | null }
+export interface Pin {
+  page: number;
+  top: number;
+  column: number;
+  span: number;
+  height: number | null;
+  /** page-anchored pins: px from the page's top-left corner (may bleed past margins) */
+  anchor?: "page";
+  x?: number;
+  y?: number;
+  w?: number;
+  h?: number;
+}
 
 export interface BlockLayout {
   span: "column" | "full";
@@ -9,6 +21,8 @@ export interface BlockLayout {
   role: "flow" | "cover" | "back";
   pin: Pin | null;
   repeat: "all" | "odd" | "even" | number[] | null;
+  variant?: string | null;
+  dropcap?: boolean;
 }
 
 export interface Ref { title: string; url: string; note: string }
@@ -41,7 +55,10 @@ export interface Brief {
 
 export interface Settings {
   mode: "paged" | "pageless";
-  page_size: "letter" | "a4" | "legal" | "a5" | "slide";
+  page_size: "letter" | "a4" | "legal" | "a5" | "slide" | "custom";
+  page_w_mm?: number | null;
+  page_h_mm?: number | null;
+  page_number_start?: number;
   orientation: "portrait" | "landscape";
   margins: { top: number; right: number; bottom: number; left: number };
   columns: number;
@@ -120,6 +137,14 @@ export interface Theme {
   color_callout: string;
   heading_weight: number;
   heading_case: string;
+  font_display?: string;
+  display_weight?: number;
+  font_label?: string;
+  text_align?: string;
+  hyphens?: string;
+  color_figure?: string;
+  paragraph_gap?: number;
+  paragraph_indent?: number;
 }
 
 export interface AppConfig {

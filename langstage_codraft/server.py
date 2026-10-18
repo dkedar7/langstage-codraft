@@ -412,8 +412,11 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             u = store.get_upload(uid)
         except NotFound as exc:
             raise HTTPException(404, str(exc)) from exc
+        # Uploads are untrusted (SVG can carry script): never let them run as a page.
         return FileResponse(u["path"], media_type=u["mime"], filename=u["filename"],
-                            content_disposition_type="inline")
+                            content_disposition_type="inline",
+                            headers={"Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+                                     "X-Content-Type-Options": "nosniff"})
 
     @app.delete("/api/uploads/{uid}")
     def delete_upload(uid: str) -> dict:

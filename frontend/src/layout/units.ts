@@ -18,10 +18,13 @@ export const PAGE_SIZE_LABELS: Record<string, string> = {
   legal: "US Legal",
   a5: "A5",
   slide: "Slide 16:9",
+  custom: "Custom size",
 };
 
 export function pageMm(s: Settings): [number, number] {
-  let [w, h] = PAGE_SIZES_MM[s.page_size] || PAGE_SIZES_MM.letter;
+  let [w, h] = s.page_size === "custom" && s.page_w_mm && s.page_h_mm
+    ? [s.page_w_mm, s.page_h_mm]
+    : PAGE_SIZES_MM[s.page_size] || PAGE_SIZES_MM.letter;
   if (s.orientation === "landscape") [w, h] = [h, w];
   return [w, h];
 }

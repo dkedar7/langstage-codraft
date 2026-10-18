@@ -31,7 +31,7 @@ from .tools import CODRAFT_TOOLS, TOOL_NAMES
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
-DEFAULT_IMAGE_MODEL = "google/gemini-3.1-flash-lite-image"
+DEFAULT_IMAGE_MODEL = "google/gemini-3.1-flash-image"
 
 
 # ------------------------------------------------------------------------- models
@@ -109,37 +109,52 @@ def research_tools() -> list:
 
 
 def generate_image_tool():
-    """An image-generation tool (OpenRouter image model) that turns a prompt, and
-    optionally the author's sketch, into an image and proposes it on an image block."""
+    """An image-generation tool (OpenRouter image model): turns a prompt, and optionally the
+    author's sketch, into an image on an existing image block or a new one."""
     from langchain_core.tools import tool
 
     @tool
-    def generate_image(block_id: str, prompt: str, config: RunnableConfig, use_sketch: bool = True) -> str:
-        """Generate an image for an image block from a text prompt (and the author's sketch on
-        that block, if any, when use_sketch=True). The result is proposed as a suggestion on
-        the block. Describe style, subject and composition in the prompt."""
+    def generate_image(
+        prompt: str, config: RunnableConfig, block_id: str | None = None, after_block_id: str | None = None,
+        aspect_ratio: str = "4:3", use_sketch: bool = True, label: str = "", title: str = "",
+        source: str = "", caption: str = "", full_width: bool = False, figure_box: bool = False,
+    ) -> str:
+        """Generate a photo-like image or an illustration (hero art, cover art, a product
+        shot, a portrait-style illustration, a screenshot-style mock-up). Describe subject,
+        style, palette and composition. It fills `block_id` (an image block; the author's
+        sketch on it guides the composition when use_sketch=True) or becomes a new image
+        block after `after_block_id`. aspect_ratio is one of 1:1, 3:2, 2:3, 4:3, 3:4, 16:9,
+        9:16, 21:9. For diagrams with readable labels, prefer draw_figure (SVG)."""
         import base64
         import re as _re
 
         import httpx
 
         from .store import get_store
-        from .tools import _doc_id, _sketch_path
+        from .tools import _doc_id, _sketch_path, _sugg_result
 
         try:
             doc_id = _doc_id(config)
             store = get_store()
+            sk = None
+            if block_id:
+                b = store.get_block(block_id)
+                if b["type"] != "image":
+                    return f"ERROR: {block_id} is a {b['type']} block, not an image block"
+                sk = _sketch_path(doc_id, block_id) if use_sketch else None
             parts: list[dict] = [{"type": "text", "text": (
-                "Create a clean, publication-quality illustration. " + prompt
-                + (" Follow the composition of the attached sketch." if use_sketch else ""))}]
-            sk = _sketch_path(doc_id, block_id) if use_sketch else None
+                "Create a clean, publication-quality image for a printed report. " + prompt
+                + (" Follow the composition of the attached sketch." if sk else "")
+                + " No watermarks, no captions, no borders.")}]
             if sk:
                 b64 = base64.b64encode(open(sk, "rb").read()).decode()
                 parts.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}})
-            r = httpx.post(f"{OPENROUTER_BASE}/chat/completions", timeout=120, headers={
+            ratio = aspect_ratio if _re.fullmatch(r"\d{1,2}:\d{1,2}", aspect_ratio or "") else "4:3"
+            r = httpx.post(f"{OPENROUTER_BASE}/chat/completions", timeout=180, headers={
                 "Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}", "X-Title": "langstage-codraft"},
                 json={"model": os.environ.get("LANGSTAGE_CODRAFT_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
-                      "modalities": ["image", "text"], "messages": [{"role": "user", "content": parts}]})
+                      "modalities": ["image", "text"], "image_config": {"aspect_ratio": ratio},
+                      "messages": [{"role": "user", "content": parts}]})
             r.raise_for_status()
             msg = r.json()["choices"][0]["message"]
             urls = [i.get("image_url", {}).get("url", "") for i in (msg.get("images") or [])]
@@ -148,11 +163,22 @@ def generate_image_tool():
                 return f"ERROR: the image model returned no image ({(msg.get('content') or '')[:200]})"
             mime, b64data = _re.match(r"data:(image/[\w+.-]+);base64,(.*)", data_url, _re.S).groups()
             ext = mime.split("/")[1].replace("jpeg", "jpg")
-            up = store.add_upload(doc_id, f"generated-{block_id}.{ext}", base64.b64decode(b64data),
+            up = store.add_upload(doc_id, f"generated-{block_id or 'new'}.{ext}", base64.b64decode(b64data),
                                   purpose="asset", mime=mime)
-            s = store.propose(doc_id, "edit", {"content": {"src": up["id"], "alt": prompt[:120]}},
-                              block_id=block_id, note=f"Generated image: {prompt[:80]}")
-            return f"Generated an image ({up['id']}); suggestion {s['id']} is {s['status']} on block {block_id}."
+            content = {"src": up["id"], "alt": prompt[:120]}
+            for k, v in (("label", label), ("title", title), ("source", source), ("caption", caption)):
+                if v:
+                    content[k] = v
+            variant = {"variant": "figure-box"} if figure_box else {}
+            note = f"Generated image: {prompt[:80]}"
+            if block_id:
+                s = store.propose(doc_id, "edit", {"content": content, **({"layout": variant} if variant else {})},
+                                  block_id=block_id, note=note)
+            else:
+                s = store.propose(doc_id, "insert", {
+                    "type": "image", "content": content, "after": after_block_id or "__end__",
+                    "layout": {"span": "full" if full_width else "column", **variant}}, note=note)
+            return f"Generated image {up['id']} ({ratio}). " + _sugg_result(s)
         except Exception as exc:  # noqa: BLE001
             return f"ERROR generating image: {type(exc).__name__}: {exc}"
 

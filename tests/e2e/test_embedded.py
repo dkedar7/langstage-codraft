@@ -6,9 +6,8 @@ import time
 
 import httpx
 import pytest
-from fastapi import FastAPI
-
 from conftest import _free_port
+from fastapi import FastAPI
 
 NAVY = "#002f58"
 

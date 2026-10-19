@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.3 — 2026-10-19
+
+- **Security: setting `proxy_secret` turned the password off (#8).** With both `proxy_secret`
+  and `auth_password` set, basic auth was never checked, so behind a same-host proxy nothing
+  needed credentials. The two checks are now independent: the password applies to every
+  request, and the proxy secret is checked on top of it for requests from other machines.
+  The export renderer already sends both.
+- **Fixed: `[ui.features] mcp = false` only hid the MCP URL (#9).** The `/mcp` endpoint is now
+  not served at all. `langstage-codraft mcp` (stdio) is unaffected. `chat = false` still hides
+  only the chat tab: the agent buttons (Ask, Address comments, Find sources) run through the
+  same chat endpoint, so the README now says so.
+
 ## 0.5.2 — 2026-10-18
 
 Fixes for what the first nightly dogfood run found.

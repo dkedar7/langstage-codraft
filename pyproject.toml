@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langstage-codraft"
-version = "0.5.2"
+version = "0.5.3"
 description = "The document stage for your LangGraph agent: co-author paged documents block by block, with approval-gated agent edits, per-block version history, and PDF/HTML/PNG export."
 readme = "README.md"
 license = "MIT"

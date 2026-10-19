@@ -271,8 +271,8 @@ accent_soft = "#fff1d6"
 [ui.colors_dark]                     # the same keys for dark mode
 
 [ui.features]                        # switch parts of the app off
-mcp = false
-chat = true
+mcp = false                          # no /mcp endpoint (stdio `langstage-codraft mcp` still works)
+chat = true                          # false hides the chat tab; the agent buttons (Ask, Address comments) still run
 doc_list = true
 theme_toggle = true
 ```
@@ -339,7 +339,7 @@ Access settings:
 | Setting | Env | Effect |
 |---|---|---|
 | `proxy_secret` | `LANGSTAGE_CODRAFT_PROXY_SECRET` | Requests must carry `X-Codraft-Proxy-Secret`. Requests from the machine itself (the host app in front of Codraft) are exempt. |
-| `auth_username` / `auth_password` | `LANGSTAGE_AUTH_USERNAME` / `LANGSTAGE_AUTH_PASSWORD` | HTTP basic auth, as in langstage-web. It applies to every request, from this machine too. |
+| `auth_username` / `auth_password` | `LANGSTAGE_AUTH_USERNAME` / `LANGSTAGE_AUTH_PASSWORD` | HTTP basic auth, as in langstage-web. It applies to every request, from this machine too, and on top of `proxy_secret` when both are set. |
 | `user_header` | `LANGSTAGE_CODRAFT_USER_HEADER` | A trusted header with the signed-in user: it names them on edits and in presence. |
 
 The export renderer and `langstage-codraft export` send the configured secret and password

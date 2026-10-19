@@ -129,3 +129,36 @@ def test_inline_custom_css_in_toml_is_left_alone(tmp_path, monkeypatch):
                                              encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     assert CodraftConfig.resolve().custom_css == ":root{--color-primary:#002f58}"
+
+
+# --------------------------------------------------------------- gh #8: secret + password together
+def test_proxy_secret_and_basic_auth_are_both_enforced(tmp_path):
+    tok = {"Authorization": "Basic " + base64.b64encode(b"admin:pw").decode()}
+    sec = {"X-Codraft-Proxy-Secret": "k"}
+    app = _app(tmp_path, proxy_secret="k", auth_password="pw")
+    with TestClient(app, client=("127.0.0.1", 5000)) as c:  # a same-host proxy: no secret needed, password is
+        assert c.get("/api/docs").status_code == 401
+        assert c.post("/api/docs", json={}).status_code == 401
+        assert c.get("/api/docs", headers=sec).status_code == 401
+        assert c.get("/api/docs", headers=tok).status_code == 200
+    with TestClient(_app(tmp_path / "b", proxy_secret="k", auth_password="pw"), client=("10.1.2.3", 5000)) as c:
+        assert c.get("/api/docs", headers=sec).status_code == 401
+        assert c.get("/api/docs", headers=tok).status_code == 403
+        assert c.get("/api/docs", headers={**sec, **tok}).status_code == 200
+    cfg = CodraftConfig.resolve(overrides={"proxy_secret": "k", "auth_password": "pw"}, use_toml=False)
+    with TestClient(_app(tmp_path / "c", proxy_secret="k", auth_password="pw"), client=("10.1.2.3", 5000)) as c:
+        assert c.get("/api/docs", headers=auth_headers(cfg)).status_code == 200  # what the renderer sends
+
+
+# --------------------------------------------------------------- gh #9: mcp = false
+def test_mcp_feature_off_unmounts_the_endpoint(tmp_path):
+    cfg = CodraftConfig.resolve(overrides={"data_dir": tmp_path / "data", "port": 8799}, use_toml=False)
+    off = create_app(cfg, None, {"kind": "none"}, store=Store(tmp_path / "data" / "codraft.db"),
+                     ui={"features": {"mcp": False}})
+    with TestClient(off) as c:
+        assert c.get("/api/config").json()["mcp_url"] is None
+        assert c.post("/mcp", json={}).status_code in (404, 405)  # no MCP route (the SPA is GET-only)
+    on = create_app(cfg, None, {"kind": "none"}, store=Store(tmp_path / "data" / "codraft.db"))
+    with TestClient(on) as c:
+        assert c.get("/api/config").json()["mcp_url"] == "/mcp"
+        assert c.post("/mcp", json={}).status_code != 404

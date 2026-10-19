@@ -15,8 +15,7 @@ import webbrowser
 from pathlib import Path
 
 import click
-# safe_print escapes what a cp1252 console can't show instead of crashing (gh #5).
-from langstage_core.console import safe_print as _echo
+from langstage_core.console import safe_print as _echo  # cp1252-safe output (gh #5)
 
 from . import __version__
 from .config import CodraftConfig

@@ -203,9 +203,13 @@ def new(title, template, data_dir) -> None:
     click.echo(doc["id"])
 
 
+# Every format GET /api/docs/{id}/export serves (the README's CLI list).
+EXPORT_FORMATS = ["pdf", "docx", "pptx", "png", "jpg", "html", "gif", "mp4"]
+
+
 @main.command()
 @click.argument("doc_id")
-@click.option("-f", "--format", "fmt", type=click.Choice(["pdf", "png", "jpg", "html"]), default="pdf")
+@click.option("-f", "--format", "fmt", type=click.Choice(EXPORT_FORMATS), default="pdf")
 @click.option("-o", "--output", type=click.Path(path_type=Path))
 @click.option("--url", default=None, help="Server URL (default http://localhost:<port>).")
 @click.option("-p", "--port", type=int, help="Port of the running server (default 8060).")

@@ -259,7 +259,7 @@ icon_url = "https://acme.example/logo.svg"
 font_family = "Raleway"
 font_url = "https://fonts.googleapis.com/css2?family=Raleway:wght@400;600;700&display=swap"
 starter_prompts = ["Draft an executive summary", "Turn my notes into a memo"]
-custom_css = "brand.css"             # inline CSS or a .css file, applied last
+custom_css = "brand.css"             # inline CSS or a .css file (relative to this toml), applied last
 embedded = false                     # true: no Codraft header brand or theme toggle
 
 [ui.colors]                          # any langstage-web token: primary, primary_dark, surface,
@@ -338,11 +338,13 @@ Access settings:
 
 | Setting | Env | Effect |
 |---|---|---|
-| `proxy_secret` | `LANGSTAGE_CODRAFT_PROXY_SECRET` | Requests must carry `X-Codraft-Proxy-Secret`. Requests from the machine itself (the export renderer) are exempt. |
-| `auth_username` / `auth_password` | `LANGSTAGE_AUTH_USERNAME` / `LANGSTAGE_AUTH_PASSWORD` | HTTP basic auth, as in langstage-web. |
+| `proxy_secret` | `LANGSTAGE_CODRAFT_PROXY_SECRET` | Requests must carry `X-Codraft-Proxy-Secret`. Requests from the machine itself (the host app in front of Codraft) are exempt. |
+| `auth_username` / `auth_password` | `LANGSTAGE_AUTH_USERNAME` / `LANGSTAGE_AUTH_PASSWORD` | HTTP basic auth, as in langstage-web. It applies to every request, from this machine too. |
 | `user_header` | `LANGSTAGE_CODRAFT_USER_HEADER` | A trusted header with the signed-in user: it names them on edits and in presence. |
 
-`--show-config` masks the secrets.
+The export renderer and `langstage-codraft export` send the configured secret and password
+themselves. State-changing requests a browser sends from another website (a cross-site form
+post) are refused with 403, as in langstage-web. `--show-config` masks the secrets.
 
 ## CLI
 

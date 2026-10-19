@@ -16,6 +16,12 @@ def _env_bool(v: str) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
 
 
+def is_css_path(value: str) -> bool:
+    """``custom_css`` holds inline CSS or a path to a .css file; this says which."""
+    v = (value or "").strip()
+    return v.endswith(".css") and "\n" not in v and "{" not in v
+
+
 @dataclass
 class CodraftConfig(HostConfig):
     port: int = 8060
@@ -98,6 +104,21 @@ class CodraftConfig(HostConfig):
         "ui.features",
     )
     _SECRETS: ClassVar[tuple[str, ...]] = ("proxy_secret", "auth_password")
+
+    @classmethod
+    def resolve(cls, **kwargs: Any) -> CodraftConfig:  # type: ignore[override]
+        obj = super().resolve(**kwargs)
+        # A relative custom_css path from a langstage.toml resolves against that toml, like
+        # data_dir and templates_dir, so branding survives a run from a subdirectory (gh #6).
+        # Not a _TOML_PATHS entry: the value can be inline CSS too.
+        if obj.sources.get("custom_css", "").startswith("toml") and is_css_path(obj.custom_css):
+            files = getattr(obj, "_toml_files", [])  # (path, data), global then project
+            src = next((p for p, d in reversed(files)
+                        if isinstance(d.get("ui"), dict) and d["ui"].get("custom_css") is not None), None)
+            path = Path(obj.custom_css.strip()).expanduser()
+            if src is not None and not path.is_absolute():
+                obj.custom_css = str(Path(src).parent / path)
+        return obj  # type: ignore[return-value]
 
     def describe(self, *args: Any, **kwargs: Any) -> str:  # type: ignore[override]
         """The family's config report, with secrets masked."""

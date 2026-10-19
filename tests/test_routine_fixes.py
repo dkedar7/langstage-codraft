@@ -162,3 +162,45 @@ def test_mcp_feature_off_unmounts_the_endpoint(tmp_path):
     with TestClient(on) as c:
         assert c.get("/api/config").json()["mcp_url"] == "/mcp"
         assert c.post("/mcp", json={}).status_code != 404
+
+
+# --------------------------------------------------------------- langstage#208: DNS rebinding
+def _guarded(tmp_path, **over):
+    cfg = CodraftConfig.resolve(overrides={"data_dir": tmp_path / "data", "port": 8799, "host": "localhost", **over},
+                                use_toml=False)
+    return create_app(cfg, None, {"kind": "none"}, store=Store(tmp_path / "data" / "codraft.db"), host_guard=True)
+
+
+def test_rebound_host_is_refused_on_every_method(tmp_path):
+    with TestClient(_guarded(tmp_path), base_url="http://evil.example:8799") as c:
+        r = c.get("/api/docs")
+        assert r.status_code == 403 and "allowed_hosts" in r.json()["detail"] and "evil.example" in r.json()["detail"]
+        assert c.post("/api/docs", json={}).status_code == 403
+        assert c.post("/mcp", json={}).status_code == 403
+
+
+def test_loopback_names_pass(tmp_path):
+    with TestClient(_guarded(tmp_path)) as c:
+        for host in ("localhost:8799", "127.0.0.1:8799", "[::1]:8799", "app.localhost:8799", "LOCALHOST"):
+            assert c.get("/api/docs", headers={"host": host}).status_code == 200, host
+
+
+def test_allowed_hosts_and_star(tmp_path):
+    with TestClient(_guarded(tmp_path, allowed_hosts=["docs.example.org", "*.example.net"])) as c:
+        assert c.get("/api/docs", headers={"host": "DOCS.example.org"}).status_code == 200
+        assert c.get("/api/docs", headers={"host": "a.b.example.net:443"}).status_code == 200
+        assert c.get("/api/docs", headers={"host": "example.net"}).status_code == 403
+    with TestClient(_guarded(tmp_path / "s", allowed_hosts=["*"]), base_url="http://evil.example") as c:
+        assert c.get("/api/docs").status_code == 200
+
+
+def test_guard_off_for_public_binds_and_mounted_apps(tmp_path):
+    with TestClient(_guarded(tmp_path, host="0.0.0.0"), base_url="http://evil.example") as c:
+        assert c.get("/api/docs").status_code == 200
+    with TestClient(_app(tmp_path / "m"), base_url="http://docs.example.org") as c:  # create_app default: off
+        assert c.get("/api/docs").status_code == 200
+
+
+def test_allowed_hosts_from_env(monkeypatch):
+    monkeypatch.setenv("LANGSTAGE_ALLOWED_HOSTS", "docs.example.org, *.example.net")
+    assert CodraftConfig.resolve(use_toml=False).allowed_hosts == ["docs.example.org", "*.example.net"]

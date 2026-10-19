@@ -87,7 +87,7 @@ def run(agent_spec, model, demo, data_dir, host, port, approval, no_browser, sho
     elif info.get("missing_tools"):
         _warn(f"agent {info['label']} lacks codraft tools ({len(info['missing_tools'])} missing); it can chat "
               "but cannot edit the document. Add CodraftMiddleware() or export a factory(tools, middleware).")
-    app = create_app(cfg, graph, info)
+    app = create_app(cfg, graph, info, host_guard=True)
     url = f"http://{cfg.host}:{cfg.port}"
     _echo(f"Codraft {__version__}  agent: {info.get('label')}  data: {Path(cfg.data_dir).resolve()}")
     _echo(f"Open {url}")

@@ -341,6 +341,7 @@ Access settings:
 | `proxy_secret` | `LANGSTAGE_CODRAFT_PROXY_SECRET` | Requests must carry `X-Codraft-Proxy-Secret`. Requests from the machine itself (the host app in front of Codraft) are exempt. |
 | `auth_username` / `auth_password` | `LANGSTAGE_AUTH_USERNAME` / `LANGSTAGE_AUTH_PASSWORD` | HTTP basic auth, as in langstage-web. It applies to every request, from this machine too, and on top of `proxy_secret` when both are set. |
 | `user_header` | `LANGSTAGE_CODRAFT_USER_HEADER` | A trusted header with the signed-in user: it names them on edits and in presence. |
+| `allowed_hosts` | `LANGSTAGE_ALLOWED_HOSTS` (comma-separated) | `[server] allowed_hosts`. When `langstage-codraft run` binds to loopback (the default), it only answers to `localhost`, `127.0.0.1`, `[::1]`, `*.localhost` and these names, which guards against DNS rebinding. Add your proxy's public name here if the proxy forwards it as `Host` (Caddy and Traefik do by default). `*.example.org` matches subdomains, and `"*"` turns the check off. Apps that mount Codraft with `create_app` opt in with `host_guard=True`. |
 
 The export renderer and `langstage-codraft export` send the configured secret and password
 themselves. State-changing requests a browser sends from another website (a cross-site form

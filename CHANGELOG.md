@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.4 — 2026-10-19
+
+- **Security: DNS rebinding guard (langstage#208).** A page on another site could point its own
+  domain at 127.0.0.1 and then reach a local Codraft as if same-origin, reading documents and
+  making changes. The cross-site guard can't see it. `langstage-codraft run` on a loopback
+  address (the default) now answers only to `localhost`, `127.0.0.1`, `[::1]`, `*.localhost`,
+  the bind host and the new `allowed_hosts` setting (`[server] allowed_hosts` in
+  `langstage.toml`, or `LANGSTAGE_ALLOWED_HOSTS`, comma-separated). Every other `Host` gets a 403
+  that says how to allow it. `"*"` turns the check off, and `*.example.org` matches subdomains.
+  It covers every method, `/mcp` included. It's the same setting as langstage-web's, so one
+  `langstage.toml` covers both.
+  - **If a reverse proxy forwards its public name as `Host` to a loopback-bound `run`** (Caddy
+    and Traefik do by default), add that name to `allowed_hosts`.
+  - Apps that mount Codraft with `create_app` are unaffected; they opt in with
+    `host_guard=True`.
+
 ## 0.5.3 — 2026-10-19
 
 - **Security: setting `proxy_secret` turned the password off (#8).** With both `proxy_secret`

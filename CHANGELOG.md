@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 — 2026-10-18
+
+- **Fixed: `langstage-codraft export` rejected docx, pptx, gif and mp4.** The README lists all
+  eight formats and the server exports them, but the CLI only offered pdf, png, jpg and html.
+
 ## 0.5.0 — 2026-10-18
 
 Design the whole document, not just its blocks.

@@ -5,7 +5,7 @@ CLI flags, exactly as on every other LangStage surface.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -14,6 +14,10 @@ from langstage_core import HostConfig
 
 def _env_bool(v: str) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _csv(v: str) -> list[str]:
+    return [s.strip() for s in v.split(",") if s.strip()]
 
 
 def is_css_path(value: str) -> bool:
@@ -49,6 +53,8 @@ class CodraftConfig(HostConfig):
     user_header: str = ""                 # trusted header naming the signed-in user (e.g. X-User-Email)
     auth_username: str = "admin"          # HTTP basic auth (inert unless auth_password is set)
     auth_password: str = ""
+    # Extra Host names a loopback-bound `run` answers to (DNS rebinding guard); "*" disables.
+    allowed_hosts: list[str] = field(default_factory=list)
 
     _ENV: ClassVar[dict] = {
         "model": ("LANGSTAGE_CODRAFT_MODEL", str),
@@ -72,6 +78,7 @@ class CodraftConfig(HostConfig):
         "user_header": ("LANGSTAGE_CODRAFT_USER_HEADER", str),
         "auth_username": ("LANGSTAGE_AUTH_USERNAME", str),
         "auth_password": ("LANGSTAGE_AUTH_PASSWORD", str),
+        "allowed_hosts": ("LANGSTAGE_ALLOWED_HOSTS", _csv),
     }
     _TOML: ClassVar[dict] = {
         "model": "codraft.model",
@@ -95,6 +102,7 @@ class CodraftConfig(HostConfig):
         "user_header": "codraft.user_header",
         "auth_username": "auth.username",
         "auth_password": "auth.password",
+        "allowed_hosts": "server.allowed_hosts",
     }
     _TOML_PATHS: ClassVar[dict] = {"data_dir": "path", "templates_dir": "path"}
     # Read directly from the [codraft] table (themes.py), not config fields: never "unknown".

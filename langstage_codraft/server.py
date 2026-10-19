@@ -118,12 +118,15 @@ def _load_css(value: str) -> str:
 def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                *, store: Store | None = None, ui: dict | None = None,
                doc_themes: dict[str, dict] | None = None,
-               doc_defaults: dict[str, Any] | None = None) -> FastAPI:
+               doc_defaults: dict[str, Any] | None = None, host_guard: bool = False) -> FastAPI:
     """The Codraft ASGI app. ``ui`` overrides app branding in code (for hosts that embed
     Codraft); ``doc_themes`` adds or overrides document themes (same keys as
     ``[codraft.themes.*]``, which it extends); ``doc_defaults`` are settings every new
     document starts with (a house cover, header or footer; extends ``[codraft.doc_defaults]``).
-    To serve it under another FastAPI app, use :func:`mount`."""
+    To serve it under another FastAPI app, use :func:`mount`. ``host_guard`` turns on the
+    DNS-rebinding guard (:class:`HostGuard`) when ``cfg.host`` is a loopback address;
+    ``langstage-codraft run`` passes it. A host app that mounts Codraft is served under its
+    own public names, so it's off by default there."""
     data_dir = Path(cfg.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
     store = store or Store(data_dir / "codraft.db")
@@ -213,6 +216,10 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                 return Response("authentication required", status_code=401,
                                 headers={"WWW-Authenticate": 'Basic realm="Codraft"'})
         return await call_next(request)
+
+    if host_guard and is_loopback(cfg.host) and "*" not in allowed_host_list(cfg.allowed_hosts):
+        # Outermost: a rebound page is refused before anything else runs (langstage#208).
+        app.add_middleware(HostGuard, bind_host=cfg.host, allowed=allowed_host_list(cfg.allowed_hosts))
 
     def current_user(request: Request) -> str:
         """The signed-in user's name from the host's trusted header, if configured."""
@@ -926,6 +933,67 @@ def new_document(cfg: CodraftConfig, house: dict, template_id: str | None, templ
     if title and blocks and blocks[0].get("type") == "heading":
         blocks[0] = {**blocks[0], "content": {**blocks[0].get("content", {}), "text": title}}
     return name, merged, blocks
+
+
+LOOPBACK_NAMES = frozenset({"localhost", "127.0.0.1", "::1", "[::1]"})
+
+
+def is_loopback(host: str) -> bool:
+    h = (host or "").strip().lower()
+    return h in LOOPBACK_NAMES or h.startswith("127.") or h.endswith(".localhost")
+
+
+def allowed_host_list(value: Any) -> list[str]:
+    """``allowed_hosts`` from a toml list or a comma-separated string."""
+    items = value.split(",") if isinstance(value, str) else list(value or [])
+    return [str(s).strip().lower().rstrip(".") for s in items if str(s).strip()]
+
+
+def _host_name(header: str) -> str:
+    """``Host`` header -> hostname, port dropped (``[::1]:8060`` -> ``[::1]``)."""
+    h = header.strip().lower()
+    if h.startswith("["):
+        return h[: h.find("]") + 1] if "]" in h else h
+    if h.count(":") == 1:
+        h = h.split(":", 1)[0]
+    return h.rstrip(".")
+
+
+class HostGuard:
+    """Refuse requests whose ``Host`` isn't a name this loopback-bound server answers to.
+
+    DNS rebinding: a page at ``http://evil.example:8060`` re-points its own name at
+    127.0.0.1. To the browser it's still same-origin, so the cross-site guard can't tell,
+    and the page can read responses too. Its requests still say ``Host: evil.example``,
+    so every method is checked here (langstage#208, the same guard as langstage-web).
+    Allowed: localhost, 127.0.0.1, [::1], ``*.localhost``, the bind host, and
+    ``allowed_hosts`` (``*.example.org`` matches subdomains). No ``Host`` header passes.
+    """
+
+    def __init__(self, app: Any, bind_host: str, allowed: list[str]) -> None:
+        self.app = app
+        self._exact = set(LOOPBACK_NAMES) | {_host_name(bind_host)} | {a for a in allowed if not a.startswith("*.")}
+        self._suffixes = tuple(a[1:] for a in allowed if a.startswith("*."))
+
+    def _allowed(self, name: str) -> bool:
+        return name in self._exact or name.endswith(".localhost") or bool(self._suffixes and name.endswith(self._suffixes))
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] in ("http", "websocket"):
+            raw = next((v for k, v in scope.get("headers", []) if k.lower() == b"host"), None)
+            if raw is not None:
+                name = _host_name(raw.decode("latin-1"))
+                if name and not self._allowed(name):
+                    detail = (f"Host {name!r} is not allowed: this server is bound to loopback and only "
+                              "answers to localhost names (a DNS-rebinding guard). If you reach it through "
+                              f"a proxy or another name, add it: [server] allowed_hosts = [\"{name}\"] in "
+                              "langstage.toml or LANGSTAGE_ALLOWED_HOSTS; \"*\" turns the check off.")
+                    if scope["type"] == "http":
+                        await JSONResponse({"detail": detail}, status_code=403)(scope, receive, send)
+                    else:
+                        await send({"type": "websocket.close", "code": 1008})
+                    return
+        await self.app(scope, receive, send)
 
 
 LOOPBACK_ORIGINS = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"

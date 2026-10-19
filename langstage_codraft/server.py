@@ -155,14 +155,19 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     app = FastAPI(title="langstage-codraft", lifespan=lifespan)
     app.state.codraft = st
     # Codraft over MCP at /mcp (streamable HTTP): any agent harness can co-author.
+    # [ui.features] mcp = false switches the endpoint off, not just its URL in the UI (gh #9).
     mcp_server = None
     try:
+        if not st.ui["features"].get("mcp", True):
+            raise LookupError("[ui.features] mcp = false")
         from .mcp_server import build_mcp_server
 
         mcp_server = build_mcp_server()
         mcp_app = mcp_server.streamable_http_app(streamable_http_path="/mcp", host=cfg.host)
         for route in mcp_app.routes:
             app.router.routes.insert(0, route)
+    except LookupError:
+        mcp_server = None
     except Exception as exc:  # noqa: BLE001 - MCP is additive; the editor works without it
         log.warning("codraft: MCP endpoint disabled (%s)", exc)
         mcp_server = None
@@ -193,16 +198,17 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     # ------------------------------------------------------------- access
     @app.middleware("http")
     async def _access_guard(request: Request, call_next):
-        """Proxy secret and basic auth. The proxy secret exempts requests from this machine
-        (the host app in front of it). Basic auth applies to every request, loopback too:
-        behind a same-host reverse proxy every visitor arrives from 127.0.0.1 (gh #2). The
-        export renderer sends the configured credentials itself (``render.auth_headers``)."""
+        """Proxy secret and basic auth, checked independently: with both set, a request needs
+        both (gh #8). The proxy secret exempts requests from this machine (the host app in
+        front of it). Basic auth applies to every request, loopback too: behind a same-host
+        reverse proxy every visitor arrives from 127.0.0.1 (gh #2). The export renderer sends
+        the configured credentials itself (``render.auth_headers``)."""
         client = (request.client.host if request.client else "") or ""
         local = client in ("127.0.0.1", "::1", "localhost", "testclient")
-        if cfg.proxy_secret:
-            if not local and not _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
+        if cfg.proxy_secret and not local:
+            if not _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
                 return JSONResponse({"detail": "forbidden"}, status_code=403)
-        elif cfg.auth_password:
+        if cfg.auth_password:
             if not _basic_ok(request.headers.get("authorization", ""), cfg.auth_username, cfg.auth_password):
                 return Response("authentication required", status_code=401,
                                 headers={"WWW-Authenticate": 'Basic realm="Codraft"'})
@@ -275,7 +281,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             "cover_default": bool((house.get("cover") or {}).get("enabled", True)),
             "chat_available": st.graph is not None,
             "ui_theme": getattr(cfg, "theme", "auto"),
-            "mcp_url": "/mcp" if (st.mcp is not None and st.ui["features"].get("mcp", True)) else None,
+            "mcp_url": "/mcp" if st.mcp is not None else None,
         }
 
     # ------------------------------------------------------------- documents

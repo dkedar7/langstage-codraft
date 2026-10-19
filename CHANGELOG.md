@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.5.2 — 2026-10-18
+
+Fixes for what the first nightly dogfood run found.
+
+- **Security: basic auth applied only to requests from other machines (#2).** With
+  `LANGSTAGE_AUTH_PASSWORD` set, any request from 127.0.0.1 skipped it, so behind a same-host
+  reverse proxy (every visitor arrives from loopback) the password protected nothing. Basic auth
+  now applies to every request. The export renderer, the `mcp` command's renderer and
+  `langstage-codraft export` send the configured password (and proxy secret) themselves; the
+  renderer sends them only to Codraft's own origin. The proxy secret keeps its exemption for this
+  machine, the host app in front of Codraft.
+- **Security: another website could accept the agent's suggestions (#3).** A plain cross-site
+  `<form>` POST needs no CORS preflight, so it could run `suggestions/accept-all`, uploads or
+  `POST /api/docs`. State-changing requests whose `Origin` is neither Codraft's own nor a
+  loopback origin, or marked `Sec-Fetch-Site: cross-site` with no `Origin`, are now refused with
+  403 (langstage-web's guard from langstage#206). curl, the CLI and MCP clients are unaffected.
+- **Fixed: `langstage-codraft new` ignored `[codraft.doc_defaults]`, `default_page_size` and the
+  title (#4).** It now shares one helper with the editor's New document, so a CLI document gets
+  the house cover, header and footer, the default page size and the title on its cover.
+- **Fixed: `list` and `--show-config` crashed on a cp1252 console (#5)** when a title or setting
+  had characters it can't show. CLI output goes through langstage-core's `safe_print`.
+- **Fixed: a relative `[ui] custom_css` path resolved against the current folder (#6).** It now
+  resolves against the `langstage.toml` that set it, like `data_dir` and `templates_dir`, so
+  branding survives a run from a subdirectory. Inline CSS is unchanged.
+
 ## 0.5.1 — 2026-10-18
 
 - **Fixed: `langstage-codraft export` rejected docx, pptx, gif and mp4.** The README lists all

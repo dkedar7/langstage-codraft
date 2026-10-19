@@ -16,6 +16,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,8 +24,8 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from . import fonts, stylematch, themes
 from . import templates as tpl
-from .config import CodraftConfig, codraft_toml_table
-from .render import BrowserMissing, Renderer, get_renderer, set_renderer, zip_images
+from .config import CodraftConfig, codraft_toml_table, is_css_path
+from .render import BrowserMissing, Renderer, auth_headers, get_renderer, set_renderer, zip_images
 from .store import Invalid, NotFound, Store, get_store, set_store
 from .textutil import extract_text
 
@@ -104,7 +105,7 @@ def resolve_ui(cfg: CodraftConfig, overrides: dict | None = None) -> dict:
 def _load_css(value: str) -> str:
     """Inline CSS, or the contents of a .css file path."""
     v = (value or "").strip()
-    if v.endswith(".css") and "\n" not in v and "{" not in v:
+    if is_css_path(v):
         p = Path(v).expanduser()
         try:
             return p.read_text(encoding="utf-8")
@@ -131,8 +132,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     toml_themes = table.get("themes") if isinstance(table.get("themes"), dict) else {}
     themes.configure({**toml_themes, **(doc_themes or {})} or None, table.get("allowed_themes"))
     themes.set_saved_provider(store.saved_themes)
-    house = _deep(table.get("doc_defaults") if isinstance(table.get("doc_defaults"), dict) else {},
-                  doc_defaults or {})
+    house = house_defaults(doc_defaults)
     tpl.configure(cfg.templates_dir)
     st = AppState(cfg, graph, info or _default_info(graph, ui or {}, cfg))
     st.ui = resolve_ui(cfg, ui)
@@ -167,8 +167,9 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         log.warning("codraft: MCP endpoint disabled (%s)", exc)
         mcp_server = None
     st.mcp = mcp_server
+    app.add_middleware(CrossSiteRequestGuard, origin_regex=LOOPBACK_ORIGINS)  # inside CORS (gh #3)
     app.add_middleware(
-        CORSMiddleware, allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+        CORSMiddleware, allow_origin_regex=LOOPBACK_ORIGINS,
         allow_methods=["*"], allow_headers=["*"],
     )
 
@@ -192,14 +193,16 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     # ------------------------------------------------------------- access
     @app.middleware("http")
     async def _access_guard(request: Request, call_next):
-        """Proxy secret and basic auth. The server's own render requests (loopback)
-        are always allowed: headless Chromium has no credentials."""
+        """Proxy secret and basic auth. The proxy secret exempts requests from this machine
+        (the host app in front of it). Basic auth applies to every request, loopback too:
+        behind a same-host reverse proxy every visitor arrives from 127.0.0.1 (gh #2). The
+        export renderer sends the configured credentials itself (``render.auth_headers``)."""
         client = (request.client.host if request.client else "") or ""
         local = client in ("127.0.0.1", "::1", "localhost", "testclient")
-        if not local and cfg.proxy_secret:
-            if not _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
+        if cfg.proxy_secret:
+            if not local and not _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
                 return JSONResponse({"detail": "forbidden"}, status_code=403)
-        elif not local and cfg.auth_password:
+        elif cfg.auth_password:
             if not _basic_ok(request.headers.get("authorization", ""), cfg.auth_username, cfg.auth_password):
                 return Response("authentication required", status_code=401,
                                 headers={"WWW-Authenticate": 'Basic realm="Codraft"'})
@@ -227,7 +230,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             st.agent = build_agent(st.graph, name="Codraft co-author")
             add_agui_endpoint(app, st.agent, path="/agui", name="Codraft co-author")
         host = "127.0.0.1" if cfg.host in ("localhost", "0.0.0.0", "::") else cfg.host
-        set_renderer(Renderer(cfg.renderer_url or f"http://{host}:{cfg.port}", data_dir / "renders", STATIC_DIR))
+        set_renderer(Renderer(cfg.renderer_url or f"http://{host}:{cfg.port}", data_dir / "renders", STATIC_DIR,
+                              headers=auth_headers(cfg)))
         if st.mcp is not None:
             from contextlib import AsyncExitStack
 
@@ -283,24 +287,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     def create_doc(body: dict = Body(default={})) -> dict:
         try:
             template = tpl.all_templates().get(body.get("template") or "blank", tpl.BUILTIN_TEMPLATES["blank"])
-            base = _deep({"approval": cfg.approval, "theme": cfg.default_theme}, house)
-            if cfg.default_page_size:
-                base["page_size"] = cfg.default_page_size
-            tpl_settings = dict(template.get("settings", {}))
-            if (body.get("template") or "blank") in tpl.BUILTIN_TEMPLATES:
-                # A deployer's house style beats the built-ins' generic look ("classic") and
-                # their paper size (regional, not a design choice). Templates with a distinct
-                # look (academic, bold, modern, minimal) keep their theme.
-                if tpl_settings.get("theme") == "classic":
-                    tpl_settings.pop("theme")
-                if cfg.default_page_size:
-                    tpl_settings.pop("page_size", None)
-            settings = _deep(_deep(base, tpl_settings), body.get("settings") or {})
-            is_blank = body.get("template") in (None, "", "blank")
-            title = body.get("title") or ("Untitled document" if is_blank else template.get("name", "Untitled"))
-            blocks = [dict(b) for b in template.get("blocks", [])]
-            if body.get("title") and blocks and blocks[0].get("type") == "heading":
-                blocks[0] = {**blocks[0], "content": {**blocks[0].get("content", {}), "text": body["title"]}}
+            title, settings, blocks = new_document(cfg, house, body.get("template"), template,
+                                                   body.get("title"), body.get("settings"))
             doc = store.create_document(title, settings, blocks)
             return store.full(doc["id"])
         except Exception as exc:  # noqa: BLE001
@@ -899,6 +887,102 @@ def _references(store: Store, doc_id: str) -> list[dict]:
                 seen.add(key)
                 out.append(r)
     return out
+
+
+def house_defaults(doc_defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+    """What every new document starts with: ``[codraft.doc_defaults]`` plus the host's
+    ``doc_defaults``."""
+    table = codraft_toml_table()
+    return _deep(table.get("doc_defaults") if isinstance(table.get("doc_defaults"), dict) else {},
+                 doc_defaults or {})
+
+
+def new_document(cfg: CodraftConfig, house: dict, template_id: str | None, template: dict,
+                 title: str | None = None, settings: dict | None = None) -> tuple[str, dict, list[dict]]:
+    """The title, settings and blocks of a new document. The editor's New document
+    (``POST /api/docs``) and ``langstage-codraft new`` share it, so they can't drift (gh #4)."""
+    base = _deep({"approval": cfg.approval, "theme": cfg.default_theme}, house)
+    if cfg.default_page_size:
+        base["page_size"] = cfg.default_page_size
+    tpl_settings = dict(template.get("settings", {}))
+    if (template_id or "blank") in tpl.BUILTIN_TEMPLATES:
+        # A deployer's house style beats the built-ins' generic look ("classic") and
+        # their paper size (regional, not a design choice). Templates with a distinct
+        # look (academic, bold, modern, minimal) keep their theme.
+        if tpl_settings.get("theme") == "classic":
+            tpl_settings.pop("theme")
+        if cfg.default_page_size:
+            tpl_settings.pop("page_size", None)
+    merged = _deep(_deep(base, tpl_settings), settings or {})
+    is_blank = template_id in (None, "", "blank")
+    name = title or ("Untitled document" if is_blank else template.get("name", "Untitled"))
+    blocks = [dict(b) for b in template.get("blocks", [])]
+    if title and blocks and blocks[0].get("type") == "heading":
+        blocks[0] = {**blocks[0], "content": {**blocks[0].get("content", {}), "text": title}}
+    return name, merged, blocks
+
+
+LOOPBACK_ORIGINS = r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
+
+
+class CrossSiteRequestGuard:
+    """Refuse state-changing requests a browser sent on behalf of another site (gh #3).
+
+    CORS only stops a foreign page *reading* a response. A plain HTML ``<form>`` POST
+    (empty, urlencoded, multipart or text/plain body) is a CORS "simple request": the
+    browser sends it with no preflight, so ``suggestions/accept-all``, uploads and new
+    documents ran for any website. This is langstage-web's guard (langstage#206): every
+    method but GET/HEAD/OPTIONS is refused with 403 when
+
+    * its ``Origin`` is neither the server's own (``host:port`` equals ``Host``) nor a
+      loopback origin (what CORS allows); ``Origin: null`` is never allowed;
+    * or it has no ``Origin`` and ``Sec-Fetch-Site`` is ``cross-site`` / ``same-site``.
+
+    ``Sec-Fetch-Site: same-origin`` / ``none`` passes even if ``Origin`` and ``Host``
+    disagree (a proxy that rewrites ``Host``); pages can't forge it. Requests with neither
+    header (curl, the CLI, MCP clients, server-to-server) pass unchanged.
+    """
+
+    _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+    def __init__(self, app: Any, origin_regex: str) -> None:
+        self.app = app
+        self._origin_regex = re.compile(origin_regex)
+
+    def _reject_reason(self, scope: dict) -> str | None:
+        headers = {k.lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        fetch_site = headers.get(b"sec-fetch-site", "").strip().lower()
+        if fetch_site in ("same-origin", "none"):
+            return None
+        origin = headers.get(b"origin")
+        if origin is not None:
+            o = origin.strip().lower().rstrip("/")
+            if o and o != "null":
+                if self._origin_regex.fullmatch(o):
+                    return None
+                try:
+                    netloc = urlsplit(o).netloc
+                except ValueError:
+                    netloc = ""
+                host = headers.get(b"host", "").strip().lower()
+                if host and netloc == host:
+                    return None
+            return f"origin {origin.strip()!r} is not allowed"
+        if fetch_site in ("cross-site", "same-site"):
+            return f"Sec-Fetch-Site is {fetch_site!r} and no allowed Origin was sent"
+        return None
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http" or scope.get("method", "GET").upper() in self._SAFE_METHODS:
+            await self.app(scope, receive, send)
+            return
+        reason = self._reject_reason(scope)
+        if reason is None:
+            await self.app(scope, receive, send)
+            return
+        await JSONResponse({"detail": f"Cross-site request refused: {reason}. State-changing requests "
+                                      "are only accepted from Codraft's own pages."},
+                           status_code=403)(scope, receive, send)
 
 
 def _deep(a: dict, b: dict) -> dict:

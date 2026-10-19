@@ -15,6 +15,7 @@ import webbrowser
 from pathlib import Path
 
 import click
+from langstage_core.console import safe_print as _echo  # cp1252-safe output (gh #5)
 
 from . import __version__
 from .config import CodraftConfig
@@ -25,15 +26,15 @@ def _cfg(**overrides) -> CodraftConfig:
 
 
 def _ok(msg: str) -> None:
-    click.echo(f"[ ok ] {msg}")
+    _echo(f"[ ok ] {msg}")
 
 
 def _warn(msg: str) -> None:
-    click.echo(f"[warn] {msg}")
+    _echo(f"[warn] {msg}")
 
 
 def _fail(msg: str) -> None:
-    click.echo(f"[fail] {msg}")
+    _echo(f"[fail] {msg}")
 
 
 @click.group(invoke_without_command=True)
@@ -42,7 +43,7 @@ def _fail(msg: str) -> None:
 def main(ctx: click.Context) -> None:
     """Codraft: the document stage for your LangGraph agent."""
     if ctx.invoked_subcommand is None:
-        click.echo(ctx.get_help())
+        _echo(ctx.get_help())
 
 
 _agent_opts = [
@@ -71,7 +72,7 @@ def run(agent_spec, model, demo, data_dir, host, port, approval, no_browser, sho
     cfg = _cfg(agent_spec=agent_spec, model=model, demo=demo, data_dir=data_dir, host=host, port=port,
                approval=approval)
     if show_config:
-        click.echo(cfg.describe())
+        _echo(cfg.describe())
         return
     from .agent import resolve
     from .server import create_app
@@ -88,8 +89,8 @@ def run(agent_spec, model, demo, data_dir, host, port, approval, no_browser, sho
               "but cannot edit the document. Add CodraftMiddleware() or export a factory(tools, middleware).")
     app = create_app(cfg, graph, info)
     url = f"http://{cfg.host}:{cfg.port}"
-    click.echo(f"Codraft {__version__}  agent: {info.get('label')}  data: {Path(cfg.data_dir).resolve()}")
-    click.echo(f"Open {url}")
+    _echo(f"Codraft {__version__}  agent: {info.get('label')}  data: {Path(cfg.data_dir).resolve()}")
+    _echo(f"Open {url}")
     if not no_browser:
         import threading
 
@@ -157,7 +158,7 @@ def check(agent_spec, model, demo, data_dir, live, as_json) -> None:
     ok = all(c["ok"] is not False for c in report["checks"])
     report["ok"] = ok
     if as_json:
-        click.echo(json.dumps(report, indent=2))
+        _echo(json.dumps(report, indent=2))
     else:
         for c in report["checks"]:
             (_ok if c["ok"] else _warn if c["ok"] is None else _fail)(f"{c['name']}: {c['detail']}")
@@ -174,12 +175,12 @@ def list_docs(data_dir, as_json) -> None:
     cfg = _cfg(data_dir=data_dir)
     docs = Store(Path(cfg.data_dir) / "codraft.db").list_documents()
     if as_json:
-        click.echo(json.dumps(docs, indent=2))
+        _echo(json.dumps(docs, indent=2))
         return
     if not docs:
-        click.echo("No documents yet.")
+        _echo("No documents yet.")
     for d in docs:
-        click.echo(f"{d['id']}  {d['title']}  ({d['n_blocks']} blocks)")
+        _echo(f"{d['id']}  {d['title']}  ({d['n_blocks']} blocks)")
 
 
 @main.command()
@@ -187,8 +188,9 @@ def list_docs(data_dir, as_json) -> None:
 @click.option("--template", default="blank", help="Template id (see the new-document dialog).")
 @click.option("--data-dir", type=click.Path(path_type=Path))
 def new(title, template, data_dir) -> None:
-    """Create a document from a template."""
+    """Create a document from a template, exactly as the editor's New document does."""
     from . import templates as tpl
+    from .server import house_defaults, new_document
     from .store import Store
 
     cfg = _cfg(data_dir=data_dir)
@@ -198,9 +200,8 @@ def new(title, template, data_dir) -> None:
         _fail(f"unknown template {template!r}; available: {', '.join(tpl.all_templates())}")
         sys.exit(2)
     store = Store(Path(cfg.data_dir) / "codraft.db")
-    doc = store.create_document(title, {"approval": cfg.approval, "theme": cfg.default_theme,
-                                        **t.get("settings", {})}, t.get("blocks", []))
-    click.echo(doc["id"])
+    doc = store.create_document(*new_document(cfg, house_defaults(), template, t, title))
+    _echo(doc["id"])
 
 
 # Every format GET /api/docs/{id}/export serves (the README's CLI list).
@@ -217,10 +218,14 @@ def export(doc_id, fmt, output, url, port) -> None:
     """Export a document through a running Codraft server."""
     import httpx
 
+    from .render import auth_headers
+
     cfg = _cfg(port=port)
     base = url or f"http://{cfg.host}:{cfg.port}"
     try:
-        r = httpx.get(f"{base}/api/docs/{doc_id}/export", params={"format": fmt}, timeout=180)
+        # The configured password / proxy secret, as the server checks them on loopback too (gh #2).
+        r = httpx.get(f"{base}/api/docs/{doc_id}/export", params={"format": fmt},
+                      headers=auth_headers(cfg), timeout=180)
     except httpx.HTTPError as exc:
         _fail(f"no Codraft server at {base} ({type(exc).__name__}); start one with "
               "`langstage-codraft run`, or pass --port / --url")
@@ -250,7 +255,7 @@ def mcp(data_dir, port) -> None:
     from . import themes
     from .config import codraft_toml_table
     from .mcp_server import build_mcp_server
-    from .render import Renderer, set_renderer
+    from .render import Renderer, auth_headers, set_renderer
     from .store import Store, set_store
 
     cfg = _cfg(data_dir=data_dir, port=port)
@@ -264,7 +269,8 @@ def mcp(data_dir, port) -> None:
         import httpx
 
         httpx.get(f"http://{host}:{cfg.port}/api/health", timeout=1)
-        set_renderer(Renderer(f"http://{host}:{cfg.port}", Path(cfg.data_dir) / "renders"))
+        set_renderer(Renderer(f"http://{host}:{cfg.port}", Path(cfg.data_dir) / "renders",
+                              headers=auth_headers(cfg)))
     except Exception:  # noqa: BLE001 - no server: everything but view_pages still works
         pass
     build_mcp_server().run("stdio")

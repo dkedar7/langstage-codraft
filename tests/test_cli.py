@@ -10,7 +10,7 @@ def test_export_accepts_every_server_format(fmt, monkeypatch, tmp_path):
     # The README lists docx/pptx/gif/mp4 for `export`; the CLI used to reject them.
     seen = {}
 
-    def fake_get(url, params=None, timeout=None):
+    def fake_get(url, params=None, headers=None, timeout=None):
         seen["format"] = params["format"]
         return httpx.Response(200, content=b"x", headers={"content-type": "application/octet-stream"})
 

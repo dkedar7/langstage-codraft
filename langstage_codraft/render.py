@@ -37,9 +37,28 @@ def install_browser() -> int:
     return subprocess.call([sys.executable, "-m", "playwright", "install", "chromium"])
 
 
+def auth_headers(cfg: Any) -> dict[str, str]:
+    """The credentials the renderer's headless Chromium sends to its own server: the
+    proxy secret and basic auth, when they're configured (gh #2)."""
+    import base64
+
+    headers: dict[str, str] = {}
+    if getattr(cfg, "proxy_secret", ""):
+        headers["x-codraft-proxy-secret"] = cfg.proxy_secret
+    if getattr(cfg, "auth_password", ""):
+        token = base64.b64encode(f"{cfg.auth_username}:{cfg.auth_password}".encode()).decode()
+        headers["authorization"] = f"Basic {token}"
+    return headers
+
+
 class Renderer:
-    def __init__(self, base_url: str, out_dir: Path, static_dir: Path | None = None):
+    def __init__(self, base_url: str, out_dir: Path, static_dir: Path | None = None,
+                 headers: dict[str, str] | None = None):
         self.base_url = base_url.rstrip("/")
+        # Sent only to the server's own origin, never to a third party (web fonts).
+        self.headers = dict(headers or {})
+        parts = urlparse(self.base_url)
+        self._origin = f"{parts.scheme}://{parts.netloc}"
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.static_dir = static_dir
@@ -101,6 +120,11 @@ class Renderer:
     async def _open(self, doc_id: str, *, scale: float = 1.0):
         browser = await self._browser_ready()
         ctx = await browser.new_context(device_scale_factor=scale, viewport={"width": 1400, "height": 1000})
+        if self.headers:
+            async def _authed(route):
+                await route.continue_(headers={**route.request.headers, **self.headers})
+
+            await ctx.route(lambda url: url == self._origin or url.startswith(self._origin + "/"), _authed)
         page = await ctx.new_page()
         await page.goto(f"{self.base_url}/print/{doc_id}", wait_until="networkidle")
         await page.wait_for_function(READY_JS, timeout=30000)

@@ -222,6 +222,7 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .cd-refs li { margin: .25em 0; }
 .cd-muted { color: var(--cd-muted); }
 .cd-placeholder { color: #a3a3ad !important; font-style: italic; }
+.cd-ghost { visibility: hidden; }
 .cd-pagebreak { font-family: Inter, sans-serif; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: #9a9aa5; text-align: center; border-top: 1px dashed #c8c8d0; padding-top: 2px; height: 14px; }
 
 /* ----------------------------------------------------------------- print */

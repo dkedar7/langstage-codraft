@@ -66,12 +66,15 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
     [block.type, c.markdown, ctx, pageNo],
   );
   const empty = (s: string) => ctx.editing && !s.trim();
+  // Editor-only hint text in a box that flows: print renders the same text invisibly, so the
+  // editor and the export measure the same height and paginate alike (gh #13).
+  const hint = (text: string) => (ctx.editing ? text : <span className="cd-ghost" aria-hidden="true">{text}</span>);
 
   let inner: React.JSX.Element;
   switch (block.type) {
     case "text":
-      inner = empty(c.markdown || "") ? (
-        <div className="cd-md cd-placeholder"><p>Type something…</p></div>
+      inner = !(c.markdown || "").trim() ? (
+        <div className={`cd-md${ctx.editing ? " cd-placeholder" : ""}`}><p>{hint("Type something…")}</p></div>
       ) : (
         <div className="cd-md" dangerouslySetInnerHTML={{ __html: html }} />
       );
@@ -79,13 +82,14 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
     case "heading": {
       const L = Math.max(1, Math.min(3, Number(c.level) || 1));
       const Tag = (`h${L}`) as "h1" | "h2" | "h3";
-      inner = <Tag className={`cd-h cd-h${L}${empty(c.text || "") ? " cd-placeholder" : ""}`}>{fillTokens(c.text || "", ctx, pageNo) || (ctx.editing ? "Heading" : "")}</Tag>;
+      inner = <Tag className={`cd-h cd-h${L}${empty(c.text || "") ? " cd-placeholder" : ""}`}>{fillTokens(c.text || "", ctx, pageNo) || hint("Heading")}</Tag>;
       break;
     }
     case "callout":
       inner = (
         <div className={`cd-callout cd-tone-${c.tone || "info"}`}>
-          {empty(c.markdown || "") ? <div className="cd-md cd-placeholder"><p>Callout…</p></div>
+          {!(c.markdown || "").trim()
+            ? <div className={`cd-md${ctx.editing ? " cd-placeholder" : ""}`}><p>{hint("Callout…")}</p></div>
             : <div className="cd-md" dangerouslySetInnerHTML={{ __html: html }} />}
         </div>
       );
@@ -193,7 +197,7 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
               ))}</ol>
             )
           ) : (
-            <p className="cd-muted">{ctx.editing ? "No sources cited yet. Blocks' references are listed here automatically." : ""}</p>
+            <p className="cd-muted">{hint("No sources cited yet. Blocks' references are listed here automatically.")}</p>
           )}
         </div>
       );

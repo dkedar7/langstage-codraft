@@ -42,11 +42,19 @@ def _cfg(doc_id: str) -> dict:
     return {"configurable": {"thread_id": doc_id, "codraft_doc_id": doc_id}}
 
 
-def build_mcp_server() -> Any:
+def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
+    """The Codraft MCP server. ``cfg`` and ``house`` (the doc defaults) are what
+    ``create_document`` starts new documents from, as the editor does; without them it
+    resolves the config and ``[codraft.doc_defaults]`` itself."""
     from mcp.server.mcpserver import Image, MCPServer
 
     from . import __version__
     from . import templates as tpl
+    from .config import CodraftConfig
+    from .server import house_defaults, new_document
+
+    cfg = cfg if cfg is not None else CodraftConfig.resolve()
+    house = house if house is not None else house_defaults()
 
     server = MCPServer(name="codraft", title="Codraft", instructions=MCP_INSTRUCTIONS,
                        version=__version__, website_url="https://github.com/dkedar7/langstage-codraft")
@@ -65,10 +73,10 @@ def build_mcp_server() -> Any:
         t = tpl.all_templates().get(template)
         if t is None:
             return f"ERROR: unknown template {template!r}"
-        settings = dict(t.get("settings", {}))
-        if columns:
-            settings["columns"] = int(columns)
-        doc = get_store().create_document(title, settings, t.get("blocks", []))
+        # The editor's New document and `langstage-codraft new` share new_document(): house
+        # defaults, default page size, theme and approval, and the title on the cover (gh #12).
+        doc = get_store().create_document(*new_document(
+            cfg, house, template, t, title, {"columns": int(columns)} if columns else None))
         return f"Created {doc['id']} ({title!r}, template {template})."
 
     for lc_tool in CODRAFT_TOOLS:

@@ -204,3 +204,46 @@ def test_guard_off_for_public_binds_and_mounted_apps(tmp_path):
 def test_allowed_hosts_from_env(monkeypatch):
     monkeypatch.setenv("LANGSTAGE_ALLOWED_HOSTS", "docs.example.org, *.example.net")
     assert CodraftConfig.resolve(use_toml=False).allowed_hosts == ["docs.example.org", "*.example.net"]
+
+
+# --------------------------------------------------------------- gh #12: MCP create_document
+async def test_mcp_create_document_matches_new_document(tmp_path, monkeypatch, store):
+    """The MCP path starts documents exactly as the editor and `new` do."""
+    from langstage_codraft.mcp_server import build_mcp_server
+
+    (tmp_path / "langstage.toml").write_text(
+        '[codraft]\ndefault_page_size = "a4"\napproval = "auto"\n\n'
+        '[codraft.doc_defaults]\ncover = { enabled = false }\nfooter = { left = "{page}", right = "Acme Corp" }\n',
+        encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    server = build_mcp_server()  # stdio: resolves the config and doc defaults itself
+    res = await server.call_tool("create_document", {"title": "Via MCP", "template": "report", "columns": 2})
+    content = getattr(res, "content", res)
+    content = content[0] if isinstance(content, tuple) else content
+    doc_id = content[0].text.split()[1]
+    d = store.full(doc_id)
+    s = d["settings"]
+    assert s["page_size"] == "a4" and s["cover"]["enabled"] is False and s["footer"]["right"] == "Acme Corp"
+    assert s["approval"] == "auto" and s["columns"] == 2
+    assert d["blocks"][0]["content"]["text"] == "Via MCP"
+
+
+def test_http_mcp_uses_the_apps_house_defaults(tmp_path):
+    """create_app(doc_defaults=...) reaches /mcp's create_document too."""
+    from langstage_codraft import mcp_server
+
+    seen = {}
+    real = mcp_server.build_mcp_server
+
+    def spy(cfg=None, house=None):
+        seen["house"] = house
+        return real(cfg, house)
+
+    cfg = CodraftConfig.resolve(overrides={"data_dir": tmp_path / "data", "port": 8799}, use_toml=False)
+    import unittest.mock as um
+
+    with um.patch.object(mcp_server, "build_mcp_server", spy):
+        create_app(cfg, None, {"kind": "none"}, store=Store(tmp_path / "data" / "codraft.db"),
+                   doc_defaults={"footer": {"right": "House"}})
+    assert seen["house"]["footer"]["right"] == "House"
+

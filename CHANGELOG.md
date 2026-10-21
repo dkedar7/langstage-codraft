@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.5 — 2026-10-21
+
+- **Fixed: a document created over MCP ignored the house style (#12).** MCP's `create_document`
+  (stdio and `/mcp`) now goes through the same `new_document()` as the editor's New document and
+  `langstage-codraft new`. It applies `[codraft.doc_defaults]` (and `create_app(doc_defaults=...)`),
+  `default_page_size`, `default_theme`, `approval` and the title on the cover.
+- **Fixed: the editor and the export could paginate differently (#13).** Empty blocks show a hint
+  in the editor (the empty References line, "Heading", "Type something…", "Callout…"), but the
+  export rendered nothing there. Every block below landed a line higher in the PDF, and near a page
+  boundary the editor showed one more page. The export now lays out the same text invisibly, so
+  both measure the same box. An empty paragraph, heading or callout now keeps its line in the
+  export, as it already did in the editor. A new e2e test compares every block's page and offset
+  in the editor and the print view.
+
 ## 0.5.4 — 2026-10-19
 
 - **Security: DNS rebinding guard (langstage#208).** A page on another site could point its own

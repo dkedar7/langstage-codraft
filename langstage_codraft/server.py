@@ -165,7 +165,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             raise LookupError("[ui.features] mcp = false")
         from .mcp_server import build_mcp_server
 
-        mcp_server = build_mcp_server()
+        mcp_server = build_mcp_server(cfg, house)
         mcp_app = mcp_server.streamable_http_app(streamable_http_path="/mcp", host=cfg.host)
         for route in mcp_app.routes:
             app.router.routes.insert(0, route)

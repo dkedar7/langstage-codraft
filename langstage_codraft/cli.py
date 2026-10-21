@@ -273,7 +273,9 @@ def mcp(data_dir, port) -> None:
                               headers=auth_headers(cfg)))
     except Exception:  # noqa: BLE001 - no server: everything but view_pages still works
         pass
-    build_mcp_server().run("stdio")
+    from .server import house_defaults
+
+    build_mcp_server(cfg, house_defaults()).run("stdio")
 
 
 @main.command("install-browser")

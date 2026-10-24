@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.8 — 2026-10-24
+
+- **Fixed: a chart whose `$schema` vega-embed can't parse showed "Chart error: Cannot read
+  properties of null (reading 'slice')" (#20).** An agent wrote a valid Vega-Lite spec with a
+  non-canonical `$schema` URL, and the chart broke in the editor and every export. The error
+  also misled the agent into proposing a no-op fix. Charts are Vega-Lite by contract, so a
+  `$schema` that isn't a recognisable vega/vega-lite schema URL is now ignored and the chart
+  renders. Existing documents with such a spec render without edits.
+
 ## 0.5.7 — 2026-10-24
 
 - **Fixed: a heading could be stranded at the bottom of a column or page (#18).** When a heading

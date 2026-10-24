@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { chartSpec } from "./chartSpec";
+
 /** Charts that are still rendering; the print route waits for zero before exporting. */
 export const pendingCharts = { count: 0, listeners: new Set<() => void>() };
 
@@ -28,16 +30,7 @@ export function Chart({ spec, width, height }: { spec: any; width: number; heigh
       try {
         const { default: embed } = await import("vega-embed");
         if (cancelled || !ref.current) return;
-        const full = {
-          $schema: "https://vega.github.io/schema/vega-lite/v6.json",
-          autosize: { type: "fit", contains: "padding" },
-          background: "transparent",
-          ...spec,
-          config: { font: "Inter, system-ui, sans-serif", view: { stroke: null }, axisX: { labelAngle: 0 }, ...(spec.config || {}) },
-          width: Math.max(80, width),
-          height: Math.max(60, height),
-        };
-        const res = await embed(ref.current, full, { renderer: "svg", actions: false });
+        const res = await embed(ref.current, chartSpec(spec, width, height), { renderer: "svg", actions: false });
         view = res.view;
         setError(null);
       } catch (e: any) {

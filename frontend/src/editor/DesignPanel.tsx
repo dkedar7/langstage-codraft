@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api } from "../api";
 import { agentName, feature } from "../branding";
 import { familyOf } from "../fonts";
-import { effectiveTheme, pageDesign } from "../render/theme";
+import { baseThemeName, effectiveTheme, pageDesign } from "../render/theme";
 import type { FontInfo, HeaderFooter, PageDesign, Settings, Theme } from "../types";
 import { NumberInput, TextInput } from "./BlockPanel";
 import { useEditorApi } from "./context";
@@ -18,8 +18,8 @@ function useDesign() {
   const ed = useEditorApi();
   const { doc, cfg } = ed;
   const s = doc.settings;
-  const theme = effectiveTheme(cfg.themes, s);
-  const base = cfg.themes[s.theme] || theme;
+  const theme = effectiveTheme(cfg.themes, s, cfg.default_theme);
+  const base = cfg.themes[baseThemeName(cfg.themes, s, cfg.default_theme) ?? ""] || theme;
   const set = (patch: Partial<Settings> | Record<string, any>) => ed.run(api.patchDoc(doc.id, { settings: patch }));
   return { ed, doc, cfg, s, theme, base, set };
 }
@@ -280,7 +280,7 @@ function SaveTheme() {
       </div>
       {current?.saved && (
         <button className="btn btn-ghost mt-1 text-[11.5px]" onClick={async () => {
-          const keep = effectiveTheme(cfg.themes, s);
+          const keep = effectiveTheme(cfg.themes, s, cfg.default_theme);
           const own = Object.fromEntries(Object.entries(keep).filter(([k]) => k.startsWith("font_") || k.startsWith("color_")
             || ["font_size", "line_height", "heading_scale", "heading_weight", "heading_case", "text_align"].includes(k)));
           await set({ theme: cfg.default_theme in cfg.themes ? cfg.default_theme : "classic", style: own });

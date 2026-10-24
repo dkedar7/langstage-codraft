@@ -36,7 +36,7 @@ export function PrintView({ docId }: { docId: string }) {
 }
 
 function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
-  const theme = effectiveTheme(cfg.themes, doc.settings);
+  const theme = effectiveTheme(cfg.themes, doc.settings, cfg.default_theme);
   const fontTick = useDocFonts(theme, cfg.web_fonts !== false);
   const { layout, geo, ctx, measureNode, ready, measured } = useDocLayout(doc.blocks, doc.settings, theme, false, true);
   const firstBody = layout.pages.find((p) => p.kind === "body")?.number;

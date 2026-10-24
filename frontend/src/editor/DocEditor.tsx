@@ -20,6 +20,7 @@ import { DocPanel } from "./DocPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { useLive } from "./useLive";
 import { withBase } from "../base";
+import { baseThemeName } from "../render/theme";
 
 const ADD_TYPES: { type: string; label: string; icon: React.JSX.Element; content?: any; layout?: any }[] = [
   { type: "text", label: "Text", icon: <FileText size={14} /> },
@@ -267,7 +268,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
             )}
           </div>
           <span className="chip" title="Layout">{doc.settings.mode === "pageless" ? "Pageless" : `${doc.settings.page_size.toUpperCase()} · ${doc.settings.columns} col`}</span>
-          <span className="chip">{cfg.themes[doc.settings.theme]?.label || doc.settings.theme}</span>
+          <span className="chip">{cfg.themes[baseThemeName(cfg.themes, doc.settings, cfg.default_theme) ?? ""]?.label || doc.settings.theme}</span>
           {doc.settings.approval === "auto" && <span className="chip chip-warn">auto-apply on</span>}
           <div className="ml-auto flex items-center gap-1.5">
             <Presence peers={peers} me={identity} connected={connected} />

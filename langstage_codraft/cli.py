@@ -190,10 +190,15 @@ def list_docs(data_dir, as_json) -> None:
 def new(title, template, data_dir) -> None:
     """Create a document from a template, exactly as the editor's New document does."""
     from . import templates as tpl
+    from . import themes
+    from .config import codraft_toml_table
     from .server import house_defaults, new_document
     from .store import Store
 
     cfg = _cfg(data_dir=data_dir)
+    table = codraft_toml_table()
+    themes.configure(table.get("themes") if isinstance(table.get("themes"), dict) else None,
+                     table.get("allowed_themes"), cfg.default_theme)
     tpl.configure(cfg.templates_dir)
     t = tpl.all_templates().get(template)
     if t is None:
@@ -262,7 +267,7 @@ def mcp(data_dir, port) -> None:
     set_store(Store(Path(cfg.data_dir) / "codraft.db"))
     table = codraft_toml_table()
     themes.configure(table.get("themes") if isinstance(table.get("themes"), dict) else None,
-                     table.get("allowed_themes"))
+                     table.get("allowed_themes"), cfg.default_theme)
     tpl.configure(cfg.templates_dir)
     host = "127.0.0.1" if cfg.host in ("localhost", "0.0.0.0", "::") else cfg.host
     try:

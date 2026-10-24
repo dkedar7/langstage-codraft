@@ -19,9 +19,16 @@ export const FALLBACK_THEME: Theme = {
   heading_case: "none",
 };
 
+/** The theme a document is drawn with: its own if offered, else the deployer's
+ *  default_theme, else classic, else the first one offered (the server's themes.offered_theme). */
+export function baseThemeName(themes: Record<string, Theme>, s: Settings, fallback?: string): string | undefined {
+  return [s.theme, fallback, "classic"].find((n) => n && themes[n]) ?? Object.keys(themes)[0];
+}
+
 /** The document's theme with its own overrides (settings.style) on top. */
-export function effectiveTheme(themes: Record<string, Theme>, s: Settings): Theme {
-  const base = themes[s.theme] || themes.classic || Object.values(themes)[0] || FALLBACK_THEME;
+export function effectiveTheme(themes: Record<string, Theme>, s: Settings, fallback?: string): Theme {
+  const name = baseThemeName(themes, s, fallback);
+  const base = (name && themes[name]) || FALLBACK_THEME;
   const own = Object.fromEntries(Object.entries(s.style || {}).filter(([, v]) => v != null && v !== ""));
   return { ...FALLBACK_THEME, ...base, ...own } as Theme;
 }

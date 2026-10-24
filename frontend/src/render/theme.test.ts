@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { googleFontsUrl, webFamilies } from "../fonts";
 import type { Settings, Theme } from "../types";
-import { effectiveTheme, pageDesign, themeVars } from "./theme";
+import { baseThemeName, effectiveTheme, pageDesign, themeVars } from "./theme";
 
 const themes = {
   classic: { label: "Classic", font_body: "Georgia", color_accent: "#1a4d8f", color_text: "#111111" },
@@ -35,5 +35,15 @@ describe("document themes (0.5)", () => {
       font_display: "'Crimson Pro', serif" } as Partial<Theme>)).toEqual(["Nunito Sans", "Crimson Pro"]);
     expect(googleFontsUrl("Nunito Sans")).toContain("family=Nunito+Sans:ital,wght@");
     expect(googleFontsUrl("Nunito Sans", false)).toBe("https://fonts.googleapis.com/css2?family=Nunito+Sans&display=swap");
+  });
+});
+
+describe("a theme that isn't offered (gh #15)", () => {
+  const offered = { acme: { label: "Acme" }, academic: { label: "Academic" } } as unknown as Record<string, Theme>;
+  it("falls back to the deployer's default_theme, not the first theme left", () => {
+    expect(baseThemeName(offered, settings({ theme: "modern" }), "acme")).toBe("acme");
+    expect(effectiveTheme(offered, settings({ theme: "modern" }), "acme").label).toBe("Acme");
+    expect(baseThemeName(offered, settings({ theme: "academic" }), "acme")).toBe("academic");
+    expect(baseThemeName(offered, settings({ theme: "modern" }), "gone")).toBe("acme");
   });
 });

@@ -159,6 +159,7 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
 
 _custom: dict[str, dict[str, Any]] = {}
 _allowed: list[str] | None = None
+_default: str | None = None
 # Themes authors saved from a document ("Save as theme"); the server installs the store's
 # list here, so they survive restarts and show up for every document.
 _saved: Callable[[], dict[str, dict[str, Any]]] | None = None
@@ -169,11 +170,14 @@ def set_saved_provider(fn: Callable[[], dict[str, dict[str, Any]]] | None) -> No
     _saved = fn
 
 
-def configure(custom: dict[str, dict[str, Any]] | None, allowed: list[str] | None) -> None:
-    """Install deployer themes (from ``[codraft.themes.*]``) and the allow-list."""
-    global _custom, _allowed
+def configure(custom: dict[str, dict[str, Any]] | None, allowed: list[str] | None,
+              default: str | None = None) -> None:
+    """Install deployer themes (from ``[codraft.themes.*]``), the allow-list and the
+    deployer's ``default_theme`` (what a document whose theme isn't offered falls back to)."""
+    global _custom, _allowed, _default
     _custom = {k: dict(v) for k, v in (custom or {}).items() if isinstance(v, dict)}
     _allowed = list(allowed) if allowed else None
+    _default = default or None
 
 
 def all_themes() -> dict[str, dict[str, Any]]:
@@ -191,10 +195,25 @@ def all_themes() -> dict[str, dict[str, Any]]:
     return merged
 
 
+def fallback_theme() -> str:
+    """The theme a document gets when its own isn't offered (not in ``allowed_themes``, or
+    deleted): ``default_theme``, else classic, else the first one offered (gh #15). The
+    editor's ``effectiveTheme`` falls back in the same order."""
+    every = all_themes()
+    for name in (_default, "classic"):
+        if name and name in every:
+            return name
+    return next(iter(every))
+
+
+def offered_theme(name: str | None) -> str:
+    """``name`` if it's offered, else :func:`fallback_theme`."""
+    return name if name and name in all_themes() else fallback_theme()
+
+
 def effective_theme(settings: dict[str, Any]) -> dict[str, Any]:
     """The document's theme with its own overrides (settings.style) on top."""
-    every = all_themes()
-    base = every.get(settings.get("theme") or "") or next(iter(every.values()))
+    base = all_themes()[offered_theme(settings.get("theme"))]
     return {**base, **{k: v for k, v in (settings.get("style") or {}).items() if v is not None}}
 
 

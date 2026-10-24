@@ -133,7 +133,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     set_store(store)
     table = codraft_toml_table()
     toml_themes = table.get("themes") if isinstance(table.get("themes"), dict) else {}
-    themes.configure({**toml_themes, **(doc_themes or {})} or None, table.get("allowed_themes"))
+    themes.configure({**toml_themes, **(doc_themes or {})} or None, table.get("allowed_themes"),
+                     cfg.default_theme)
     themes.set_saved_provider(store.saved_themes)
     house = house_defaults(doc_defaults)
     tpl.configure(cfg.templates_dir)
@@ -913,7 +914,11 @@ def house_defaults(doc_defaults: dict[str, Any] | None = None) -> dict[str, Any]
 def new_document(cfg: CodraftConfig, house: dict, template_id: str | None, template: dict,
                  title: str | None = None, settings: dict | None = None) -> tuple[str, dict, list[dict]]:
     """The title, settings and blocks of a new document. The editor's New document
-    (``POST /api/docs``) and ``langstage-codraft new`` share it, so they can't drift (gh #4)."""
+    (``POST /api/docs``), ``langstage-codraft new`` and MCP ``create_document`` share it,
+    so they can't drift (gh #4). Raises :class:`Invalid` for a theme in ``settings`` that
+    isn't offered, like ``PATCH /api/docs/{id}``."""
+    if settings and "theme" in settings and settings["theme"] not in themes.theme_names():
+        raise Invalid(f"unknown theme {settings['theme']!r}")
     base = _deep({"approval": cfg.approval, "theme": cfg.default_theme}, house)
     if cfg.default_page_size:
         base["page_size"] = cfg.default_page_size
@@ -926,7 +931,11 @@ def new_document(cfg: CodraftConfig, house: dict, template_id: str | None, templ
             tpl_settings.pop("theme")
         if cfg.default_page_size:
             tpl_settings.pop("page_size", None)
-    merged = _deep(_deep(base, tpl_settings), settings or {})
+    merged = _deep(base, tpl_settings)
+    # A template's (or the house's) theme that allowed_themes leaves out becomes the
+    # deployer's default_theme rather than a stored name nothing can render (gh #15).
+    merged["theme"] = themes.offered_theme(merged.get("theme"))
+    merged = _deep(merged, settings or {})
     is_blank = template_id in (None, "", "blank")
     name = title or ("Untitled document" if is_blank else template.get("name", "Untitled"))
     blocks = [dict(b) for b in template.get("blocks", [])]

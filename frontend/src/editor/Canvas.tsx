@@ -65,7 +65,8 @@ interface DropTarget {
 export function Canvas() {
   const ed = useEditorApi();
   const { doc, cfg } = ed;
-  const theme = useMemo(() => effectiveTheme(cfg.themes, doc.settings), [cfg.themes, doc.settings]);
+  const theme = useMemo(() => effectiveTheme(cfg.themes, doc.settings, cfg.default_theme),
+    [cfg.themes, doc.settings, cfg.default_theme]);
   useDocFonts(theme, cfg.web_fonts !== false);
   const blocks = useMemo(() => withVirtual(doc.blocks, doc.suggestions), [doc.blocks, doc.suggestions]);
   const { layout, geo, ctx, measureNode, measured } = useDocLayout(blocks, doc.settings, theme, true);

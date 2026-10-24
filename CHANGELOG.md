@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.6 — 2026-10-24
+
+- **Fixed: `allowed_themes` wasn't enforced on new documents (#15).** The built-in proposal, memo,
+  one-pager and paper templates kept their own theme (modern, minimal, bold, academic) even when
+  `allowed_themes` left it out, and `POST /api/docs` stored any theme in `settings`. A new
+  document's template (or house) theme that isn't offered now becomes `default_theme`, and
+  `POST /api/docs` refuses a theme that isn't offered with 400, as `PATCH` already did.
+  `langstage-codraft new` now applies `[codraft.themes]` and `allowed_themes` too.
+- **Fixed: a document whose theme isn't offered rendered in the first built-in left.** A stored
+  theme that `allowed_themes` excludes (or a deleted saved theme) now draws with `default_theme`,
+  then classic, then the first theme offered, in the editor, the export and the toolbar chip alike.
+
 ## 0.5.5 — 2026-10-21
 
 - **Fixed: a document created over MCP ignored the house style (#12).** MCP's `create_document`

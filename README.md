@@ -211,7 +211,7 @@ model = "openrouter:anthropic/claude-haiku-5.5"   # used when no agent spec is s
 approval = "required"                            # or "auto" for new documents
 default_theme = "acme"
 default_page_size = "a4"                         # new documents (default letter)
-allowed_themes = ["acme", "academic"]
+allowed_themes = ["acme", "academic"]            # others fall back to default_theme
 templates_dir = "templates"                      # *.json: settings + a block skeleton
 data_dir = ".codraft"
 

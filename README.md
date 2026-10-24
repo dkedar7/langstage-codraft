@@ -7,6 +7,11 @@ Tag your agent in comments, approve every change it suggests, and export exactly
 [![PyPI](https://img.shields.io/pypi/v/langstage-codraft)](https://pypi.org/project/langstage-codraft/)
 [![Python](https://img.shields.io/pypi/pyversions/langstage-codraft)](https://pypi.org/project/langstage-codraft/)
 
+<p align="center">
+  <a href="https://dkedar.com/media/codraft/codraft-launch.mp4"><img src="https://dkedar.com/media/codraft/codraft-launch-play.jpg" alt="Play the 80-second Codraft launch video: comment for the agent, review its suggestions, restyle the document, step through versions, export" width="800" /></a>
+  <br><sub>▶ Watch the 80-second launch video (a real run with Claude Sonnet 5, waits sped up)</sub>
+</p>
+
 ![Codraft editor: an agent suggestion shown as a diff on the block it changes](https://raw.githubusercontent.com/dkedar7/langstage-codraft/main/docs/assets/editor.png)
 
 <details><summary>Dark mode</summary>

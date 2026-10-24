@@ -93,6 +93,7 @@ export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>): 
           : { ...b.layout.pin, height: b.layout.pin.height || meas.height }
         : null,
       repeat: b.layout.repeat,
+      keepWithNext: b.type === "heading" && !b.layout.pin,
     };
   });
 }

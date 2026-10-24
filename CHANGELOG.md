@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.7 — 2026-10-24
+
+- **Fixed: a heading could be stranded at the bottom of a column or page (#18).** When a heading
+  fit in the space left but the start of the block after it didn't, the heading stayed behind
+  and its paragraph started in the next column or page. Headings now keep with the next block:
+  a heading moves on with the first paragraph (or the whole chart, table or image) it
+  introduces, and consecutive headings move together. A heading already at the top of a column
+  stays where it is. The editor, preview and every export share the paginator, so they all
+  change together. Some documents now break columns or pages at a different place.
+
 ## 0.5.6 — 2026-10-24
 
 - **Fixed: `allowed_themes` wasn't enforced on new documents (#15).** The built-in proposal, memo,

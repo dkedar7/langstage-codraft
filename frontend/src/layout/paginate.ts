@@ -12,6 +12,8 @@
  *    boundaries and line boundaries, with widow/orphan control). Every other block
  *    is atomic: if it doesn't fit, it moves to the next column or page. An atomic
  *    block taller than a whole empty column is placed anyway and flagged as overflow.
+ *  - A keep-with-next block (a heading) is never the last thing in a column: if the
+ *    start of the block after it doesn't fit below it, it moves on with that block.
  *  - Cover and back blocks get their own pages, stacked in a single column (centred by
  *    default, or top/bottom). Those pages are exempt from columns and repeated blocks.
  *    A pinned cover/back block sits at its rectangle (art, a logo, a band) and the stack
@@ -39,6 +41,8 @@ export interface MeasuredBlock {
   /** Column pin (top/column/span) or, with anchor "page", a page-relative rectangle (x/y/w) that may bleed past the margins. */
   pin?: { page: number; top: number; column: number; span: number; height: number; anchor?: "page"; x?: number; w?: number } | null;
   repeat?: "all" | "odd" | "even" | number[] | null;
+  /** A heading: keep it in the same column as the start of the next block (gh #18). */
+  keepWithNext?: boolean;
 }
 
 export interface Geometry {
@@ -154,6 +158,25 @@ function bestSplit(c: Cursor, room: number): Split | null {
     else break;
   }
   return best;
+}
+
+/**
+ * Height needed from the top of cursors[qi] (a keep-with-next block) to the end of the
+ * first piece of the block it introduces: any chained keep-with-next blocks, then the
+ * first fragment of a text block or a whole atomic one. null when nothing follows in
+ * the queue (no constraint).
+ */
+function leadHeight(cursors: Cursor[], qi: number, gap: number): number | null {
+  let h = 0;
+  let k = qi;
+  while (k < cursors.length && cursors[k].b.keepWithNext) {
+    h += (k > qi ? gap : 0) + cursors[k].b.height - cursors[k].offset;
+    k++;
+  }
+  if (k >= cursors.length) return null;
+  const d = cursors[k];
+  const first = d.b.kind === "text" ? (d.b.splits || []).find((s) => s.end > d.offset + EPS) : undefined;
+  return h + gap + (first ? first.end - d.offset : d.b.height - d.offset);
 }
 
 class PageBuilder {
@@ -308,6 +331,17 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
         const gap = usedInInterval ? geo.blockGap : 0;
         const remaining = c.b.height - c.offset;
         const room = iv.end - (y + gap);
+        // Keep with next: a heading that fits but would end this interval alone moves on
+        // with the start of the block it introduces. Not at the top of the column, where
+        // moving can't help (so layout always makes progress).
+        const strand = remaining <= room + EPS && c.b.keepWithNext && (usedInInterval || y > startY + EPS)
+          && (leadHeight(cursors, qi, geo.blockGap) ?? 0) > room + EPS;
+        if (strand) {
+          y = iv.end + geo.blockGap;
+          usedInInterval = false;
+          if (iv.end >= limit - EPS) break; // column exhausted
+          continue;
+        }
         if (remaining <= room + EPS) {
           if (!dryRun) place(pb, c, x, y + gap, colW, remaining, c.b.height);
           y = y + gap + remaining;

@@ -234,3 +234,58 @@ describe("paginate: designable cover (0.5)", () => {
     expect(r.pages[1].items[0].y).toBe(360);
   });
 });
+
+describe("paginate: keep a heading with the next block (gh #18)", () => {
+  const head = (id: string, height = 30) => atom(id, height, { keepWithNext: true });
+  const at = (r: ReturnType<typeof paginate>, id: string) =>
+    r.pages.flatMap((p) => p.items.filter((i) => i.id === id).map((i) => ({ page: p.number, x: i.x, y: i.y })))[0];
+
+  it("moves a heading to the next page when its paragraph can't start below it", () => {
+    // a ends at 330; the heading fits (340-370) but the first paragraph (100) doesn't.
+    const r = paginate([atom("a", 330), head("h"), text("t", [100, 100])], geo());
+    expect(at(r, "h")).toEqual({ page: 2, x: 0, y: 0 });
+    expect(at(r, "t")).toEqual({ page: 2, x: 0, y: 40 });
+  });
+
+  it("moves a heading to the next column with its paragraph", () => {
+    const r = paginate([atom("a", 330), head("h"), text("t", [100, 100])], geo({ columns: 2 }));
+    expect(at(r, "h")).toEqual({ page: 1, x: 260, y: 0 });
+    expect(at(r, "t")).toEqual({ page: 1, x: 260, y: 40 });
+  });
+
+  it("keeps a heading that has room for the first paragraph below it", () => {
+    const r = paginate([atom("a", 200), head("h"), text("t", [100, 100, 100])], geo());
+    expect(at(r, "h")).toEqual({ page: 1, x: 0, y: 210 });
+    expect(at(r, "t")).toEqual({ page: 1, x: 0, y: 250 });
+  });
+
+  it("moves consecutive headings together", () => {
+    // h1 alone would fit, but h1 + h2 + the paragraph (180) don't fit in the 90 left.
+    const r = paginate([atom("a", 300), head("h1"), head("h2"), text("t", [100])], geo());
+    expect(at(r, "h1")).toEqual({ page: 2, x: 0, y: 0 });
+    expect(at(r, "h2")).toEqual({ page: 2, x: 0, y: 40 });
+  });
+
+  it("keeps a heading with an atomic block (a chart) that moves on", () => {
+    const r = paginate([atom("a", 250), head("h"), atom("chart", 200)], geo({ columns: 2 }));
+    expect(at(r, "h")).toEqual({ page: 1, x: 260, y: 0 });
+    expect(at(r, "chart")).toEqual({ page: 1, x: 260, y: 40 });
+  });
+
+  it("places a heading at the top of a column as before, even if what follows is too tall", () => {
+    const r = paginate([head("h"), atom("big", 900)], geo());
+    expect(at(r, "h")).toEqual({ page: 1, x: 0, y: 0 });
+    expect(r.pages[1].items[0]).toMatchObject({ id: "big", overflow: true });
+  });
+
+  it("leaves a heading that ends the document where it is", () => {
+    const r = paginate([atom("a", 350), head("h")], geo());
+    expect(at(r, "h")).toEqual({ page: 1, x: 0, y: 360 });
+  });
+
+  it("doesn't change pageless layout", () => {
+    const r = paginate([atom("a", 330), head("h"), text("t", [100, 100])], geo({ mode: "pageless" }));
+    expect(r.pages).toHaveLength(1);
+    expect(at(r, "h").y).toBe(340);
+  });
+});

@@ -76,3 +76,30 @@ async def test_stdio_command_serves_tools(tmp_path):
         assert "Created doc_" in out.content[0].text
         listing = await s.call_tool("list_documents", {})
         assert "Over stdio" in listing.content[0].text
+
+
+async def test_view_pages_render_failure_says_how_to_fix(server, store, monkeypatch):
+    """A renderer that can't find Chromium returns the install hint, not "Error executing tool" (gh #17)."""
+    from langstage_codraft import render
+
+    class NoBrowser:
+        async def screenshot_pages(self, *a, **k):
+            raise render.BrowserMissing("Chromium is not installed for export/vision. "
+                                        "Run: langstage-codraft install-browser")
+
+        def call(self, coro):
+            import asyncio
+
+            return asyncio.new_event_loop().run_until_complete(coro)
+
+    monkeypatch.setattr(render, "get_renderer", lambda: NoBrowser())
+    doc = store.create_document("x")
+    res = await server.call_tool("view_pages", {"doc_id": doc["id"]})
+    out = _text(res)
+    assert out.startswith("ERROR:") and "langstage-codraft install-browser" in out
+
+
+async def test_view_upload_unknown_id_is_readable(server, store):
+    doc = store.create_document("x")
+    out = _text(await server.call_tool("view_upload", {"doc_id": doc["id"], "upload_id": "up_nope"}))
+    assert out.startswith("ERROR:") and "up_nope" in out

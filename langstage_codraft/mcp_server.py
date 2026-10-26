@@ -25,7 +25,7 @@ from typing import Any
 
 from .middleware import CODRAFT_PROMPT
 from .store import get_store
-from .tools import CODRAFT_TOOLS
+from .tools import CODRAFT_TOOLS, _err
 
 MCP_INSTRUCTIONS = (
     "Codraft documents are block-based, paged documents an author owns. Start with "
@@ -93,7 +93,10 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
         r = get_renderer()
         if r is None:
             return ["view_pages needs a running `langstage-codraft run` server (connect to its /mcp endpoint)."]
-        shots = r.call(r.screenshot_pages(doc_id, pages=pages, max_pages=4))
+        try:
+            shots = r.call(r.screenshot_pages(doc_id, pages=pages, max_pages=4))
+        except Exception as exc:  # noqa: BLE001  e.g. BrowserMissing: say how to fix it (gh #17)
+            return [_err(exc)]
         if not shots:
             return ["The document has no pages yet."]
         pages_seen = ", ".join(f"page {s['page']}" for s in shots)
@@ -103,7 +106,10 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
 
     @server.tool(description="Look at an uploaded file: images come back as images (e.g. reference pages to match).")
     def view_upload(doc_id: str, upload_id: str) -> list:
-        u = get_store().get_upload(upload_id, with_text=True)
+        try:
+            u = get_store().get_upload(upload_id, with_text=True)
+        except Exception as exc:  # noqa: BLE001  an unknown id reads like the other tools' errors (gh #17)
+            return [_err(exc)]
         if u["doc_id"] != doc_id:
             return ["ERROR: that upload belongs to another document"]
         from .stylematch import summary
@@ -123,7 +129,7 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
         try:
             p = _sketch_path(doc_id, block_id)
         except Exception as exc:  # noqa: BLE001
-            return [f"ERROR: {exc}"]
+            return [_err(exc)]
         if p is None:
             return [f"Block {block_id} has no sketch."]
         return [f"Sketch on {block_id}:", Image(data=Path(p).read_bytes(), format="png")]

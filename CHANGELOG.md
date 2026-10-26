@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.9 — 2026-10-26
+
+- **Fixed: over MCP, `view_pages` and `view_upload` failed with a bare "Error executing tool"
+  (#17).** When Chromium wasn't installed or an upload id didn't exist, MCP clients such as
+  Claude Code and Cursor saw no reason. The cause was only on the server's stderr. Both tools
+  now return the same `ERROR: …` text as every other tool, e.g. "Chromium is not installed for
+  export/vision. Run: langstage-codraft install-browser". The agent's own `view_pages` and
+  `view_upload` already did this.
+
 ## 0.5.8 — 2026-10-24
 
 - **Fixed: a chart whose `$schema` vega-embed can't parse showed "Chart error: Cannot read

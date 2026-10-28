@@ -341,7 +341,7 @@ def demo_turn(messages: list) -> dict:
     if last.name == "get_document":
         n = len(re.findall(r"^\d+\. \[blk_", last.content, re.MULTILINE))
         return {"content": (f"(demo agent) I can see {n} block(s). Try: **address all comments**, "
-                            "**write a paragraph about <topic>**, **look at the layout**, or **list the references**."),
+                            "**write a paragraph about tidal energy**, **look at the layout**, or **list the references**."),
                 "tool_calls": []}
     return {"content": "(demo agent) Done.", "tool_calls": []}
 

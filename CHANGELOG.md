@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.10 — 2026-10-28
+
+- **Fixed: block tools now stay inside the document they're given (#25).** `set_block_layout`,
+  `read_blocks` and `get_block_history` accepted a block from any document, so an agent or MCP
+  client with a stale or wrong `doc_id` could restyle, or read, a different document. They now
+  refuse with `ERROR: block … is not in document …`, as `propose_*` already did. An audit found
+  three more gaps, now closed the same way: a suggestion's `comment_id` could name another
+  document's comment (and accepting it resolved that comment); `propose_insert` and
+  `propose_move` accepted an anchor block from another document; and a comment (tool or
+  `POST /api/docs/{id}/comments`) could be pinned to another document's block.
+- **Fixed: the demo co-author's hint read "write a paragraph about ," (#24).** The `<topic>`
+  placeholder was dropped by the chat's HTML sanitiser; the hint now gives a real example.
+
 ## 0.5.9 — 2026-10-26
 
 - **Fixed: over MCP, `view_pages` and `view_upload` failed with a bare "Error executing tool"

@@ -474,6 +474,13 @@ class Store:
         with self._lock:
             return self._block_dict(self._block_row(block_id))
 
+    def block_in(self, doc_id: str, block_id: str) -> dict:
+        """The block, refusing one that belongs to another document (gh #25)."""
+        b = self.get_block(block_id)
+        if b["doc_id"] != doc_id:
+            raise Invalid(f"block {block_id} is not in document {doc_id}")
+        return b
+
     def _ord_after(self, doc_id: str, after_id: str | None) -> float:
         rows = self._q("SELECT id, ord FROM blocks WHERE doc_id = ? AND deleted = 0 ORDER BY ord", (doc_id,))
         if not rows:
@@ -668,7 +675,7 @@ class Store:
         with self._lock:
             self.get_document(doc_id)
             if block_id is not None:
-                self.get_block(block_id)
+                self.block_in(doc_id, block_id)
             if not body.strip():
                 raise Invalid("comment body is empty")
             cid = _id("cmt")
@@ -758,9 +765,12 @@ class Store:
         with self._lock:
             doc = self.get_document(doc_id)
             if block_id is not None:
-                b = self.get_block(block_id)
-                if b["doc_id"] != doc_id:
-                    raise Invalid(f"block {block_id} is not in document {doc_id}")
+                self.block_in(doc_id, block_id)
+            if comment_id is not None and self.get_comment(comment_id)["doc_id"] != doc_id:
+                raise Invalid(f"comment {comment_id} belongs to another document")
+            after = payload.get("after")
+            if kind in ("insert", "move") and after not in (None, "__end__"):
+                self.block_in(doc_id, after)
             if kind in ("edit", "delete", "move") and block_id is None:
                 raise Invalid(f"a {kind} suggestion needs a block_id")
             if kind == "insert":

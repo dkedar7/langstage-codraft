@@ -234,9 +234,12 @@ def read_blocks(block_ids: list[str], config: RunnableConfig) -> str:
         out, total = [], 0
         for bid in block_ids:
             try:
-                b = store.get_block(bid)
+                b = store.block_in(doc_id, bid)
             except NotFound as e:
                 out.append(f"[{bid}] not found ({e})")
+                continue
+            except Invalid as e:
+                out.append(f"[{bid}] ERROR: {e}")
                 continue
             body = _content_for_agent(b)
             total += len(body)
@@ -329,7 +332,7 @@ def get_block_history(block_id: str, config: RunnableConfig) -> str:
     comments, so you can respect preferences the author expressed earlier."""
     try:
         store = get_store()
-        _doc_id(config)
+        store.block_in(_doc_id(config), block_id)
         tree = store.versions(block_id)
         lines = [f"Block {block_id}: {len(tree['versions'])} version(s), "
                  f"{len(tree['branches'])} branch tip(s); head = {tree['head']}"]
@@ -483,7 +486,7 @@ def set_block_layout(
     large initial letter. variant='none' clears it."""
     try:
         store = get_store()
-        _doc_id(config)
+        store.block_in(_doc_id(config), block_id)
         lay: dict[str, Any] = {}
         if full_width is not None:
             lay["span"] = "full" if full_width else "column"

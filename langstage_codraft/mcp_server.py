@@ -72,7 +72,7 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
     def create_document(title: str, template: str = "blank", columns: int | None = None) -> str:
         t = tpl.all_templates().get(template)
         if t is None:
-            return f"ERROR: unknown template {template!r}"
+            return f"ERROR: {tpl.unknown_template_message(template)}"
         # The editor's New document and `langstage-codraft new` share new_document(): house
         # defaults, default page size, theme and approval, and the title on the cover (gh #12).
         doc = get_store().create_document(*new_document(

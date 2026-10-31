@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.5.11 — 2026-10-30
+
+- **Fixed: a refused block insert left a "ghost" block behind (#28).** `POST
+  /api/docs/{id}/blocks` with `content` that isn't an object (`"Hello"`, a list) returned 500 after
+  the block row was already written, and the next write committed it: a block with no versions
+  whose history 500'd. Content is now checked first (400, `content must be an object, e.g.
+  {"markdown": "..."}`), for edits too. More broadly, every store method now runs as one
+  transaction: if it fails part-way, everything it wrote is rolled back instead of waiting for
+  the next commit. That also fixes a move after a block that doesn't exist, which was refused
+  but still moved the block to the top on the next write, and a template whose blocks fail
+  validation, which could leave a half-made document. An upload whose database write fails no
+  longer leaves its file behind.
+- **Fixed: a `templates_dir` template with invalid JSON vanished without a word (#27).** `check`
+  now warns for each skipped file with the reason (`invalid JSON: … line 1 column 120`, not an
+  object, bad `blocks`), `new --template` and the MCP `create_document` tool name the file and
+  its error instead of "unknown template", and the server logs a warning at startup.
+
 ## 0.5.10 — 2026-10-28
 
 - **Fixed: block tools now stay inside the document they're given (#25).** `set_block_layout`,

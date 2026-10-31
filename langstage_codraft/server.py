@@ -138,6 +138,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     themes.set_saved_provider(store.saved_themes)
     house = house_defaults(doc_defaults)
     tpl.configure(cfg.templates_dir)
+    for path, why in tpl.skipped_templates().values():  # gh #27: say so where deployers look
+        log.warning("template %s skipped: %s", path, why)
     st = AppState(cfg, graph, info or _default_info(graph, ui or {}, cfg))
     st.ui = resolve_ui(cfg, ui)
     # The editor calls the agent by its own name (graph.name, e.g. create_agent(name="Lighthouse"))

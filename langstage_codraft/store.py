@@ -154,6 +154,14 @@ def _id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:10]}"
 
 
+def _check_content(content: Any) -> None:
+    """Block content is an object of fields, e.g. {"markdown": "..."} (gh #28)."""
+    if content is not None and not isinstance(content, dict):
+        raise Invalid(
+            f"content must be an object, e.g. {{\"markdown\": \"...\"}}; got {type(content).__name__}"
+        )
+
+
 def _merge(base: dict, overlay: dict) -> dict:
     out = deepcopy(base)
     for k, v in (overlay or {}).items():
@@ -229,6 +237,37 @@ def validate_layout(layout: dict, columns: int = 3) -> dict:
     return out
 
 
+class _TxLock:
+    """The store's re-entrant lock, and its transaction boundary.
+
+    Every store method runs under it and commits its own writes. If the outermost method
+    raises instead, whatever it wrote is rolled back, so a refused or failed request can
+    never leave a partial row behind for the next commit to keep (gh #28).
+    """
+
+    def __init__(self, store: Store):
+        self._rlock = threading.RLock()
+        self._store = store
+        self._depth = 0
+
+    def __enter__(self) -> _TxLock:
+        self._rlock.acquire()
+        self._depth += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        try:
+            self._depth -= 1
+            if self._depth == 0 and exc_type is not None:
+                try:
+                    if self._store._db.in_transaction:
+                        self._store._db.rollback()
+                except sqlite3.ProgrammingError:  # closed: nothing left to undo
+                    pass
+        finally:
+            self._rlock.release()
+
+
 class Store:
     """Thread-safe SQLite store. One instance per server process."""
 
@@ -237,7 +276,7 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.uploads_dir = self.path.parent / "uploads"
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.RLock()
+        self._lock = _TxLock(self)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -419,6 +458,7 @@ class Store:
     ) -> str:
         if block_type not in BLOCK_TYPES:
             raise Invalid(f"unknown block type {block_type!r}; expected one of {BLOCK_TYPES}")
+        _check_content(content)
         block_id = _id("blk")
         now = time.time()
         lay = validate_layout(layout or {}, columns)
@@ -534,6 +574,7 @@ class Store:
         checked out; the other person's version stays in the tree. Nothing is lost, and the
         result carries ``conflict: True`` so the UI can say so.
         """
+        _check_content(content)
         with self._lock:
             b = self.get_block(block_id)
             if base and base != b["head"]:
@@ -885,13 +926,17 @@ class Store:
             safe = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(filename).name) or "file"
             path = self.uploads_dir / f"{uid}_{safe}"
             path.write_bytes(data)
-            self._db.execute(
-                "INSERT INTO uploads (id, doc_id, filename, purpose, mime, path, text, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?)",
-                (uid, doc_id, Path(filename).name, purpose, mime, str(path), text, time.time()),
-            )
-            self._bump(doc_id)
-            self._db.commit()
+            try:
+                self._db.execute(
+                    "INSERT INTO uploads (id, doc_id, filename, purpose, mime, path, text, created_at)"
+                    " VALUES (?,?,?,?,?,?,?,?)",
+                    (uid, doc_id, Path(filename).name, purpose, mime, str(path), text, time.time()),
+                )
+                self._bump(doc_id)
+                self._db.commit()
+            except BaseException:
+                path.unlink(missing_ok=True)  # the row is rolled back; don't orphan the file
+                raise
             return self.get_upload(uid)
 
     def get_upload(self, uid: str, *, with_text: bool = False) -> dict:

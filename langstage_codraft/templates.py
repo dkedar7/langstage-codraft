@@ -122,20 +122,57 @@ def configure(templates_dir: str | Path | None) -> None:
     _dir = Path(templates_dir) if templates_dir else None
 
 
-def all_templates() -> dict[str, dict[str, Any]]:
+def _load(p: Path) -> dict[str, Any]:
+    """One deployer template file, or ValueError saying what's wrong with it."""
+    try:
+        t = json.loads(p.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ValueError(f"can't read it: {exc.strerror or exc}") from None
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON: {exc}") from None
+    if not isinstance(t, dict):
+        raise ValueError(f"expected a JSON object, got {type(t).__name__}")
+    for key, kind in (("settings", dict), ("blocks", list)):
+        if key in t and not isinstance(t[key], kind):
+            raise ValueError(f"{key!r} must be a JSON {'object' if kind is dict else 'array'}")
+    for i, b in enumerate(t.get("blocks", [])):
+        if not isinstance(b, dict):
+            raise ValueError(f"blocks[{i}] must be a JSON object")
+        if not isinstance(b.get("content", {}), dict):
+            raise ValueError(f'blocks[{i}].content must be a JSON object, e.g. {{"markdown": "..."}}')
+    t.setdefault("name", p.stem)
+    t.setdefault("settings", {})
+    t.setdefault("blocks", [])
+    return t
+
+
+def _scan() -> tuple[dict[str, dict[str, Any]], dict[str, tuple[Path, str]]]:
     out = dict(BUILTIN_TEMPLATES)
+    skipped: dict[str, tuple[Path, str]] = {}
     if _dir and _dir.is_dir():
         for p in sorted(_dir.glob("*.json")):
             try:
-                t = json.loads(p.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if isinstance(t, dict):
-                t.setdefault("name", p.stem)
-                t.setdefault("settings", {})
-                t.setdefault("blocks", [])
-                out[p.stem] = t
-    return out
+                out[p.stem] = _load(p)
+            except ValueError as exc:
+                skipped[p.stem] = (p, str(exc))
+    return out, skipped
+
+
+def all_templates() -> dict[str, dict[str, Any]]:
+    return _scan()[0]
+
+
+def skipped_templates() -> dict[str, tuple[Path, str]]:
+    """Template files in templates_dir that couldn't be used: id -> (path, reason) (gh #27)."""
+    return _scan()[1]
+
+
+def unknown_template_message(template_id: str) -> str:
+    """Why a template id doesn't resolve: its file's error if it has one, else the known ids."""
+    bad = skipped_templates().get(template_id)
+    if bad:
+        return f"template {template_id!r} was skipped: {bad[0]}: {bad[1]}"
+    return f"unknown template {template_id!r}; available: {', '.join(all_templates())}"
 
 
 def summaries() -> list[dict]:

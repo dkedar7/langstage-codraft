@@ -245,12 +245,12 @@ class _TxLock:
     never leave a partial row behind for the next commit to keep (gh #28).
     """
 
-    def __init__(self, store: "Store"):
+    def __init__(self, store: Store):
         self._rlock = threading.RLock()
         self._store = store
         self._depth = 0
 
-    def __enter__(self) -> "_TxLock":
+    def __enter__(self) -> _TxLock:
         self._rlock.acquire()
         self._depth += 1
         return self

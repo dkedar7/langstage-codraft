@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.12 — 2026-10-31
+
+- **Fixed: an unknown page size was accepted, reported as applied, and then rendered as Letter
+  (#30).** `set_document_style(page_size="A3")` answered "Style updated: … a3 portrait", and
+  `PATCH /api/docs/{id}` stored `"bogus"`. `default_page_size = "A4"` was shown by
+  `--show-config` and then ignored. Now:
+  - The agent tool and MCP refuse an unknown size with an `ERROR:` that lists letter, a4,
+    legal, a5 and slide, and say to use `page_w_mm` + `page_h_mm` for any other size.
+  - The API refuses it with a 400. "A4" is read as a4.
+  - In config, `default_page_size` ignores case, and an unknown value falls back to Letter
+    with a note. `approval` is validated the same way, so "Auto" is read as auto and an
+    unknown value falls back with a note instead of breaking New document.
+  - A template with an unknown size is skipped and reported like any broken template (#27).
+  - `get_document` shows a size stored by an older version as the Letter it renders.
+- **Fixed: other settings the renderers would ignore or choke on are refused too.** The API
+  stored any of these unchecked, now each gets a 400 naming the field and the allowed range:
+  - non-numeric or out-of-range `margins` (0–80 mm), `block_gap` and `column_gap` (0–30 mm),
+    `page_number_start` and `min_pages`;
+  - a non-boolean `number_cover_pages`;
+  - a `brief` that isn't text fields;
+  - `page_w_mm` / `page_h_mm` without `page_size: "custom"`;
+  - a `cover`, `back`, `header` or `footer` that isn't an object.
+
+  The checks look only at the fields a change sets, so a document saved with an odd value by
+  an older version can still be edited.
+- **Changed: a `[codraft.doc_defaults]` setting no document could use is left out.** New
+  documents no longer fail because of it; `check` and the server log say which setting was
+  left out and why.
+
 ## 0.5.11 — 2026-10-30
 
 - **Fixed: a refused block insert left a "ghost" block behind (#28).** `POST

@@ -140,6 +140,13 @@ def _load(p: Path) -> dict[str, Any]:
             raise ValueError(f"blocks[{i}] must be a JSON object")
         if not isinstance(b.get("content", {}), dict):
             raise ValueError(f'blocks[{i}].content must be a JSON object, e.g. {{"markdown": "..."}}')
+    if t.get("settings"):
+        from .store import DEFAULT_SETTINGS, Invalid, Store, _merge
+
+        try:  # the same checks a new document's settings get (gh #30)
+            Store._check_settings(_merge(DEFAULT_SETTINGS, t["settings"]))
+        except (Invalid, TypeError, ValueError) as exc:
+            raise ValueError(str(exc)) from None
     t.setdefault("name", p.stem)
     t.setdefault("settings", {})
     t.setdefault("blocks", [])

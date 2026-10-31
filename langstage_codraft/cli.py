@@ -140,6 +140,20 @@ def check(agent_spec, model, demo, data_dir, live, as_json) -> None:
         msg = str(exc).splitlines()[0][:160]
         add("browser", None, f"not available ({msg}); run: langstage-codraft install-browser")
 
+    if cfg.templates_dir:
+        from . import templates as tpl
+
+        tpl.configure(cfg.templates_dir)
+        if not Path(cfg.templates_dir).is_dir():
+            add("templates", None, f"templates_dir {cfg.templates_dir} is not a directory")
+        else:
+            skipped = tpl.skipped_templates()
+            n = len(tpl.all_templates()) - len(tpl.BUILTIN_TEMPLATES)
+            if not skipped:
+                add("templates", True, f"{n} from {cfg.templates_dir}")
+            for _, (path, why) in skipped.items():
+                add("templates", None, f"{path} skipped: {why}")
+
     static = Path(__file__).parent / "static" / "index.html"
     add("web-ui", static.is_file(), "bundled" if static.is_file() else "not built (cd frontend && npm run build)")
 
@@ -202,7 +216,7 @@ def new(title, template, data_dir) -> None:
     tpl.configure(cfg.templates_dir)
     t = tpl.all_templates().get(template)
     if t is None:
-        _fail(f"unknown template {template!r}; available: {', '.join(tpl.all_templates())}")
+        _fail(tpl.unknown_template_message(template))
         sys.exit(2)
     store = Store(Path(cfg.data_dir) / "codraft.db")
     doc = store.create_document(*new_document(cfg, house_defaults(), template, t, title))

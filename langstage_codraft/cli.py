@@ -154,6 +154,11 @@ def check(agent_spec, model, demo, data_dir, live, as_json) -> None:
             for _, (path, why) in skipped.items():
                 add("templates", None, f"{path} skipped: {why}")
 
+    from .server import house_issues
+
+    for why in house_issues():  # gh #30: a doc_defaults setting no document could use
+        add("doc-defaults", None, why)
+
     static = Path(__file__).parent / "static" / "index.html"
     add("web-ui", static.is_file(), "bundled" if static.is_file() else "not built (cd frontend && npm run build)")
 

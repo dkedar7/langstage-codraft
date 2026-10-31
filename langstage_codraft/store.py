@@ -22,6 +22,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .pages import PAGE_SIZES_MM
+
 BLOCK_TYPES = (
     "text", "heading", "image", "video", "table", "chart", "callout", "divider",
     "references", "page-break", "spacer",
@@ -30,7 +32,7 @@ ROLES = ("flow", "cover", "back")
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "mode": "paged",                 # paged | pageless
-    "page_size": "letter",           # letter | a4 | legal | a5 | slide | custom
+    "page_size": "letter",           # a PAGE_SIZES name (letter, a4, legal, a5, slide) or custom
     "page_w_mm": None,               # custom page width (mm)
     "page_h_mm": None,               # custom page height (mm)
     "page_number_start": 1,          # number printed on the first numbered page ({page})
@@ -148,6 +150,20 @@ class NotFound(KeyError):
 
 class Invalid(ValueError):
     """A request the store refuses (bad type, bad layout, wrong state)."""
+
+
+# page_size values a document can store: the named sizes every renderer knows, or custom.
+PAGE_SIZES = (*PAGE_SIZES_MM, "custom")
+
+
+def _number(name: str, v: Any, lo: float, hi: float) -> None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+        raise Invalid(f"settings.{name} must be a number from {lo:g} to {hi:g}")
+
+
+def _integer(name: str, v: Any, lo: int, hi: int) -> None:
+    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+        raise Invalid(f"settings.{name} must be a whole number from {lo} to {hi}")
 
 
 def _id(prefix: str) -> str:
@@ -329,9 +345,47 @@ class Store:
             return self.get_document(doc_id)
 
     @staticmethod
-    def _check_settings(s: dict) -> None:
+    def _check_settings(s: dict, changed: set[str] | None = None) -> None:
+        """Refuse settings the renderers would ignore or choke on (gh #30). ``changed`` is
+        the keys a PATCH sets: the checks added in 0.5.12 only look at those, so a document
+        saved with an odd value by an older version can still be edited. None = all keys."""
         from . import themes
 
+        def new(key: str) -> bool:
+            return changed is None or key in changed
+
+        for page in ("cover", "back", "header", "footer"):
+            if s.get(page) is not None and not isinstance(s[page], dict):
+                raise Invalid(f"settings.{page} must be an object")
+        if new("page_size"):
+            ps = s.get("page_size")
+            if isinstance(ps, str):
+                s["page_size"] = ps = ps.strip().lower()
+            if ps not in PAGE_SIZES:
+                raise Invalid(f"settings.page_size must be one of {', '.join(PAGE_SIZES)} (got {ps!r}); "
+                              "for any other size use custom with page_w_mm and page_h_mm")
+        for k in ("page_w_mm", "page_h_mm"):
+            if new(k) and changed is not None and s.get(k) is not None and s.get("page_size") != "custom":
+                raise Invalid(f"settings.{k} only applies with page_size 'custom'")
+        if new("margins"):
+            m = s.get("margins")
+            if not isinstance(m, dict) or set(m) != {"top", "right", "bottom", "left"}:
+                raise Invalid("settings.margins must be {top, right, bottom, left} in mm")
+            for side, v in m.items():
+                _number(f"margins.{side}", v, 0, 80)
+        for k in ("block_gap", "column_gap"):
+            if new(k):
+                _number(k, s.get(k), 0, 30)
+        if new("page_number_start"):
+            _integer("page_number_start", s.get("page_number_start"), 0, 100000)
+        if new("min_pages"):
+            _integer("min_pages", s.get("min_pages"), 1, 500)
+        if new("number_cover_pages") and not isinstance(s.get("number_cover_pages"), bool):
+            raise Invalid("settings.number_cover_pages must be true or false")
+        if new("brief"):
+            b = s.get("brief")
+            if not isinstance(b, dict) or not all(isinstance(v, str) and len(v) <= 5000 for v in b.values()):
+                raise Invalid("settings.brief must be an object of text fields (5000 characters at most)")
         try:
             s["style"] = themes.clean_values(s.get("style") or {}, themes.STYLE_KEYS)
         except ValueError as exc:
@@ -417,8 +471,11 @@ class Store:
                     settings = {**settings, "style": {}}
                     doc["settings"]["style"] = {}
                 merged = _merge(doc["settings"], settings)
-                merged["columns"] = int(merged["columns"])
-                self._check_settings(merged)
+                try:
+                    merged["columns"] = int(merged["columns"])
+                except (TypeError, ValueError):
+                    raise Invalid("settings.columns must be 1, 2 or 3") from None
+                self._check_settings(merged, changed=set(settings))
                 self._db.execute(
                     "UPDATE documents SET settings = ? WHERE id = ?", (json.dumps(merged), doc_id)
                 )

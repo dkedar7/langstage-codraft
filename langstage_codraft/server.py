@@ -26,7 +26,8 @@ from . import fonts, stylematch, themes
 from . import templates as tpl
 from .config import CodraftConfig, codraft_toml_table, is_css_path
 from .render import BrowserMissing, Renderer, auth_headers, get_renderer, set_renderer, zip_images
-from .store import Invalid, NotFound, Store, get_store, set_store
+from .store import DEFAULT_SETTINGS, Invalid, NotFound, Store, get_store, set_store
+from .store import _merge as _store_merge
 from .textutil import extract_text
 
 log = logging.getLogger("langstage_codraft")
@@ -137,6 +138,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                      cfg.default_theme)
     themes.set_saved_provider(store.saved_themes)
     house = house_defaults(doc_defaults)
+    for why in house_issues(doc_defaults):  # gh #30
+        log.warning("%s", why)
     tpl.configure(cfg.templates_dir)
     for path, why in tpl.skipped_templates().values():  # gh #27: say so where deployers look
         log.warning("template %s skipped: %s", path, why)
@@ -907,10 +910,36 @@ def _references(store: Store, doc_id: str) -> list[dict]:
 
 def house_defaults(doc_defaults: dict[str, Any] | None = None) -> dict[str, Any]:
     """What every new document starts with: ``[codraft.doc_defaults]`` plus the host's
-    ``doc_defaults``."""
+    ``doc_defaults``. A setting no document could store is left out (see
+    :func:`house_issues`) rather than making every New document fail (gh #30)."""
+    house, _ = _house_checked(doc_defaults)
+    return house
+
+
+def house_issues(doc_defaults: dict[str, Any] | None = None) -> list[str]:
+    """Why each left-out ``doc_defaults`` setting was left out, for ``check`` and the log."""
+    return _house_checked(doc_defaults)[1]
+
+
+def _house_checked(doc_defaults: dict[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
     table = codraft_toml_table()
-    return _deep(table.get("doc_defaults") if isinstance(table.get("doc_defaults"), dict) else {},
-                 doc_defaults or {})
+    raw = _deep(table.get("doc_defaults") if isinstance(table.get("doc_defaults"), dict) else {},
+                doc_defaults or {})
+    house: dict[str, Any] = {}
+    issues: list[str] = []
+    # Keep each setting that's valid alongside the ones kept so far. The page size and a
+    # custom size's dimensions only make sense together, so they're judged as one.
+    size_keys = [k for k in ("page_size", "page_w_mm", "page_h_mm") if k in raw]
+    groups = ([size_keys] if size_keys else []) + [[k] for k in raw if k not in size_keys]
+    for group in groups:
+        trial = {**house, **{k: raw[k] for k in group}}
+        try:
+            Store._check_settings(_store_merge(DEFAULT_SETTINGS, trial), changed=set(trial))
+        except (Invalid, TypeError, ValueError) as exc:
+            issues.append(f"doc_defaults.{'/'.join(group)} ignored: {exc}")
+            continue
+        house = trial
+    return house, issues
 
 
 def new_document(cfg: CodraftConfig, house: dict, template_id: str | None, template: dict,

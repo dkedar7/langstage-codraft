@@ -162,7 +162,7 @@ def get_document(config: RunnableConfig) -> str:
         pend = {sg["block_id"] for sg in doc["suggestions"] if sg["block_id"]}
         lines = [
             f"Document {doc_id}: {doc['title']!r}",
-            f"Layout: {s['mode']}, {s['page_size']} {s['orientation']}, {s['columns']} column(s), "
+            f"Layout: {s['mode']}, {_size_label(s)} {s['orientation']}, {s['columns']} column(s), "
             f"theme {s['theme']}, margins {s['margins']} mm, block gap {s['block_gap']} mm. "
             f"Approval: {s['approval']} ({'your edits wait for the author' if s['approval'] == 'required' else 'your edits apply immediately'}).",
             "Brief: " + ("; ".join(f"{k}={v}" for k, v in s.get("brief", {}).items() if v) or "(none)"),
@@ -525,6 +525,15 @@ def set_block_layout(
         return _err(exc)
 
 
+def _size_label(s: dict) -> str:
+    """The page size as rendered: a size an older version stored but nothing renders reads as
+    the letter it falls back to, not as the name the agent asked for (gh #30)."""
+    from .store import PAGE_SIZES
+
+    ps = s.get("page_size")
+    return ps if ps in PAGE_SIZES else f"letter (stored size {ps!r} isn't supported)"
+
+
 @tool
 def set_document_style(
     config: RunnableConfig, theme: str | None = None, columns: int | None = None,
@@ -538,8 +547,8 @@ def set_document_style(
     unnumbered_pages: str | None = None,
 ) -> str:
     """Change document-wide styling (applies immediately): theme (see get_document
-    for the list), columns 1-3, page_size (letter, a4, legal, a5, slide; or page_w_mm +
-    page_h_mm for a custom size), orientation, per-side margins, page_number_start (the
+    for the list), columns 1-3, page_size (letter, a4, legal, a5 or slide only; for any
+    other size, e.g. A3 or tabloid, pass page_w_mm + page_h_mm instead), orientation, per-side margins, page_number_start (the
     number {page} prints on the first numbered page), number_cover_pages (count cover and
     back pages; default no), unnumbered_pages ("7" or "3, 7": positions whose page-number
     footer is hidden and that don't use up a number),

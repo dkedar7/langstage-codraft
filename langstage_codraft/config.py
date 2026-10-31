@@ -20,6 +20,23 @@ def _csv(v: str) -> list[str]:
     return [s.strip() for s in v.split(",") if s.strip()]
 
 
+def _page_size_name(v: str) -> str:
+    """``default_page_size``: a named size, case-insensitive ("A4" means a4); "" = letter (gh #30)."""
+    from .pages import PAGE_SIZES_MM
+
+    name = str(v).strip().lower()
+    if name and name not in PAGE_SIZES_MM:
+        raise ValueError(f"must be one of {', '.join(PAGE_SIZES_MM)}")
+    return name
+
+
+def _approval_mode(v: str) -> str:
+    mode = str(v).strip().lower()
+    if mode not in ("required", "auto"):
+        raise ValueError("must be required or auto")
+    return mode
+
+
 def is_css_path(value: str) -> bool:
     """``custom_css`` holds inline CSS or a path to a .css file; this says which."""
     v = (value or "").strip()
@@ -34,7 +51,7 @@ class CodraftConfig(HostConfig):
     approval: str = "required"            # default approval mode for new documents
     data_dir: Path = Path(".codraft")     # SQLite store, uploads, checkpoints, renders
     templates_dir: Path | None = None
-    default_page_size: str = ""          # letter | a4 | legal | a5 | slide (new documents)
+    default_page_size: str = ""          # letter | a4 | legal | a5 | slide (new documents; "" = letter)
     default_theme: str = "classic"
     web_fonts: bool = True                # load non-bundled Google Fonts families (editor and export)
     demo: bool = False
@@ -105,6 +122,9 @@ class CodraftConfig(HostConfig):
         "allowed_hosts": "server.allowed_hosts",
     }
     _TOML_PATHS: ClassVar[dict] = {"data_dir": "path", "templates_dir": "path"}
+    # A bad value degrades to the layer beneath it (else the default) with a note, never a
+    # setting --show-config advertises but no document can use (gh #30).
+    _VALIDATORS: ClassVar[dict] = {"default_page_size": _page_size_name, "approval": _approval_mode}
     # Read directly from the [codraft] table (themes.py), not config fields: never "unknown".
     _TOML_PASSTHROUGH: ClassVar[tuple[str, ...]] = (
         "configurable", "codraft.themes", "codraft.allowed_themes", "codraft.doc_defaults",

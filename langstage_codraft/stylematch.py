@@ -26,12 +26,13 @@ from pathlib import Path
 from typing import Any
 
 from . import fonts
+from .pages import PAGE_SIZES_MM
 
 MM_PER_PT = 25.4 / 72
 MAX_PAGES = 6        # pages rendered for the agent and sampled for colours
 RENDER_DPI = 110
-STANDARD_SIZES = {"a4": (210, 297), "letter": (215.9, 279.4), "legal": (215.9, 355.6),
-                  "a5": (148, 210), "slide": (338.67, 190.5)}
+# The named sizes a document can store (gh #30): anything else matches as custom.
+STANDARD_SIZES = PAGE_SIZES_MM
 
 
 # ------------------------------------------------------------------ rendering

@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import math
 import re
 import subprocess
 import sys
@@ -26,6 +27,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 READY_JS = "() => window.__codraftReady === true"
+
+# Every page's box in document CSS px (left, top, width, height).
+PAGE_RECTS_JS = """() => [...document.querySelectorAll('.cd-page')].map(e => {
+  const r = e.getBoundingClientRect();
+  return [r.left + window.scrollX, r.top + window.scrollY, r.width, r.height];
+})"""
 
 
 class BrowserMissing(RuntimeError):
@@ -144,16 +151,8 @@ class Renderer:
                           pages: list[int] | None = None, quality: int = 85) -> list[tuple[int, bytes]]:
         ctx, page = await self._open(doc_id, scale=scale)
         try:
-            els = await page.query_selector_all(".cd-page")
-            out = []
-            for i, el in enumerate(els, 1):
-                if pages and i not in pages:
-                    continue
-                kw: dict[str, Any] = {"type": "jpeg" if fmt in ("jpg", "jpeg") else "png"}
-                if kw["type"] == "jpeg":
-                    kw["quality"] = quality
-                out.append((i, await el.screenshot(**kw)))
-            return out
+            jpeg = fmt in ("jpg", "jpeg")
+            return await _page_shots(page, scale, pages or None, jpeg=jpeg, quality=quality)
         finally:
             await ctx.close()
 
@@ -176,9 +175,9 @@ class Renderer:
             d.mkdir(parents=True, exist_ok=True)
             shots = []
             stamp = int(time.time() * 1000)
-            for p in wanted:
+            for p, data in await _page_shots(page, 1.0, wanted, jpeg=True, quality=70):
                 path = d / f"{stamp}-p{p}.jpg"
-                await els[p - 1].screenshot(path=str(path), type="jpeg", quality=70)
+                path.write_bytes(data)
                 shots.append({"page": p, "path": str(path), "total": total})
             return shots
         finally:
@@ -276,6 +275,62 @@ class Renderer:
 
 def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+async def _page_shots(page, scale: float, pages: list[int] | None = None, *, jpeg: bool = False,
+                      quality: int = 85) -> list[tuple[int, bytes]]:
+    """Each wanted page as a PNG/JPEG of exactly that page (gh #32).
+
+    Pages whose height isn't a whole number of CSS px (A4, A5) sit at fractional offsets,
+    and an element screenshot rounds its clip outward, so every other page image used to
+    start with a row of the page above. Chromium paints a box from the rounded CSS px of
+    its top to the rounded CSS px of its bottom, so clip exactly those rows. The layout is
+    left alone, so the text lands on the same sub-pixel phase as in the editor. A page that
+    paints one row short is padded with its own edge, so every image keeps the full size."""
+    from PIL import Image
+
+    def px(v: float) -> int:
+        return math.floor(v + 0.5)
+
+    rects = await page.evaluate(PAGE_RECTS_JS)
+    out = []
+    for i, (x, y, w, h) in enumerate(rects, 1):
+        if pages is not None and i not in pages:
+            continue
+        x0, y0, x1, y1 = px(x), px(y), px(x + w), px(y + h)
+        want = (round(math.ceil(w - 1e-6) * scale), round(math.ceil(h - 1e-6) * scale))
+        clip = {"x": x0, "y": y0, "width": x1 - x0, "height": y1 - y0}
+        if (round(clip["width"] * scale), round(clip["height"] * scale)) == want:
+            kw: dict[str, Any] = {"type": "jpeg", "quality": quality} if jpeg else {"type": "png"}
+            out.append((i, await page.screenshot(full_page=True, clip=clip, **kw)))
+            continue
+        im = _pad_to(Image.open(io.BytesIO(await page.screenshot(full_page=True, clip=clip))).convert("RGB"), want)
+        buf = io.BytesIO()
+        if jpeg:
+            im.save(buf, "JPEG", quality=quality)
+        else:
+            im.save(buf, "PNG")
+        out.append((i, buf.getvalue()))
+    return out
+
+
+def _pad_to(im, size: tuple[int, int]):
+    """Crop or extend (repeating the edge row/column, which is page margin) to ``size``."""
+    from PIL import Image
+
+    w, h = size
+    im = im.crop((0, 0, min(im.width, w), min(im.height, h)))
+    if im.size == size:
+        return im
+    full = Image.new(im.mode, size)
+    full.paste(im, (0, 0))
+    if im.width < w:
+        edge = im.crop((im.width - 1, 0, im.width, im.height)).resize((w - im.width, im.height))
+        full.paste(edge, (im.width, 0))
+    if im.height < h:
+        edge = full.crop((0, im.height - 1, w, im.height)).resize((w, h - im.height))
+        full.paste(edge, (0, im.height))
+    return full
 
 
 def zip_images(images: list[tuple[int, bytes]], ext: str, stem: str) -> bytes:

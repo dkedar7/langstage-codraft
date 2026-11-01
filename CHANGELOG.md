@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.13 — 2026-11-01
+
+- **Fixed: on A4 and A5, every other exported page image started with a sliver of the page
+  above (#32).** With a dark cover, page 2 of a PNG, JPG, GIF or MP4 export had a navy line
+  along its top and was 2 px taller than its neighbours; the agent's `view_pages` screenshots
+  had the same line. The cause was that an A4 page is 1122.52 CSS px tall, so pages after the
+  first sit at fractional offsets, and an element screenshot rounds its clip outward. Each
+  page is now captured from exactly the rows Chromium paints for it, and a page that paints
+  one row short is padded with its own margin. Every image is now the same size and contains
+  only its own page. The layout is unchanged, so the PDF is the same and exported pages still
+  match the editor pixel for pixel; the parity checks now cover page 2 on A4 and Letter.
+
 ## 0.5.12 — 2026-10-31
 
 - **Fixed: an unknown page size was accepted, reported as applied, and then rendered as Letter

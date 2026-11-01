@@ -1,6 +1,7 @@
 """Shared fixtures for the browser end-to-end tests: a live keyless demo server and Chromium."""
 from __future__ import annotations
 
+import io
 import socket
 import threading
 import time
@@ -83,3 +84,24 @@ def api(server):  # noqa: D103
     return httpx.Client(base_url=server, timeout=120)
 
 
+
+
+def page_image(pg, selector: str, scale: float = 2):
+    """The page under ``selector`` as Codraft's export captures it: exactly the rows
+    Chromium paints for it, padded to the full page size (gh #32). A plain element
+    screenshot rounds a fractional clip outward and picks up a row of what's above."""
+    import math
+
+    from PIL import Image
+
+    from langstage_codraft.render import _pad_to
+
+    loc = pg.locator(selector)
+    loc.scroll_into_view_if_needed()
+    x, y, w, h = loc.evaluate(
+        "e => { const r = e.getBoundingClientRect(); return [r.left + scrollX, r.top + scrollY, r.width, r.height]; }")
+    px = lambda v: math.floor(v + 0.5)  # noqa: E731
+    x0, y0 = px(x), px(y)
+    png = pg.screenshot(full_page=True, clip={"x": x0, "y": y0, "width": px(x + w) - x0, "height": px(y + h) - y0})
+    im = Image.open(io.BytesIO(png)).convert("RGB")
+    return _pad_to(im, (round(math.ceil(w - 1e-6) * scale), round(math.ceil(h - 1e-6) * scale)))

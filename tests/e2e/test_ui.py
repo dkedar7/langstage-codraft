@@ -18,7 +18,7 @@ LOREM = ("Agents increasingly produce documents rather than chat replies, yet mo
          "and the agent owns the presentation. ")
 
 
-from conftest import api  # noqa: E402
+from conftest import api, page_image  # noqa: E402
 
 
 def test_create_from_dialog_with_cover_page(page, server):
@@ -153,7 +153,7 @@ def test_editor_matches_export_pixels(page, server):
         pg.click("[title='Zoom in']" if int(label.rstrip('%')) < 100 else "[title='Zoom out']")
     pg.wait_for_timeout(500)
     pg.mouse.move(0, 0)
-    editor = Image.open(io.BytesIO(pg.locator(".cd-page[data-page='1']").screenshot())).convert("RGB")
+    editor = page_image(pg, ".cd-page[data-page='1']")
     ctx.close()
     assert editor.size == exported.size, (editor.size, exported.size)
     diff = ImageChops.difference(editor, exported).convert("L")

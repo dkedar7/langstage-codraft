@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import zipfile
 
-from conftest import api
+from conftest import api, page_image
 
 LOREM = ("Water utilities lose a large share of treated water before it reaches a customer. Pressure "
          "management lowers losses from background leakage and reduces the rate of new bursts, which "
@@ -36,8 +36,6 @@ def _designed(c, title="Pressure management pilot"):
 
 
 def _editor_page(browser, server, did, n):
-    from PIL import Image
-
     ctx = browser.new_context(viewport={"width": 1800, "height": 1400}, device_scale_factor=2)
     pg = ctx.new_page()
     pg.goto(f"{server}/d/{did}")
@@ -49,7 +47,7 @@ def _editor_page(browser, server, did, n):
         pg.click("[title='Zoom in']" if int(label.rstrip('%')) < 100 else "[title='Zoom out']")
     pg.wait_for_timeout(500)
     pg.mouse.move(0, 0)
-    img = Image.open(io.BytesIO(pg.locator(f".cd-page[data-page='{n}']").screenshot())).convert("RGB")
+    img = page_image(pg, f".cd-page[data-page='{n}']")
     ctx.close()
     return img
 

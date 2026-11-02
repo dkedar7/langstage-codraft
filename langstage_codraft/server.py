@@ -25,7 +25,15 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from . import fonts, stylematch, themes
 from . import templates as tpl
 from .config import CodraftConfig, codraft_toml_table, is_css_path
-from .render import BrowserMissing, Renderer, auth_headers, get_renderer, set_renderer, zip_images
+from .render import (
+    BrowserMissing,
+    Renderer,
+    RenderFailed,
+    auth_headers,
+    get_renderer,
+    set_renderer,
+    zip_images,
+)
 from .store import DEFAULT_SETTINGS, Invalid, NotFound, Store, get_store, set_store
 from .store import _merge as _store_merge
 from .textutil import extract_text
@@ -712,6 +720,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                                 headers={"Content-Disposition": f'attachment; filename="{stem}-html.zip"'})
         except BrowserMissing as exc:
             raise HTTPException(503, str(exc)) from exc
+        except RenderFailed as exc:
+            raise HTTPException(500, str(exc)) from exc
         raise HTTPException(400, "format must be pdf, png, jpg, html, docx, pptx, gif or mp4")
 
     @app.get("/api/render/status")

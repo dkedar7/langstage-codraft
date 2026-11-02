@@ -39,6 +39,10 @@ class BrowserMissing(RuntimeError):
     """Chromium for Playwright isn't installed."""
 
 
+class RenderFailed(RuntimeError):
+    """The print view threw before it finished laying out the document."""
+
+
 def install_browser() -> int:
     """``python -m playwright install chromium`` (what ``install-browser`` runs)."""
     return subprocess.call([sys.executable, "-m", "playwright", "install", "chromium"])
@@ -133,8 +137,26 @@ class Renderer:
 
             await ctx.route(lambda url: url == self._origin or url.startswith(self._origin + "/"), _authed)
         page = await ctx.new_page()
-        await page.goto(f"{self.base_url}/print/{doc_id}", wait_until="networkidle")
-        await page.wait_for_function(READY_JS, timeout=30000)
+        errors: list[str] = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        try:
+            await page.goto(f"{self.base_url}/print/{doc_id}", wait_until="networkidle")
+            # Wait for the layout, but give up a few seconds after the page throws instead of
+            # sitting out the full 30 s (gh #34).
+            deadline = time.monotonic() + 30
+            failed_at: float | None = None
+            while not await page.evaluate(READY_JS):
+                now = time.monotonic()
+                if errors and failed_at is None:
+                    failed_at = now
+                if failed_at is not None and now - failed_at > 3:
+                    raise RenderFailed(f"the print view of {doc_id} failed: {errors[0]}")
+                if now > deadline:
+                    raise RenderFailed(f"the print view of {doc_id} did not finish laying out in 30 s")
+                await asyncio.sleep(0.1)
+        except BaseException:
+            await ctx.close()
+            raise
         return ctx, page
 
     # --------------------------------------------------------------- outputs

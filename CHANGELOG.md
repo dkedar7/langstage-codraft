@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.14 — 2026-11-02
+
+- **Fixed: one block or suggestion with a wrong-typed field blanked the whole editor and hung
+  exports (#34).** A suggestion with `"markdown": ["Note one", "Note two"]`, or a block whose
+  heading `text` was a number, took the editor down to a white page (so **Reject** was
+  unreachable), and once accepted made every PDF/DOCX export wait 30 s and return a bare 500.
+  0.5.11 checked that `content` is an object but not the fields inside it.
+  - Every write path (REST insert and edit, `propose_*`, `insert_blocks`, MCP, and suggestions
+    when they are proposed rather than when accepted) now refuses a wrong-typed field with a 400
+    or an `ERROR:` that names it, e.g. `content.text of a heading block must be text`. Checked:
+    the text fields of every block type, `video.loop`/`muted` and `table.header` (true/false),
+    heading `level` (a whole number 1–6), table `rows` (a list of lists of cells) and chart
+    `spec` (an object). A list of strings for `markdown` is joined into paragraphs.
+  - Values stored by an older version are read back as text (a list is joined, a number becomes
+    its digits, anything else is empty), so existing documents open and export again.
+  - Each block and each review card renders inside its own error boundary, so a block that
+    still fails to render can't take the page or its Reject button with it.
+  - An export whose print view throws now fails within a few seconds with the page's error,
+    instead of after a 30 s timeout.
+- **Fixed:** `PATCH /api/docs/{id}` with a non-object `settings.style` answered 500
+  (`AttributeError`); it is now a 400 like the other settings.
+
 ## 0.5.13 — 2026-11-01
 
 - **Fixed: on A4 and A5, every other exported page image started with a sliver of the page

@@ -3,6 +3,7 @@ import { api } from "../api";
 import { blockText, SuggestionDiff } from "./Diff";
 import { useEditorApi } from "./context";
 import { agentName, agentNamed } from "../branding";
+import { Boundary } from "../render/Boundary";
 
 export function ReviewPanel() {
   const ed = useEditorApi();
@@ -48,17 +49,19 @@ export function ReviewPanel() {
                 <span className="chip chip-agent"><Sparkles size={10} /> {s.kind}</span>
                 {block && (
                   <button className="text-xs text-[var(--ui-accent)] truncate" onClick={() => ed.select(block.id)}>
-                    {block.type}: {blockText(block.type, block.content).slice(0, 36)}
+                    {block.type}: {String(blockText(block.type, block.content)).slice(0, 36)}
                   </button>
                 )}
               </div>
               {s.note && <div className="text-[var(--color-text-secondary)] text-xs mb-2">{s.note}</div>}
               {comment && <div className="text-xs text-[var(--color-warning)] bg-[color-mix(in_srgb,var(--color-warning)_12%,transparent)] rounded px-2 py-1 mb-2">Re: “{comment.body}”</div>}
               <div className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded p-2 max-h-56 overflow-auto scroll-thin">
+                <Boundary fallback={<span className="text-xs">This suggestion can't be previewed.</span>}>
                 {s.kind === "edit" ? <SuggestionDiff block={block} content={s.payload.content || {}} />
                   : s.kind === "insert" ? <div className="whitespace-pre-wrap text-[12.5px]"><span className="diff-add">{blockText(s.payload.type, s.payload.content || {})}</span></div>
                   : s.kind === "delete" ? <span className="diff-del">{block ? blockText(block.type, block.content) : "block"}</span>
                   : <span>Move to {s.payload.after ? "after another block" : "the start"}.</span>}
+                </Boundary>
               </div>
               {s.payload.refs?.length ? (
                 <div className="text-[11.5px] text-[var(--color-text-muted)] mt-1">Sources: {s.payload.refs.map((r: any) => r.title).join("; ")}</div>

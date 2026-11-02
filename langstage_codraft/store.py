@@ -178,6 +178,79 @@ def _check_content(content: Any) -> None:
         )
 
 
+# The content fields each block type reads with a fixed type (gh #34). Other keys pass through.
+_TEXT_FIELDS: dict[str, tuple[str, ...]] = {
+    "text": ("markdown",),
+    "callout": ("markdown", "tone"),
+    "heading": ("text",),
+    "image": ("src", "alt", "caption", "fit", "sketch", "label", "title", "source"),
+    "video": ("src", "poster", "caption"),
+    "table": ("caption",),
+    "chart": ("caption",),
+    "references": ("title", "style"),
+    "spacer": ("label",),
+}
+_BOOL_FIELDS: dict[str, tuple[str, ...]] = {"video": ("loop", "muted"), "table": ("header",)}
+
+
+def _check_fields(block_type: str, content: dict | None) -> dict | None:
+    """Refuse a content field of the wrong type, naming it (gh #34). A list of strings for
+    ``markdown`` is joined into paragraphs. Returns the content to store."""
+    if not content:
+        return content
+    out = dict(content)
+    if isinstance(out.get("markdown"), list) and all(isinstance(p, str) for p in out["markdown"]):
+        out["markdown"] = "\n\n".join(out["markdown"])
+    for k in _TEXT_FIELDS.get(block_type, ()):
+        if out.get(k) is not None and not isinstance(out[k], str):
+            raise Invalid(f"content.{k} of a {block_type} block must be text; got {type(out[k]).__name__}")
+    for k in _BOOL_FIELDS.get(block_type, ()):
+        if out.get(k) is not None and not isinstance(out[k], bool):
+            raise Invalid(f"content.{k} of a {block_type} block must be true or false")
+    if block_type == "heading" and out.get("level") is not None:
+        lv = out["level"]
+        if isinstance(lv, bool) or not isinstance(lv, int) or not 1 <= lv <= 6:
+            raise Invalid("content.level of a heading block must be a whole number from 1 to 6 (levels above 3 render as 3)")
+    if block_type == "table" and out.get("rows") is not None:
+        rows = out["rows"]
+        if not isinstance(rows, list) or not all(
+            isinstance(r, list) and all(c is None or isinstance(c, (str, int, float)) for c in r)
+            for r in rows
+        ):
+            raise Invalid("content.rows of a table block must be a list of rows, each a list of cells")
+    if block_type == "chart" and out.get("spec") is not None and not isinstance(out["spec"], dict):
+        raise Invalid("content.spec of a chart block must be an object (a Vega-Lite spec)")
+    return out
+
+
+def _as_text(v: Any) -> str:
+    if isinstance(v, str):
+        return v
+    if isinstance(v, list):
+        return "\n\n".join(_as_text(p) for p in v)
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return str(v)
+    return ""
+
+
+def repair_content(block_type: str, content: Any) -> dict:
+    """Content as the renderers expect it: a stored wrong-typed text field (written before
+    gh #34) is read as text, so one bad block can't blank the editor or hang an export."""
+    if not isinstance(content, dict):
+        return {}
+    bad = [k for k in _TEXT_FIELDS.get(block_type, ()) if content.get(k) is not None
+           and not isinstance(content[k], str)]
+    if block_type == "heading" and content.get("level") is not None and (
+            isinstance(content["level"], bool) or not isinstance(content["level"], int)):
+        bad.append("level")
+    if not bad:
+        return content
+    out = dict(content)
+    for k in bad:
+        out[k] = 1 if k == "level" else _as_text(out[k])
+    return out
+
+
 def _merge(base: dict, overlay: dict) -> dict:
     out = deepcopy(base)
     for k, v in (overlay or {}).items():
@@ -386,6 +459,8 @@ class Store:
             b = s.get("brief")
             if not isinstance(b, dict) or not all(isinstance(v, str) and len(v) <= 5000 for v in b.values()):
                 raise Invalid("settings.brief must be an object of text fields (5000 characters at most)")
+        if not isinstance(s.get("style") or {}, dict):
+            raise Invalid("settings.style must be an object of style values (or null to reset)")
         try:
             s["style"] = themes.clean_values(s.get("style") or {}, themes.STYLE_KEYS)
         except ValueError as exc:
@@ -516,6 +591,7 @@ class Store:
         if block_type not in BLOCK_TYPES:
             raise Invalid(f"unknown block type {block_type!r}; expected one of {BLOCK_TYPES}")
         _check_content(content)
+        content = _check_fields(block_type, content)
         block_id = _id("blk")
         now = time.time()
         lay = validate_layout(layout or {}, columns)
@@ -552,7 +628,7 @@ class Store:
         return {
             "id": r["id"], "doc_id": r["doc_id"], "type": r["type"], "ord": r["ord"],
             "layout": json.loads(r["layout"]),
-            "content": json.loads(v["content"]) if v else {},
+            "content": repair_content(r["type"], json.loads(v["content"])) if v else {},
             "refs": json.loads(v["refs"]) if v else [],
             "head": r["head"], "n_versions": n,
             "author": v["author"] if v else "", "updated_at": v["created_at"] if v else r["created_at"],
@@ -634,6 +710,7 @@ class Store:
         _check_content(content)
         with self._lock:
             b = self.get_block(block_id)
+            content = _check_fields(b["type"], content)
             if base and base != b["head"]:
                 v = self._one("SELECT * FROM versions WHERE id = ? AND block_id = ?", (base, block_id))
                 if v is not None:
@@ -719,7 +796,8 @@ class Store:
             b = self.get_block(block_id)
             rows = self._q("SELECT * FROM versions WHERE block_id = ? ORDER BY created_at", (block_id,))
             items = [
-                {"id": r["id"], "parent_id": r["parent_id"], "content": json.loads(r["content"]),
+                {"id": r["id"], "parent_id": r["parent_id"],
+                 "content": repair_content(b["type"], json.loads(r["content"])),
                  "refs": json.loads(r["refs"]), "author": r["author"], "note": r["note"],
                  "created_at": r["created_at"]}
                 for r in rows
@@ -846,9 +924,16 @@ class Store:
 
     # ------------------------------------------------------------ suggestions
     def _sugg_dict(self, r: sqlite3.Row) -> dict:
+        payload = json.loads(r["payload"])
+        if isinstance(payload, dict) and isinstance(payload.get("content"), dict):
+            t = payload.get("type", "text")
+            if r["kind"] == "edit" and r["block_id"]:
+                row = self._one("SELECT type FROM blocks WHERE id = ?", (r["block_id"],))
+                t = row["type"] if row else t
+            payload["content"] = repair_content(t, payload["content"])
         return {
             "id": r["id"], "doc_id": r["doc_id"], "block_id": r["block_id"], "kind": r["kind"],
-            "payload": json.loads(r["payload"]), "status": r["status"], "comment_id": r["comment_id"],
+            "payload": payload, "status": r["status"], "comment_id": r["comment_id"],
             "note": r["note"], "author": r["author"], "created_at": r["created_at"],
             "decided_at": r["decided_at"],
         }
@@ -871,6 +956,13 @@ class Store:
                 self.block_in(doc_id, after)
             if kind in ("edit", "delete", "move") and block_id is None:
                 raise Invalid(f"a {kind} suggestion needs a block_id")
+            if kind in ("edit", "insert") and payload.get("content") is not None:
+                # Check the suggestion's content now, not at accept time (gh #34).
+                _check_content(payload["content"])
+                t = (payload.get("type", "text") if kind == "insert"
+                     else self.get_block(block_id)["type"] if block_id else None)
+                if t in BLOCK_TYPES:
+                    payload = {**payload, "content": _check_fields(t, payload["content"])}
             if kind == "insert":
                 t = payload.get("type", "text")
                 if t not in BLOCK_TYPES:

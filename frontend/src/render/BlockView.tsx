@@ -3,6 +3,7 @@ import { memo, useMemo } from "react";
 import type { Block, Ref } from "../types";
 import { Chart, DEFAULT_CHART_HEIGHT } from "./Chart";
 import { mdToHtml } from "./markdown";
+import { Boundary } from "./Boundary";
 import { withBase } from "../base";
 
 export interface RenderCtx {
@@ -55,7 +56,19 @@ export function imageSrc(src: string): string {
 
 /** Read-only rendering of one block at a given width. Used by the measurer, the
  *  editor canvas, the preview and the export, so they always agree. */
-export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeight, pageNo }: {
+export const BlockView = memo(function BlockView(props: {
+  block: Block; width: number; ctx: RenderCtx; fixedHeight?: number | null; pageNo?: number;
+}) {
+  const { block, width, ctx } = props;
+  const fallback = (
+    <div className={`cd-block cd-type-${block.type}`} data-block={block.id} style={{ width }}>
+      {ctx.editing ? <div className="cd-muted">This {block.type} block can't be shown. Edit or step back its version in the Block panel.</div> : <div />}
+    </div>
+  );
+  return <Boundary key={block.head} fallback={fallback}><BlockBody {...props} /></Boundary>;
+});
+
+function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
   block: Block; width: number; ctx: RenderCtx; fixedHeight?: number | null; pageNo?: number;
 }) {
   const c = block.content || {};
@@ -220,7 +233,7 @@ export const BlockView = memo(function BlockView({ block, width, ctx, fixedHeigh
       {inner}
     </div>
   );
-});
+}
 
 /** All references in reading order, de-duplicated by url (or title). */
 export function compileReferences(blocks: Block[]): (Ref & { n: number })[] {

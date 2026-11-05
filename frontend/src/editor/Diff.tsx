@@ -22,8 +22,23 @@ export function Diff({ before, after }: { before: string; after: string }) {
   );
 }
 
-export function SuggestionDiff({ block, content }: { block: Block | undefined; content: Record<string, any> }) {
+export function SuggestionDiff({ block, content, base }: {
+  block: Block | undefined; content: Record<string, any>; base?: Record<string, any>;
+}) {
   if (!block) return <div className="text-xs text-[var(--color-text-muted)]">(block no longer exists)</div>;
-  const merged = { ...block.content, ...content };
-  return <Diff before={blockText(block.type, block.content)} after={blockText(block.type, merged)} />;
+  // An outdated suggestion is diffed against the text the agent saw, not the newer text (gh #37).
+  const before = base ?? block.content;
+  const merged = { ...before, ...content };
+  return <Diff before={blockText(block.type, before)} after={blockText(block.type, merged)} />;
+}
+
+/** Shown on a suggestion whose block was edited after it was proposed (gh #37). */
+export function OutdatedNote() {
+  return (
+    <div className="text-xs text-[var(--color-warning)] bg-[color-mix(in_srgb,var(--color-warning)_12%,transparent)] rounded px-2 py-1 mb-2"
+      data-testid="suggestion-outdated">
+      Outdated: this block was edited after the suggestion was made. The diff shows the change against the
+      text the agent saw. Accepting it anyway adds it as a new branch; the newer version stays in the block's history.
+    </div>
+  );
 }

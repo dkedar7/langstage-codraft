@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.15 — 2026-11-05
+
+- **Fixed: accepting an agent edit made before you edited the block reverted your newer edit
+  (#37).** A suggestion recorded no base version, so if you kept writing in a block while the
+  agent's suggestion waited (the normal case during a long "Address all comments" turn),
+  accepting it wrote the agent's text, based on the old content, over yours. **Accept all** did
+  it without showing anything, and the review card's diff showed the agent "deleting" text it
+  never saw.
+  - Edit and delete suggestions now record the block version they were based on. Once the
+    block moves on, the suggestion is **outdated**: the review card and block popover say so
+    and diff it against the text the agent saw.
+  - **Accept all** skips outdated suggestions and reports how many it skipped (REST:
+    `{"count": n, "skipped": [ids]}`).
+  - A single accept of an outdated suggestion is refused with a 400 unless you choose
+    **Accept anyway** (REST: `{"force": true}`). It then lands as a new branch off the version
+    the agent saw, like a concurrent human edit, so your newer version stays in the block's
+    history.
+  - Suggestions stored by earlier versions have no base version and accept as before.
+- **Fixed: `POST /api/docs` with an unknown template id created an empty blank document
+  (#36).** It now answers 400 with the same `unknown template '…'; available: …` message the
+  CLI and MCP give. A missing or empty `template` still means blank.
+
 ## 0.5.14 — 2026-11-02
 
 - **Fixed: one block or suggestion with a wrong-typed field blanked the whole editor and hung

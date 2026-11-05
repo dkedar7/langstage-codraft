@@ -71,9 +71,11 @@ export const api = {
   setCommentStatus: (id: string, status: "open" | "resolved") => req<Comment>("PATCH", `/api/comments/${id}`, { status }),
   deleteComment: (id: string) => req("DELETE", `/api/comments/${id}`),
 
-  accept: (id: string, payload?: any) => req<Suggestion>("POST", `/api/suggestions/${id}/accept`, { payload }),
+  accept: (id: string, payload?: any, force = false) =>
+    req<Suggestion>("POST", `/api/suggestions/${id}/accept`, force ? { payload, force } : { payload }),
   reject: (id: string, reason = "") => req<Suggestion>("POST", `/api/suggestions/${id}/reject`, { reason }),
-  bulk: (docId: string, action: "accept-all" | "reject-all") => req("POST", `/api/docs/${docId}/suggestions/${action}`),
+  bulk: (docId: string, action: "accept-all" | "reject-all") =>
+    req<{ ok: boolean; count: number; skipped?: string[] }>("POST", `/api/docs/${docId}/suggestions/${action}`),
 
   upload: (docId: string, file: File, purpose: string) => {
     const fd = new FormData();

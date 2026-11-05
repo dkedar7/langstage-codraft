@@ -931,12 +931,23 @@ class Store:
                 row = self._one("SELECT type FROM blocks WHERE id = ?", (r["block_id"],))
                 t = row["type"] if row else t
             payload["content"] = repair_content(t, payload["content"])
-        return {
+        out = {
             "id": r["id"], "doc_id": r["doc_id"], "block_id": r["block_id"], "kind": r["kind"],
             "payload": payload, "status": r["status"], "comment_id": r["comment_id"],
             "note": r["note"], "author": r["author"], "created_at": r["created_at"],
-            "decided_at": r["decided_at"],
+            "decided_at": r["decided_at"], "outdated": False,
         }
+        # A pending edit/delete whose block moved on since it was proposed is outdated (gh #37).
+        # Suggestions stored before 0.5.15 carry no base version and are never outdated.
+        base = payload.get("base_version") if isinstance(payload, dict) else None
+        if r["status"] == "pending" and base and r["kind"] in ("edit", "delete") and r["block_id"]:
+            row = self._one("SELECT type, head FROM blocks WHERE id = ?", (r["block_id"],))
+            if row is not None and row["head"] != base:
+                out["outdated"] = True
+                v = self._one("SELECT content FROM versions WHERE id = ?", (base,))
+                if v is not None:
+                    out["base_content"] = repair_content(row["type"], json.loads(v["content"]))
+        return out
 
     def propose(
         self, doc_id: str, kind: str, payload: dict, *, block_id: str | None = None,
@@ -963,6 +974,9 @@ class Store:
                      else self.get_block(block_id)["type"] if block_id else None)
                 if t in BLOCK_TYPES:
                     payload = {**payload, "content": _check_fields(t, payload["content"])}
+            if kind in ("edit", "delete"):
+                # The version the agent saw, so a later author edit marks this outdated (gh #37).
+                payload = {**payload, "base_version": self.get_block(block_id)["head"]}
             if kind == "insert":
                 t = payload.get("type", "text")
                 if t not in BLOCK_TYPES:
@@ -1008,20 +1022,33 @@ class Store:
             return [self._sugg_dict(r) for r in rows]
 
     def accept_suggestion(self, sid: str, *, payload_override: dict | None = None,
-                          decided_by: str = "user") -> dict:
+                          decided_by: str = "user", force: bool = False) -> dict:
+        """Apply a pending suggestion.
+
+        An outdated one (its block changed after it was proposed) is refused unless
+        ``force``; a forced outdated edit lands as a branch off the version the agent saw,
+        like a concurrent human edit, so the author's newer version stays in the tree (gh #37).
+        """
         with self._lock:
             s = self.get_suggestion(sid)
             if s["status"] != "pending":
                 raise Invalid(f"suggestion {sid} is already {s['status']}")
+            if s["outdated"] and not force:
+                raise Invalid(
+                    f"suggestion {sid} is outdated: the block was edited after it was proposed."
+                    " Reject it and ask again, or accept it anyway (force)")
             p = {**s["payload"], **(payload_override or {})}
             note = s["note"] or f"suggestion {sid}"
             result: dict[str, Any] = {}
             if s["kind"] == "edit":
                 blk = self.edit_block(s["block_id"], content=p.get("content"), refs=p.get("refs"),
-                                      author=s["author"], note=note)
+                                      author=s["author"], note=note,
+                                      base=s["payload"].get("base_version") if s["outdated"] else None)
                 if p.get("layout"):
                     blk = self.set_layout(s["block_id"], p["layout"])  # styling rides along with the edit
                 result = {"block_id": blk["id"]}
+                if s["outdated"]:
+                    result["branched"] = True
             elif s["kind"] == "insert":
                 blk = self.insert_block(
                     s["doc_id"], p.get("type", "text"), p.get("content"),

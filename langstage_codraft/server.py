@@ -313,7 +313,10 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     @app.post("/api/docs")
     def create_doc(body: dict = Body(default={})) -> dict:
         try:
-            template = tpl.all_templates().get(body.get("template") or "blank", tpl.BUILTIN_TEMPLATES["blank"])
+            template_id = body.get("template") or "blank"
+            template = tpl.all_templates().get(template_id)
+            if template is None:  # same refusal as the CLI and MCP (gh #36)
+                raise Invalid(tpl.unknown_template_message(template_id))
             title, settings, blocks = new_document(cfg, house, body.get("template"), template,
                                                    body.get("title"), body.get("settings"))
             doc = store.create_document(title, settings, blocks)
@@ -511,7 +514,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     @app.post("/api/suggestions/{sid}/accept")
     def accept(sid: str, body: dict = Body(default={})) -> dict:
         try:
-            return store.accept_suggestion(sid, payload_override=body.get("payload"))
+            return store.accept_suggestion(sid, payload_override=body.get("payload"),
+                                           force=bool(body.get("force")))
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
 
@@ -526,14 +530,17 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     def bulk(doc_id: str, action: str) -> dict:
         if action not in ("accept-all", "reject-all"):
             raise HTTPException(404, "unknown action")
-        n = 0
+        n, skipped = 0, []
         for s in store.list_suggestions(doc_id):
+            if action == "accept-all" and s["outdated"]:
+                skipped.append(s["id"])  # never apply a stale edit unseen (gh #37)
+                continue
             try:
                 (store.accept_suggestion if action == "accept-all" else store.reject_suggestion)(s["id"])
                 n += 1
             except (Invalid, NotFound):
                 continue
-        return {"ok": True, "count": n}
+        return {"ok": True, "count": n, "skipped": skipped}
 
     # ---------------------------------------------------------------- uploads
     @app.post("/api/docs/{doc_id}/uploads")

@@ -118,6 +118,10 @@ export interface Suggestion {
   note: string;
   author: string;
   created_at: number;
+  /** the block was edited after this edit/delete was proposed (gh #37) */
+  outdated?: boolean;
+  /** the block content the agent saw, for diffing an outdated edit */
+  base_content?: Record<string, any>;
 }
 
 export interface Upload {

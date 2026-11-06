@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.16 — 2026-11-06
+
+- **Fixed: a pending suggestion on a deleted block was stuck (#39).** If the block an agent
+  suggestion targeted was deleted (by you, or by accepting the agent's own delete while it also
+  had an edit or move pending on that block), the suggestion stayed pending with nothing to
+  apply it to. Accept returned a raw `block … not found` error, Accept all dropped it without
+  saying so, and the pending count never cleared.
+  - Deleting a block now closes its pending suggestions (status `obsolete`), so the Review tab
+    and the agent stop counting them. A pending insert or move that was to follow the deleted
+    block now follows the block before it (or goes to the start).
+  - Suggestions left pending on deleted blocks by older versions are closed the same way when
+    the data directory is opened.
+  - Anything still pending with nothing to apply to (for example, an old insert anchored after
+    a deleted block) is marked in the API (`gone`, with the reason). Accept refuses it with a
+    400 that says why, and the review card and block popover show "Can't be applied" with only
+    a **Dismiss** button. `accept-all` lists it in `skipped` and in the new `skipped_gone`, and
+    the toast says "skipped N on deleted blocks".
+
 ## 0.5.15 — 2026-11-05
 
 - **Fixed: accepting an agent edit made before you edited the block reverted your newer edit

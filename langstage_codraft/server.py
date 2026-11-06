@@ -530,8 +530,11 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     def bulk(doc_id: str, action: str) -> dict:
         if action not in ("accept-all", "reject-all"):
             raise HTTPException(404, "unknown action")
-        n, skipped = 0, []
+        n, skipped, gone = 0, [], []
         for s in store.list_suggestions(doc_id):
+            if action == "accept-all" and s.get("gone"):
+                gone.append(s["id"])  # its block was deleted: only Reject can clear it (gh #39)
+                continue
             if action == "accept-all" and s["outdated"]:
                 skipped.append(s["id"])  # never apply a stale edit unseen (gh #37)
                 continue
@@ -539,8 +542,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                 (store.accept_suggestion if action == "accept-all" else store.reject_suggestion)(s["id"])
                 n += 1
             except (Invalid, NotFound):
-                continue
-        return {"ok": True, "count": n, "skipped": skipped}
+                continue  # closed by an earlier accept in this loop (e.g. its block was deleted)
+        return {"ok": True, "count": n, "skipped": skipped + gone, "skipped_gone": gone}
 
     # ---------------------------------------------------------------- uploads
     @app.post("/api/docs/{doc_id}/uploads")

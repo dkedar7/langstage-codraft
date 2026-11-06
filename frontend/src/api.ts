@@ -75,7 +75,7 @@ export const api = {
     req<Suggestion>("POST", `/api/suggestions/${id}/accept`, force ? { payload, force } : { payload }),
   reject: (id: string, reason = "") => req<Suggestion>("POST", `/api/suggestions/${id}/reject`, { reason }),
   bulk: (docId: string, action: "accept-all" | "reject-all") =>
-    req<{ ok: boolean; count: number; skipped?: string[] }>("POST", `/api/docs/${docId}/suggestions/${action}`),
+    req<{ ok: boolean; count: number; skipped?: string[]; skipped_gone?: string[] }>("POST", `/api/docs/${docId}/suggestions/${action}`),
 
   upload: (docId: string, file: File, purpose: string) => {
     const fd = new FormData();

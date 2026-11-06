@@ -32,6 +32,16 @@ export function SuggestionDiff({ block, content, base }: {
   return <Diff before={blockText(block.type, before)} after={blockText(block.type, merged)} />;
 }
 
+/** Shown on a suggestion that can no longer be applied because its block was deleted (gh #39). */
+export function GoneNote({ why }: { why: string }) {
+  return (
+    <div className="text-xs text-[var(--color-text-secondary)] bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded px-2 py-1 mb-2"
+      data-testid="suggestion-gone">
+      Can't be applied: {why.replace(/^block \S+ /, "the block ")}. Dismiss it to clear it from the list.
+    </div>
+  );
+}
+
 /** Shown on a suggestion whose block was edited after it was proposed (gh #37). */
 export function OutdatedNote() {
   return (

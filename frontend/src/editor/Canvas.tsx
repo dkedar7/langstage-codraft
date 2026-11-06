@@ -12,7 +12,7 @@ import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
 import { pageNumbers, usesPageToken } from "../layout/numbering";
 import type { Block, Suggestion } from "../types";
 import { useEditorApi } from "./context";
-import { OutdatedNote, SuggestionDiff } from "./Diff";
+import { GoneNote, OutdatedNote, SuggestionDiff } from "./Diff";
 import { TextEditor } from "./TextEditor";
 
 /** Blocks plus pending insert suggestions as "virtual" ghost blocks, in reading order. */
@@ -496,7 +496,7 @@ function SuggestionPopover({ s, block, onClose }: { s: Suggestion; block: Block 
         <span className="chip chip-agent"><Sparkles size={10} /> {s.kind}</span>
         <span className="text-[var(--color-text-muted)] truncate">{s.note}</span>
       </div>
-      {s.outdated && <OutdatedNote />}
+      {s.gone ? <GoneNote why={s.gone} /> : s.outdated && <OutdatedNote />}
       <div className="max-h-64 overflow-auto scroll-thin border border-[var(--color-border)] rounded p-2 mb-2 bg-[var(--color-surface-2)]">
         {s.kind === "edit" ? <SuggestionDiff block={block} content={s.payload.content || {}} base={s.base_content} />
           : s.kind === "delete" ? <span>Delete this block.</span>
@@ -507,11 +507,11 @@ function SuggestionPopover({ s, block, onClose }: { s: Suggestion; block: Block 
         ) : null}
       </div>
       <div className="flex gap-2">
-        <button className="btn btn-agent" data-testid="accept-suggestion"
+        {!s.gone && <button className="btn btn-agent" data-testid="accept-suggestion"
           onClick={async () => { onClose(); await ed.run(api.accept(s.id, undefined, !!s.outdated), s.outdated ? "Accepted as a new branch" : "Accepted"); }}>
-          {s.outdated ? "Accept anyway" : "Accept"}</button>
+          {s.outdated ? "Accept anyway" : "Accept"}</button>}
         <button className="btn" data-testid="reject-suggestion"
-          onClick={async () => { onClose(); await ed.run(api.reject(s.id), "Rejected"); }}>Reject</button>
+          onClick={async () => { onClose(); await ed.run(api.reject(s.id), s.gone ? "Dismissed" : "Rejected"); }}>{s.gone ? "Dismiss" : "Reject"}</button>
         <button className="btn btn-ghost ml-auto" onClick={onClose}>Close</button>
       </div>
     </div>

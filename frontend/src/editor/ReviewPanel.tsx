@@ -1,6 +1,6 @@
 import { CheckCheck, Sparkles, XCircle } from "lucide-react";
 import { api } from "../api";
-import { blockText, OutdatedNote, SuggestionDiff } from "./Diff";
+import { blockText, GoneNote, OutdatedNote, SuggestionDiff } from "./Diff";
 import { useEditorApi } from "./context";
 import { agentName, agentNamed } from "../branding";
 import { Boundary } from "../render/Boundary";
@@ -32,10 +32,13 @@ export function ReviewPanel() {
             <button className="btn btn-agent" onClick={async () => {
               const r = await ed.run(api.bulk(doc.id, "accept-all"));
               if (!r) return;
-              const skipped = r.skipped?.length ?? 0;
-              ed.toast(skipped
-                ? `Accepted ${r.count}; skipped ${skipped} outdated suggestion${skipped > 1 ? "s" : ""} (the block changed since)`
-                : "Accepted all");
+              const gone = r.skipped_gone?.length ?? 0;
+              const stale = (r.skipped?.length ?? 0) - gone;
+              const parts = [
+                stale ? `${stale} outdated suggestion${stale > 1 ? "s" : ""} (the block changed since)` : "",
+                gone ? `${gone} on deleted block${gone > 1 ? "s" : ""}` : "",
+              ].filter(Boolean);
+              ed.toast(parts.length ? `Accepted ${r.count}; skipped ${parts.join(" and ")}` : "Accepted all");
             }}>
               <CheckCheck size={14} /> Accept all</button>
             <button className="btn" onClick={() => ed.run(api.bulk(doc.id, "reject-all"), "Rejected all")}>
@@ -61,7 +64,7 @@ export function ReviewPanel() {
                 )}
               </div>
               {s.note && <div className="text-[var(--color-text-secondary)] text-xs mb-2">{s.note}</div>}
-              {s.outdated && <OutdatedNote />}
+              {s.gone ? <GoneNote why={s.gone} /> : s.outdated && <OutdatedNote />}
               {comment && <div className="text-xs text-[var(--color-warning)] bg-[color-mix(in_srgb,var(--color-warning)_12%,transparent)] rounded px-2 py-1 mb-2">Re: “{comment.body}”</div>}
               <div className="bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded p-2 max-h-56 overflow-auto scroll-thin">
                 <Boundary fallback={<span className="text-xs">This suggestion can't be previewed.</span>}>
@@ -75,10 +78,11 @@ export function ReviewPanel() {
                 <div className="text-[11.5px] text-[var(--color-text-muted)] mt-1">Sources: {s.payload.refs.map((r: any) => r.title).join("; ")}</div>
               ) : null}
               <div className="flex gap-2 mt-2">
-                <button className="btn btn-agent" data-testid="review-accept"
+                {!s.gone && <button className="btn btn-agent" data-testid="review-accept"
                   onClick={() => ed.run(api.accept(s.id, undefined, !!s.outdated), s.outdated ? "Accepted as a new branch" : "Accepted")}>
-                  {s.outdated ? "Accept anyway" : "Accept"}</button>
-                <button className="btn" data-testid="review-reject" onClick={() => ed.run(api.reject(s.id), "Rejected")}>Reject</button>
+                  {s.outdated ? "Accept anyway" : "Accept"}</button>}
+                <button className="btn" data-testid="review-reject"
+                  onClick={() => ed.run(api.reject(s.id), s.gone ? "Dismissed" : "Rejected")}>{s.gone ? "Dismiss" : "Reject"}</button>
               </div>
             </div>
           );

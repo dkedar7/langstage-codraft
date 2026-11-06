@@ -373,6 +373,10 @@ class Store:
         cols = {r["name"] for r in self._db.execute("PRAGMA table_info(uploads)").fetchall()}
         if "meta" not in cols:  # 0.5: rendered pages and the extracted style of an upload
             self._db.execute("ALTER TABLE uploads ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
+        # Before 0.5.16, deleting a block left its pending suggestions pending forever (gh #39).
+        self._db.execute(
+            "UPDATE suggestions SET status = 'obsolete', decided_at = ? WHERE status = 'pending'"
+            " AND block_id IN (SELECT id FROM blocks WHERE deleted = 1)", (time.time(),))
         self._db.commit()
         # Last client-computed layout per document (block -> pages), reported by the UI
         # after it paginates, so the agent's outline can say which page a block is on.
@@ -771,10 +775,27 @@ class Store:
             self._db.commit()
             return self.get_block(block_id)
 
-    def delete_block(self, block_id: str) -> None:
+    def delete_block(self, block_id: str, *, keep: str | None = None) -> None:
+        """Delete a block. Its pending suggestions become ``obsolete`` (there is nothing left
+        to apply them to), and pending inserts or moves anchored after it move up to follow
+        the block before it (gh #39). ``keep`` is a suggestion being accepted right now."""
         with self._lock:
             b = self.get_block(block_id)
+            ids = [r["id"] for r in self._q(
+                "SELECT id FROM blocks WHERE doc_id = ? AND deleted = 0 ORDER BY ord", (b["doc_id"],))]
+            prev = ids[ids.index(block_id) - 1] if ids.index(block_id) > 0 else None
             self._db.execute("UPDATE blocks SET deleted = 1 WHERE id = ?", (block_id,))
+            now = time.time()
+            for r in self._q("SELECT id, block_id, kind, payload FROM suggestions"
+                             " WHERE doc_id = ? AND status = 'pending' AND id IS NOT ?", (b["doc_id"], keep)):
+                p = json.loads(r["payload"])
+                if r["block_id"] == block_id:
+                    p = {**p, "obsolete_reason": "block deleted"} if isinstance(p, dict) else p
+                    self._db.execute("UPDATE suggestions SET status = 'obsolete', decided_at = ?, payload = ?"
+                                     " WHERE id = ?", (now, json.dumps(p), r["id"]))
+                elif r["kind"] in ("insert", "move") and isinstance(p, dict) and p.get("after") == block_id:
+                    self._db.execute("UPDATE suggestions SET payload = ? WHERE id = ?",
+                                     (json.dumps({**p, "after": prev}), r["id"]))
             self._bump(b["doc_id"])
             self._db.commit()
 
@@ -937,6 +958,11 @@ class Store:
             "note": r["note"], "author": r["author"], "created_at": r["created_at"],
             "decided_at": r["decided_at"], "outdated": False,
         }
+        if r["status"] == "pending":
+            gone = self._gone(r["block_id"], payload, r["kind"])
+            if gone:  # nothing left to apply it to: it can only be dismissed (gh #39)
+                out["gone"] = gone
+                return out
         # A pending edit/delete whose block moved on since it was proposed is outdated (gh #37).
         # Suggestions stored before 0.5.15 carry no base version and are never outdated.
         base = payload.get("base_version") if isinstance(payload, dict) else None
@@ -948,6 +974,18 @@ class Store:
                 if v is not None:
                     out["base_content"] = repair_content(row["type"], json.loads(v["content"]))
         return out
+
+    def _gone(self, block_id: str | None, payload: Any, kind: str) -> str:
+        """Why a pending suggestion can't be applied any more, or ''."""
+        def missing(bid: str) -> bool:
+            row = self._one("SELECT deleted FROM blocks WHERE id = ?", (bid,))
+            return row is None or row["deleted"] == 1
+        if block_id and missing(block_id):
+            return f"block {block_id} was deleted"
+        after = payload.get("after") if isinstance(payload, dict) else None
+        if kind in ("insert", "move") and after not in (None, "__end__") and missing(after):
+            return f"block {after}, which it was to follow, was deleted"
+        return ""
 
     def propose(
         self, doc_id: str, kind: str, payload: dict, *, block_id: str | None = None,
@@ -1033,6 +1071,8 @@ class Store:
             s = self.get_suggestion(sid)
             if s["status"] != "pending":
                 raise Invalid(f"suggestion {sid} is already {s['status']}")
+            if s.get("gone"):
+                raise Invalid(f"suggestion {sid} can't be applied: {s['gone']}. Reject it to dismiss it")
             if s["outdated"] and not force:
                 raise Invalid(
                     f"suggestion {sid} is outdated: the block was edited after it was proposed."
@@ -1057,7 +1097,7 @@ class Store:
                 )
                 result = {"block_id": blk["id"]}
             elif s["kind"] == "delete":
-                self.delete_block(s["block_id"])
+                self.delete_block(s["block_id"], keep=sid)
             elif s["kind"] == "move":
                 self.move_block(s["block_id"], p.get("after"))
             self._db.execute(

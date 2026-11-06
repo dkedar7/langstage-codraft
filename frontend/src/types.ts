@@ -122,6 +122,8 @@ export interface Suggestion {
   outdated?: boolean;
   /** the block content the agent saw, for diffing an outdated edit */
   base_content?: Record<string, any>;
+  /** why it can no longer be applied (its block was deleted); it can only be dismissed (gh #39) */
+  gone?: string;
 }
 
 export interface Upload {

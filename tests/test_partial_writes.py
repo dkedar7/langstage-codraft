@@ -136,6 +136,28 @@ def test_check_warns_about_each_skipped_template(tdir, tmp_path, monkeypatch):
     assert any("brief.json" in c["detail"] and "invalid JSON" in c["detail"] for c in checks)
 
 
+def test_unknown_template_block_type_is_reported_before_creation(tdir, tmp_path, monkeypatch):
+    (tdir / "badtype.json").write_text(
+        '{"blocks": [{"type": "quote", "content": {"markdown": "Status"}}]}', encoding="utf-8"
+    )
+    (tdir / "defaulttype.json").write_text(
+        '{"blocks": [{"content": {"markdown": "Status"}}]}', encoding="utf-8"
+    )
+    _toml(tmp_path, monkeypatch)
+    runner = CliRunner()
+    check = runner.invoke(cli.main, ["check", "--demo"])
+    reason = "blocks[0].type 'quote'"
+    assert any("[warn]" in line and "badtype.json" in line and reason in line
+               for line in check.output.splitlines()), check.output
+
+    bad = runner.invoke(cli.main, ["new", "Status", "--template", "badtype"])
+    assert bad.exit_code == 2
+    assert "template 'badtype' was skipped" in bad.output and reason in bad.output
+
+    good = runner.invoke(cli.main, ["new", "Status", "--template", "defaulttype"])
+    assert good.exit_code == 0, good.output
+
+
 def test_server_logs_skipped_templates(tdir, tmp_path, monkeypatch, caplog):
     monkeypatch.chdir(tmp_path)
     cfg = CodraftConfig.resolve(

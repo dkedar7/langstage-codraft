@@ -124,6 +124,8 @@ def configure(templates_dir: str | Path | None) -> None:
 
 def _load(p: Path) -> dict[str, Any]:
     """One deployer template file, or ValueError saying what's wrong with it."""
+    from .store import BLOCK_TYPES, DEFAULT_SETTINGS, Invalid, Store, _merge
+
     try:
         t = json.loads(p.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -138,11 +140,14 @@ def _load(p: Path) -> dict[str, Any]:
     for i, b in enumerate(t.get("blocks", [])):
         if not isinstance(b, dict):
             raise ValueError(f"blocks[{i}] must be a JSON object")
+        block_type = b.get("type", "text")
+        if block_type not in BLOCK_TYPES:
+            raise ValueError(
+                f"blocks[{i}].type {block_type!r} is not a block type. Expected one of {BLOCK_TYPES}"
+            )
         if not isinstance(b.get("content", {}), dict):
             raise ValueError(f'blocks[{i}].content must be a JSON object, e.g. {{"markdown": "..."}}')
     if t.get("settings"):
-        from .store import DEFAULT_SETTINGS, Invalid, Store, _merge
-
         try:  # the same checks a new document's settings get (gh #30)
             Store._check_settings(_merge(DEFAULT_SETTINGS, t["settings"]))
         except (Invalid, TypeError, ValueError) as exc:

@@ -135,18 +135,28 @@ def _load(p: Path) -> dict[str, Any]:
     for key, kind in (("settings", dict), ("blocks", list)):
         if key in t and not isinstance(t[key], kind):
             raise ValueError(f"{key!r} must be a JSON {'object' if kind is dict else 'array'}")
+    from .store import BLOCK_TYPES, DEFAULT_SETTINGS, Invalid, Store, _merge, check_block
+
+    settings = _merge(DEFAULT_SETTINGS, t.get("settings") or {})
+    if t.get("settings"):
+        try:  # the same checks a new document's settings get (gh #30)
+            Store._check_settings(settings)
+        except (Invalid, TypeError, ValueError) as exc:
+            raise ValueError(str(exc)) from None
     for i, b in enumerate(t.get("blocks", [])):
         if not isinstance(b, dict):
             raise ValueError(f"blocks[{i}] must be a JSON object")
         if not isinstance(b.get("content", {}), dict):
             raise ValueError(f'blocks[{i}].content must be a JSON object, e.g. {{"markdown": "..."}}')
-    if t.get("settings"):
-        from .store import DEFAULT_SETTINGS, Invalid, Store, _merge
-
-        try:  # the same checks a new document's settings get (gh #30)
-            Store._check_settings(_merge(DEFAULT_SETTINGS, t["settings"]))
-        except (Invalid, TypeError, ValueError) as exc:
-            raise ValueError(str(exc)) from None
+        btype = b.get("type", "text")
+        if btype not in BLOCK_TYPES:
+            raise ValueError(f"blocks[{i}].type {btype!r} is not a block type ({', '.join(BLOCK_TYPES)})")
+        if b.get("refs") is not None and not isinstance(b["refs"], list):
+            raise ValueError(f"blocks[{i}].refs must be a JSON array")
+        try:  # the same checks a new document's blocks get, so `check` and `new` agree (gh #41)
+            check_block(btype, b.get("content"), b.get("layout"), settings["columns"])
+        except Invalid as exc:
+            raise ValueError(f"blocks[{i}]: {exc}") from None
     t.setdefault("name", p.stem)
     t.setdefault("settings", {})
     t.setdefault("blocks", [])

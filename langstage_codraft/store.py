@@ -287,6 +287,24 @@ def check_variant(block_type: str, layout: dict) -> None:
                       f"options: {', '.join(BLOCK_VARIANTS.get(block_type, ())) or 'none'}")
 
 
+def check_block(block_type: str, content: Any, layout: Any, columns: int = 3) -> tuple[dict | None, dict]:
+    """The checks a new block gets: its type, content and layout. Returns the content and
+    layout to store, or raises :class:`Invalid`. Deployer templates run the same checks
+    when they load, so ``check`` can't pass a template that ``new`` refuses (gh #41)."""
+    if block_type not in BLOCK_TYPES:
+        raise Invalid(f"unknown block type {block_type!r}; expected one of {', '.join(BLOCK_TYPES)}")
+    _check_content(content)
+    content = _check_fields(block_type, content)
+    if layout is not None and not isinstance(layout, dict):
+        raise Invalid(f"layout must be an object; got {type(layout).__name__}")
+    try:
+        lay = validate_layout(layout or {}, columns)
+    except (TypeError, ValueError, AttributeError) as exc:  # e.g. a pin page that isn't a number
+        raise Invalid(f"invalid layout: {exc}") from None
+    check_variant(block_type, lay)
+    return content, lay
+
+
 def validate_layout(layout: dict, columns: int = 3) -> dict:
     out = _merge(DEFAULT_LAYOUT, layout or {})
     if out["span"] not in ("column", "full"):
@@ -592,14 +610,9 @@ class Store:
         self, doc_id: str, block_type: str, content: dict | None, layout: dict | None,
         *, ord_: float, refs: list | None, author: str, columns: int = 3, note: str = "",
     ) -> str:
-        if block_type not in BLOCK_TYPES:
-            raise Invalid(f"unknown block type {block_type!r}; expected one of {BLOCK_TYPES}")
-        _check_content(content)
-        content = _check_fields(block_type, content)
+        content, lay = check_block(block_type, content, layout, columns)
         block_id = _id("blk")
         now = time.time()
-        lay = validate_layout(layout or {}, columns)
-        check_variant(block_type, lay)
         self._db.execute(
             "INSERT INTO blocks (id, doc_id, ord, type, layout, head, created_at) VALUES (?,?,?,?,?,NULL,?)",
             (block_id, doc_id, ord_, block_type, json.dumps(lay), now),
@@ -1018,7 +1031,7 @@ class Store:
             if kind == "insert":
                 t = payload.get("type", "text")
                 if t not in BLOCK_TYPES:
-                    raise Invalid(f"unknown block type {t!r}; expected one of {BLOCK_TYPES}")
+                    raise Invalid(f"unknown block type {t!r}; expected one of {', '.join(BLOCK_TYPES)}")
                 lay = self._inherit_role(payload.get("after", "__end__"), payload.get("layout"))
                 if lay is not None:
                     payload = {**payload, "layout": lay}

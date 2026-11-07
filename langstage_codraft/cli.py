@@ -149,15 +149,26 @@ def check(agent_spec, model, demo, data_dir, live, as_json) -> None:
         else:
             skipped = tpl.skipped_templates()
             n = len(tpl.all_templates()) - len(tpl.BUILTIN_TEMPLATES)
-            if not skipped:
+            if n or not skipped:
                 add("templates", True, f"{n} from {cfg.templates_dir}")
             for _, (path, why) in skipped.items():
                 add("templates", None, f"{path} skipped: {why}")
 
+    from . import themes
+    from .config import codraft_toml_table
     from .server import house_issues
 
+    table = codraft_toml_table()
+    themes.configure(table.get("themes") if isinstance(table.get("themes"), dict) else None,
+                     table.get("allowed_themes"), cfg.default_theme)
+    for why in themes.theme_issues():  # gh #41: a theme value the exports would choke on
+        add("themes", None, why)
     for why in house_issues():  # gh #30: a doc_defaults setting no document could use
         add("doc-defaults", None, why)
+    from .config import is_css_path
+
+    if is_css_path(cfg.custom_css) and not Path(cfg.custom_css.strip()).expanduser().is_file():
+        add("custom-css", None, f"custom_css file not found: {cfg.custom_css.strip()} (the editor gets no custom CSS)")
 
     static = Path(__file__).parent / "static" / "index.html"
     add("web-ui", static.is_file(), "bundled" if static.is_file() else "not built (cd frontend && npm run build)")
@@ -212,7 +223,7 @@ def new(title, template, data_dir) -> None:
     from . import themes
     from .config import codraft_toml_table
     from .server import house_defaults, new_document
-    from .store import Store
+    from .store import Invalid, Store
 
     cfg = _cfg(data_dir=data_dir)
     table = codraft_toml_table()
@@ -224,7 +235,11 @@ def new(title, template, data_dir) -> None:
         _fail(tpl.unknown_template_message(template))
         sys.exit(2)
     store = Store(Path(cfg.data_dir) / "codraft.db")
-    doc = store.create_document(*new_document(cfg, house_defaults(), template, t, title))
+    try:
+        doc = store.create_document(*new_document(cfg, house_defaults(), template, t, title))
+    except Invalid as exc:  # a one-line reason, not a traceback (gh #41)
+        _fail(f"can't create from template {template!r}: {exc}")
+        sys.exit(2)
     _echo(doc["id"])
 
 

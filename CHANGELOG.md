@@ -8,7 +8,7 @@
   template that fails is skipped with the reason, as invalid JSON already was (#27): it isn't
   offered in the New document dialog or `/api/config`, and the server logs why at startup.
   - `check` prints `[warn] templates: …/status.json skipped: blocks[0].type 'quote' is not a
-    block type (text, heading, …)`, and still counts the templates that load.
+    block type (text, heading, …)`.
   - `new --template status` exits 2 with `template 'status' was skipped: <file>: <reason>`
     instead of a traceback, and so do MCP `create_document` and `POST /api/docs` (400).
   - MCP `create_document` now returns `ERROR: <reason>` for any refusal while creating (for

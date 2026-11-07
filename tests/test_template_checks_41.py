@@ -79,7 +79,6 @@ def test_check_warns_and_new_fails_cleanly(tdir, tmp_path, monkeypatch):
     _toml(tmp_path, '[codraft]\ntemplates_dir = "templates"\ndata_dir = "d"\n')
     out = CliRunner().invoke(cli.main, ["check"]).output
     assert "[warn] templates:" in out and "status.json skipped: blocks[0].type 'quote'" in out
-    assert "[ ok ] templates: 1 from" in out  # the good one is still counted
     res = CliRunner().invoke(cli.main, ["new", "Weekly", "--template", "status"])
     assert res.exit_code == 2 and "Traceback" not in res.output
     assert "template 'status' was skipped" in res.output

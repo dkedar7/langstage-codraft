@@ -149,7 +149,7 @@ def check(agent_spec, model, demo, data_dir, live, as_json) -> None:
         else:
             skipped = tpl.skipped_templates()
             n = len(tpl.all_templates()) - len(tpl.BUILTIN_TEMPLATES)
-            if n or not skipped:
+            if not skipped:
                 add("templates", True, f"{n} from {cfg.templates_dir}")
             for _, (path, why) in skipped.items():
                 add("templates", None, f"{path} skipped: {why}")

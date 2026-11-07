@@ -145,6 +145,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     themes.configure({**toml_themes, **(doc_themes or {})} or None, table.get("allowed_themes"),
                      cfg.default_theme)
     themes.set_saved_provider(store.saved_themes)
+    for why in themes.theme_issues():  # gh #41
+        log.warning("codraft: %s", why)
     house = house_defaults(doc_defaults)
     for why in house_issues(doc_defaults):  # gh #30
         log.warning("%s", why)

@@ -75,8 +75,11 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
             return f"ERROR: {tpl.unknown_template_message(template)}"
         # The editor's New document and `langstage-codraft new` share new_document(): house
         # defaults, default page size, theme and approval, and the title on the cover (gh #12).
-        doc = get_store().create_document(*new_document(
-            cfg, house, template, t, title, {"columns": int(columns)} if columns else None))
+        try:
+            doc = get_store().create_document(*new_document(
+                cfg, house, template, t, title, {"columns": int(columns)} if columns else None))
+        except (ValueError, TypeError) as exc:  # Invalid is a ValueError: say why (gh #41)
+            return _err(exc)
         return f"Created {doc['id']} ({title!r}, template {template})."
 
     for lc_tool in CODRAFT_TOOLS:

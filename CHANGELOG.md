@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.17 — 2026-11-07
+
+- **Fixed: a template `check` called ok then failed on every create path (#41).** A
+  `templates_dir` template now gets the same checks as a new document's blocks when it loads:
+  the block type, its content fields, its layout (span, role, pin, variant) and `refs`. A
+  template that fails is skipped with the reason, as invalid JSON already was (#27): it isn't
+  offered in the New document dialog or `/api/config`, and the server logs why at startup.
+  - `check` prints `[warn] templates: …/status.json skipped: blocks[0].type 'quote' is not a
+    block type (text, heading, …)`.
+  - `new --template status` exits 2 with `template 'status' was skipped: <file>: <reason>`
+    instead of a traceback, and so do MCP `create_document` and `POST /api/docs` (400).
+  - MCP `create_document` now returns `ERROR: <reason>` for any refusal while creating (for
+    example `columns` out of range) instead of an opaque tool error.
+- **Fixed: a malformed deployer theme value broke the Word and PowerPoint exports.** A
+  `[codraft.themes.*]` value such as `font_size = "big"` passed `check`, then made the
+  `.docx` and `.pptx` exports fail. Deployer theme values now get the checks the editor's
+  theme controls use. A bad value is dropped (the theme keeps its other values), `check`
+  prints `[warn] themes: themes.house.font_size ignored: font_size must be a number`, and the
+  server logs it at startup.
+- `check` now warns when `custom_css` names a `.css` file that doesn't exist; the editor
+  would otherwise run with no custom CSS and no notice outside the server log.
+
 ## 0.5.16 — 2026-11-06
 
 - **Fixed: a pending suggestion on a deleted block was stuck (#39).** If the block an agent

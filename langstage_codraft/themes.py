@@ -160,6 +160,7 @@ BUILTIN_THEMES: dict[str, dict[str, Any]] = {
 _custom: dict[str, dict[str, Any]] = {}
 _allowed: list[str] | None = None
 _default: str | None = None
+_issues: list[str] = []  # why deployer theme values were left out (gh #41)
 # Themes authors saved from a document ("Save as theme"); the server installs the store's
 # list here, so they survive restarts and show up for every document.
 _saved: Callable[[], dict[str, dict[str, Any]]] | None = None
@@ -174,10 +175,31 @@ def configure(custom: dict[str, dict[str, Any]] | None, allowed: list[str] | Non
               default: str | None = None) -> None:
     """Install deployer themes (from ``[codraft.themes.*]``), the allow-list and the
     deployer's ``default_theme`` (what a document whose theme isn't offered falls back to)."""
-    global _custom, _allowed, _default
-    _custom = {k: dict(v) for k, v in (custom or {}).items() if isinstance(v, dict)}
+    global _custom, _allowed, _default, _issues
+    _custom, _issues = {}, []
+    for name, t in (custom or {}).items():
+        if not isinstance(t, dict):
+            _issues.append(f"themes.{name} skipped: expected a table of theme values")
+            continue
+        kept: dict[str, Any] = {}
+        for k, v in t.items():
+            if k not in THEME_KEYS:  # label, description, ... pass through
+                kept[k] = v
+                continue
+            # A malformed value would break the exports that read it (float("big") in the
+            # Word styles), so drop it and say so; the theme keeps its other values (gh #41).
+            try:
+                kept.update(clean_values({k: v}))
+            except ValueError as exc:
+                _issues.append(f"themes.{name}.{k} ignored: {exc}")
+        _custom[name] = kept
     _allowed = list(allowed) if allowed else None
     _default = default or None
+
+
+def theme_issues() -> list[str]:
+    """Why a deployer theme (or one of its values) was left out, for ``check`` and the log."""
+    return list(_issues)
 
 
 def all_themes() -> dict[str, dict[str, Any]]:

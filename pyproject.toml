@@ -50,10 +50,13 @@ dependencies = [
     "pillow>=10",
     # Codraft over MCP: any agent harness can co-author (mounted at /mcp; `langstage-codraft mcp`).
     "mcp>=2.0,<3",
+    # The built-in co-author's web_search tool. Without it the agent guesses URLs. Light:
+    # one binary wheel (primp) beyond what is already here (lxml comes with python-docx).
+    "ddgs>=9.0",
 ]
 
 [project.optional-dependencies]
-search = ["ddgs>=9.0"]
+search = ["ddgs>=9.0"]  # kept so "langstage-codraft[search]" still installs; ddgs is a default dependency now
 anthropic = ["langchain-anthropic>=1.0"]
 video = ["imageio>=2.30", "imageio-ffmpeg>=0.5", "numpy>=1.26"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "imageio>=2.30", "imageio-ffmpeg>=0.5", "numpy>=1.26"]

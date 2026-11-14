@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased
+
+**The co-author's side of the 0.8.0 re-evaluation.** A strong model wrote the same four
+documents again on 0.8.0. These are the agent and tool problems it still had.
+
+- **The agent sees the figure it drew.** `draw_figure` returns a screenshot of the figure as it
+  sits on the page (the block from the same print view as export, at twice its size) and a
+  label check measured on the rendered SVG at its printed size: labels cut off by the canvas,
+  type that prints under 6.5 px, labels on top of each other, a label wider than the box it
+  sits in, a line or an arrowhead through a label, and one arrow drawn along another. Each
+  finding names the label and the line with their positions in viewBox units. Over MCP the tool
+  returns the image too. New: `Renderer.figure_shot` and `Renderer.svg_issues`.
+- **Fixed: giant arrowheads.** An SVG marker is sized in multiples of the stroke width unless it
+  says otherwise, so a thick connector (stroke-width 10) with `markerWidth="11"` drew a
+  110-unit arrowhead over its labels. A marker more than four times as wide as the thickest
+  line using it is rewritten to user units at three times that line's width when the figure
+  is stored.
+- **Redraws are capped.** One figure can be drawn five times in a turn. From the third version
+  the agent is told to simplify instead of nudging coordinates; a sixth is refused and the
+  agent tells you what is still wrong.
+- **Sources are not cut to make a page fit.** Deleting the reference list, or a block that
+  cites a source, waits for your approval in every approval mode, `auto` included
+  (`Store.propose(..., hold=True)`). The prompt rule against deleting or shortening content
+  for layout now covers the agent's own content and every mode.
+- **Web search is part of the default install** (`ddgs`, one binary wheel beyond what was
+  already required; the `[search]` extra still installs). When it can't be imported,
+  `langstage-codraft check` says so and the agent is told it has no search and must not guess
+  URLs. `web_search` reports "no results" as an answer, not as an outage, and says whether the
+  service rate-limited, timed out or could not be reached.
+- **Guessed URLs stop being opened.** After six failed fetches in a turn `fetch_url` only opens
+  URLs that `web_search` returned, and 24 fetches is the limit for a turn. A failed fetch says
+  what the status means in one line. `fetch_url` returns 4,000 characters by default (was
+  6,000); `offset` still pages.
+- **`generate_image` is offered only where it can work**: `OPENROUTER_API_KEY` is set and
+  either the model is an `openrouter:` one or `LANGSTAGE_CODRAFT_IMAGE_MODEL` is set. An
+  OpenRouter key that sits in the environment beside another provider's model no longer gets
+  the tool. **Changed:** `research_tools()` takes the model spec (`research_tools(spec)`);
+  called with none, it leaves `generate_image` out unless `LANGSTAGE_CODRAFT_IMAGE_MODEL` is
+  set. A 401 or 402 from the image service comes back as one plain line.
+- **Word counts where a length target needs them.** `get_document` gives the total,
+  `read_blocks` each block's count (and the accepted and proposed counts of a pending edit),
+  and `propose_edit` the words before and after with the change in percent. The agent is told
+  to work out the target number and check against it before it reports a length as met.
+- **One block per paragraph, enforced.** A text draft of two or more paragraphs and more than
+  150 words is split into one block per paragraph, in order, by `propose_edit` (when the
+  block held a single paragraph), `propose_insert` and `insert_blocks`. Lists, tables, quotes
+  and code stay with their paragraph. `keep_together` keeps a draft whole; a block you already
+  keep as several paragraphs, a fixed-height block and a styled one are never split.
+- **Fewer needless history lookups.** `read_blocks` marks a block HISTORY when you revised it
+  or resolved a comment on it; `get_block_history` answers in one line for any other block.
+- **Less sent to the model.** Tool results from earlier turns are sent cut down in later
+  turns: a fetched page keeps its opening lines, an old outline or block read is replaced by
+  a note to read it again. The thread keeps them whole. Replaying the evaluation's threads,
+  this is 40% less message text on the two long documents and 36% over all five.
+  `CodraftMiddleware(trim_history=False)` turns it off. `view_pages` no longer attaches a page
+  that renders exactly as it did when the agent last looked in the same turn.
+- `langstage-codraft check` gains `search` and `images` lines for the built-in agent, and
+  `/api/config`'s agent info gains `web_search` and `image_generation`.
+
 ## 0.8.0 — 2026-11-14
 
 **Layout building blocks (gh #52).** Things that sit side by side are now blocks that flow

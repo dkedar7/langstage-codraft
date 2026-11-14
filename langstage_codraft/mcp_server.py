@@ -38,7 +38,7 @@ MCP_INSTRUCTIONS = (
 # Tools whose LangChain signature we expose 1:1, plus a leading doc_id.
 # The three view tools are re-registered below (they return images). calculate is for the
 # built-in co-author's own arithmetic: it takes no document, and an MCP client has its own.
-_SKIP = {"view_pages", "view_sketch", "view_upload", "calculate"}
+_SKIP = {"view_pages", "view_sketch", "view_upload", "calculate", "draw_figure"}
 
 
 def _cfg(doc_id: str) -> dict:
@@ -115,6 +115,31 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
         out += [Image(data=Path(s["path"]).read_bytes(), format="jpeg") for s in shots]
         return out
 
+    lc_draw = next(t for t in CODRAFT_TOOLS if t.name == "draw_figure")
+
+    def draw_figure(doc_id: str, svg: str, block_id: str | None = None, after_block_id: str | None = None,
+                    label: str = "", title: str = "", source: str = "", caption: str = "",
+                    full_width: bool = False, figure_box: bool = True, note: str = "",
+                    comment_id: str | None = None) -> list:
+        # The agent tool, plus what it attaches for a vision model: the figure as it sits on
+        # the page. The label check is in the text either way.
+        try:
+            text, art = lc_draw.func(svg=svg, block_id=block_id, after_block_id=after_block_id, label=label,
+                                     title=title, source=source, caption=caption, full_width=full_width,
+                                     figure_box=figure_box, note=note, comment_id=comment_id, config=_cfg(doc_id))
+        except Exception as exc:  # noqa: BLE001
+            return [_err(exc)]
+        out: list = [text]
+        for path in (art or {}).get("images", []):
+            try:
+                out.append(Image(data=Path(path).read_bytes(), format="jpeg"))
+            except OSError:
+                pass
+        return out
+
+    server.tool(name="draw_figure",
+                description=lc_draw.description + "\n\ndoc_id: the document to work on.")(draw_figure)
+
     @server.tool(description="Look at an uploaded file: images come back as images (e.g. reference pages to match).")
     def view_upload(doc_id: str, upload_id: str) -> list:
         try:
@@ -179,5 +204,5 @@ def image_b64(path: str) -> str:
 
 def describe_tools() -> str:
     names = ["list_documents", "create_document"] + [t.name for t in CODRAFT_TOOLS if t.name not in _SKIP] + [
-        "view_pages", "view_sketch"]
+        "view_pages", "view_sketch", "draw_figure"]
     return json.dumps(names)

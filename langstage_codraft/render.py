@@ -216,6 +216,47 @@ class Renderer:
         finally:
             await ctx.close()
 
+    async def figure_shot(self, doc_id: str, block_ref: str, *, preview: bool = False,
+                          svg: str | None = None) -> dict | None:
+        """One block as it sits on the page, for the agent's eyes: a 2x screenshot of the
+        block (frame, title and caption included), saved under out_dir/vision. It comes from
+        the same print view as ``view_pages`` and the exports. ``block_ref`` is a block id,
+        or a pending insert's suggestion id with ``preview``. With ``svg`` (the figure's
+        source) the result also carries ``issues``: label problems measured in the browser at
+        the size the figure has on the page (see ``FIGURE_CHECK_JS``). None when the block
+        isn't on any page."""
+        ctx, page = await self._open(doc_id, scale=2.0, preview=preview)
+        try:
+            el = await page.query_selector(f'.cd-item[data-block-id="{block_ref}"]')
+            if el is None:
+                return None
+            img = await el.query_selector("img")
+            box = await (img or el).bounding_box()
+            if not box or box["width"] < 2 or box["height"] < 2:
+                return None
+            on_page = await el.evaluate(
+                "(n) => 1 + Array.from(document.querySelectorAll('.cd-page')).indexOf(n.closest('.cd-page'))")
+            d = self.out_dir / "vision" / doc_id
+            d.mkdir(parents=True, exist_ok=True)
+            path = d / f"{int(time.time() * 1000)}-fig-{re.sub(r'[^A-Za-z0-9_]', '', block_ref)}.jpg"
+            path.write_bytes(await el.screenshot(type="jpeg", quality=82))
+            out = {"path": str(path), "page": on_page, "width": round(box["width"]), "height": round(box["height"]),
+                   "issues": []}
+            if svg:
+                out["issues"] = await _figure_issues(ctx, svg, box["width"], box["height"])
+            return out
+        finally:
+            await ctx.close()
+
+    async def svg_issues(self, svg: str, width: float = 640, height: float = 0) -> list[str]:
+        """The label checks alone, for an SVG that isn't on a page (see ``figure_shot``)."""
+        browser = await self._browser_ready()
+        ctx = await browser.new_context(viewport={"width": 1400, "height": 1000})
+        try:
+            return await _figure_issues(ctx, svg, width, height)
+        finally:
+            await ctx.close()
+
     async def structure(self, doc_id: str, *, scale: float = 2.0) -> dict:
         """Where every block landed on every page (px, page-relative), with a PNG of each
         item that isn't editable text (pictures for PPTX/DOCX)."""
@@ -309,6 +350,169 @@ class Renderer:
             return buf.getvalue()
         finally:
             await ctx.close()
+
+
+# Label problems in a drawn figure, measured on the rendered SVG at the size it has on the
+# page: text cut off by the canvas, text too small to read, labels that overlap each other,
+# a label wider than the box it sits in, lines or arrowheads that run through a label, and
+# one line drawn along another.
+# Returns short sentences for the agent; the first eight are enough to act on.
+FIGURE_CHECK_JS = r"""() => {
+  const svg = document.querySelector('svg');
+  if (!svg) return [];
+  const R = svg.getBoundingClientRect();
+  const out = [];
+  const name = (t) => '"' + t.textContent.trim().replace(/\s+/g, ' ').slice(0, 40) + '"';
+  const shown = (e) => { const cs = getComputedStyle(e);
+    return cs.display !== 'none' && cs.visibility !== 'hidden' && Number(cs.opacity) > 0.05; };
+  const inDefs = (e) => !!e.closest('defs, marker, clipPath, mask, pattern, symbol');
+  const texts = [...svg.querySelectorAll('text')].filter((t) => t.textContent.trim() && !inDefs(t) && shown(t))
+    .map((t) => ({ el: t, r: t.getBoundingClientRect(), name: name(t) })).filter((t) => t.r.width > 0);
+  const px = (v) => Math.round(v);
+  // Positions are reported in viewBox units, the numbers the SVG was written in.
+  const sm = svg.getScreenCTM();
+  const inv = sm ? sm.inverse() : null;
+  const toUser = (x, y) => (inv ? { x: inv.a * x + inv.c * y + inv.e, y: inv.b * x + inv.d * y + inv.f } : { x, y });
+  const pt = (p) => { const u = toUser(p.x, p.y); return `(${px(u.x)}, ${px(u.y)})`; };
+  const span = (r) => { const a = toUser(r.left, r.top), b = toUser(r.right, r.bottom);
+    return `x ${px(a.x)}-${px(b.x)}, y ${px(a.y)}-${px(b.y)}`; };
+  const hex = (c) => { const m = /rgba?\((\d+), (\d+), (\d+)/.exec(c || '');
+    return m ? '#' + [m[1], m[2], m[3]].map((v) => Number(v).toString(16).padStart(2, '0')).join('') : (c || ''); };
+  // 1. cut off by the canvas
+  for (const t of texts) {
+    const sides = [['left', R.left - t.r.left], ['right', t.r.right - R.right], ['top', R.top - t.r.top],
+                   ['bottom', t.r.bottom - R.bottom]].sort((a, b) => b[1] - a[1]);
+    if (sides[0][1] > 1.5)
+      out.push(`${t.name} is cut off at the ${sides[0][0]} edge of the figure (by ${px(sides[0][1])} px): move it inside or enlarge the viewBox.`);
+  }
+  // 2. too small to read at the size the figure prints
+  const small = [];
+  for (const t of texts) {
+    const m = t.el.getScreenCTM();
+    const k = m ? Math.hypot(m.a, m.b) : 1;
+    const size = parseFloat(getComputedStyle(t.el).fontSize) * k;
+    if (size < 6.5) small.push({ t, size });
+  }
+  if (small.length) {
+    const worst = small.reduce((a, b) => (a.size < b.size ? a : b));
+    out.push(`${small.length} label(s) print smaller than 6.5 px (e.g. ${worst.t.name} at ${worst.size.toFixed(1)} px): too small to read. `
+      + 'Use larger font sizes relative to the viewBox, fewer labels, or make the figure full width.');
+  }
+  const inter = (a, b) => { const w = Math.min(a.right, b.right) - Math.max(a.left, b.left);
+    const h = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top); return w > 0 && h > 0 ? w * h : 0; };
+  // 3. labels on top of each other
+  for (let i = 0; i < texts.length; i++) for (let j = i + 1; j < texts.length; j++) {
+    const a = texts[i], b = texts[j];
+    if (a.el.contains(b.el) || b.el.contains(a.el)) continue;
+    const area = inter(a.r, b.r);
+    if (area > 0.15 * Math.min(a.r.width * a.r.height, b.r.width * b.r.height) && area > 12)
+      out.push(`${a.name} (${span(a.r)}) and ${b.name} (${span(b.r)}) overlap each other: move one clear of the other.`);
+  }
+  // 4. a label wider or taller than the box it sits in
+  const shapes = [...svg.querySelectorAll('rect, ellipse, circle')].filter((e) => !inDefs(e) && shown(e)).map((e) => {
+    const cs = getComputedStyle(e);
+    return { r: e.getBoundingClientRect(), drawn: cs.fill !== 'none' || cs.stroke !== 'none' };
+  }).filter((s) => s.drawn && s.r.width > 8 && s.r.height > 8 && s.r.width * s.r.height < 0.6 * R.width * R.height);
+  for (const t of texts) {
+    const cx = (t.r.left + t.r.right) / 2, cy = (t.r.top + t.r.bottom) / 2;
+    let box = null;
+    for (const s of shapes) {
+      if (cx > s.r.left && cx < s.r.right && cy > s.r.top && cy < s.r.bottom
+          && (!box || s.r.width * s.r.height < box.width * box.height)) box = s.r;
+    }
+    if (!box) continue;
+    const wide = Math.max(box.left - t.r.left, t.r.right - box.right);
+    const tall = Math.max(box.top - t.r.top, t.r.bottom - box.bottom);
+    if (wide > 2) out.push(`${t.name} is wider than the box it sits in (it sticks out by ${px(wide)} px): shorten it, split it into two lines, or widen the box.`);
+    else if (tall > 2) out.push(`${t.name} is taller than the box it sits in (by ${px(tall)} px): enlarge the box or use a smaller label.`);
+  }
+  // 5. lines and arrowheads through a label
+  const hitLine = new Map(), hitHead = new Map(), lines = [];
+  const geo = [...svg.querySelectorAll('line, polyline, path')].filter((e) => !inDefs(e) && shown(e));
+  for (const g of geo) {
+    const cs = getComputedStyle(g);
+    if (cs.stroke === 'none' || !g.getTotalLength) continue;
+    if (g.tagName === 'path' && cs.fill !== 'none') continue;  // a filled shape, not a connector
+    const m = g.getScreenCTM();
+    if (!m) continue;
+    let len = 0;
+    try { len = g.getTotalLength(); } catch (e) { continue; }
+    if (!(len > 0)) continue;
+    const k = Math.hypot(m.a, m.b);
+    const half = (parseFloat(cs.strokeWidth) || 1) * k / 2;
+    const at = (d) => { const p = g.getPointAtLength(d); return { x: m.a * p.x + m.c * p.y + m.e, y: m.b * p.x + m.d * p.y + m.f }; };
+    const step = Math.max(1.5 / k, len / 400);
+    if (len * k > 12) {
+      const pts = [];
+      for (let i = 0; i <= 40; i++) pts.push(at(len * i / 40));
+      lines.push({ pts, half, what: `${hex(cs.stroke)}, from ${pt(at(0))} to ${pt(at(len))}` });
+    }
+    for (let d = 0; d <= len; d += step) {
+      const p = at(d);
+      for (const t of texts) {
+        if (hitLine.has(t)) continue;
+        // A text box is taller than its glyphs: a line has to reach well into it to touch them.
+        const inset = t.r.height * 0.2 - half;
+        if (p.x > t.r.left + inset && p.x < t.r.right - inset && p.y > t.r.top + inset && p.y < t.r.bottom - inset)
+          hitLine.set(t, `${hex(cs.stroke)}, from ${pt(at(0))} to ${pt(at(len))}`);
+      }
+    }
+    for (const [attr, d] of [['marker-end', len], ['marker-start', 0]]) {
+      const ref = /url\(["']?#([^"')]+)/.exec(cs.getPropertyValue(attr) || g.getAttribute(attr) || '');
+      const mk = ref && svg.querySelector('#' + CSS.escape(ref[1]));
+      if (!mk) continue;
+      const user = mk.getAttribute('markerUnits') === 'userSpaceOnUse';
+      const unit = (user ? 1 : (parseFloat(cs.strokeWidth) || 1)) * k;
+      const w = (parseFloat(mk.getAttribute('markerWidth')) || 3) * unit, h = (parseFloat(mk.getAttribute('markerHeight')) || 3) * unit;
+      // The head lies along the line: mostly behind the line's end, and ahead of it by
+      // whatever part of the marker lies past its reference point (refX). A label just
+      // beyond the tip is clear of it.
+      const p = at(d), q = at(d ? Math.max(0, len - Math.min(len, 2 / k)) : Math.min(len, 2 / k));
+      const n = Math.hypot(p.x - q.x, p.y - q.y) || 1;
+      const ux = (p.x - q.x) / n, uy = (p.y - q.y) / n;
+      const vb = (mk.getAttribute('viewBox') || '').trim().split(/[\s,]+/).map(Number);
+      const across = vb.length === 4 && vb[2] > 0 ? vb[2] : (parseFloat(mk.getAttribute('markerWidth')) || 3);
+      const ahead = Math.min(1, Math.max(0, 1 - (parseFloat(mk.getAttribute('refX')) || 0) / across)) * w;
+      const f = { x: p.x + ux * ahead, y: p.y + uy * ahead }, r = { x: p.x - ux * (w - ahead), y: p.y - uy * (w - ahead) };
+      const dx = Math.abs(ux), dy = Math.abs(uy);
+      const ex = dy > 2 * dx ? h / 2 : dx > 2 * dy ? 1 : h * 0.35, ey = dx > 2 * dy ? h / 2 : dy > 2 * dx ? 1 : h * 0.35;
+      const head = { left: Math.min(f.x, r.x) - ex, right: Math.max(f.x, r.x) + ex,
+                     top: Math.min(f.y, r.y) - ey, bottom: Math.max(f.y, r.y) + ey };
+      const glyphs = (r) => ({ left: r.left, right: r.right, top: r.top + r.height * 0.2, bottom: r.bottom - r.height * 0.2 });
+      for (const t of texts) if (!hitLine.has(t) && inter(head, glyphs(t.r)) > 6)
+        hitHead.set(t, `at ${pt(p)}, on the ${hex(cs.stroke)} line ${d ? 'from ' + pt(at(0)) : 'to ' + pt(at(len))}`);
+    }
+  }
+  // 6. one connector drawn along another (an arrow on top of an arrow)
+  for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) {
+    const a = lines[i], b = lines[j];
+    const near = (a.half + b.half) * 0.75 + 1;
+    const on = (p, q) => p.pts.filter((u) => q.pts.some((v) => Math.hypot(u.x - v.x, u.y - v.y) < near)).length / p.pts.length;
+    if (Math.max(on(a, b), on(b, a)) > 0.4)
+      out.push(`Two lines are drawn on top of each other: (${a.what}) and (${b.what}). Put them side by side, with a gap.`);
+  }
+  for (const [t, line] of hitLine) out.push(`A line (${line}) runs through ${t.name} (${span(t.r)}): move the label or the line so they are clear of each other.`);
+  for (const [t, head] of hitHead) out.push(`An arrowhead (${head}) covers part of ${t.name} (${span(t.r)}): move the label away from the arrow's end.`);
+  return out.slice(0, 8);
+}"""
+
+
+async def _figure_issues(ctx: Any, svg: str, width: float, height: float = 0) -> list[str]:
+    """Run ``FIGURE_CHECK_JS`` on ``svg`` drawn ``width`` x ``height`` CSS px (the box its
+    <img> has on the page; height 0 follows the viewBox). A check that fails to run reports
+    nothing: it must never stop the figure from being drawn."""
+    page = await ctx.new_page()
+    try:
+        box = f"width:{width:.1f}px;" + (f"height:{height:.1f}px;" if height else "")
+        await page.set_content(
+            "<!doctype html><html><body style='margin:0'>"
+            f"<div id='f' style='{box}'>{svg}</div>"
+            "<style>#f>svg{width:100%;height:100%;display:block}</style></body></html>")
+        return [str(x) for x in await page.evaluate(FIGURE_CHECK_JS)]
+    except Exception:  # noqa: BLE001
+        return []
+    finally:
+        await page.close()
 
 
 def _esc(s: str) -> str:

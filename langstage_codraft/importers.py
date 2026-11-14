@@ -76,7 +76,7 @@ class _Builder:
         self.out = Imported()
         self.resolve = resolve
         self._hashes: dict[str, int] = {}
-        self._ref_n: dict[str, int] = {}
+        self._ref_n: dict[str, str] = {}   # a source's identity -> its citation key
         self._noted: set[str] = set()
         self.any_refs = False
 
@@ -98,11 +98,21 @@ class _Builder:
         self.out.blocks.append(b)
         return b
 
-    def ref_number(self, ref: dict) -> int:
-        """The number the References block will give this source: references are listed in
-        reading order, de-duplicated by URL (or title)."""
-        key = (ref.get("url") or ref["title"]).lower()
-        return self._ref_n.setdefault(key, len(self._ref_n) + 1)
+    def cite(self, ref: dict) -> str:
+        """The citation that stands where a footnote marker stood: ``[@key]``, which prints as
+        the source's number in the References block. Gives ``ref`` its key (the same source
+        always gets the same one, and two sources never share one)."""
+        from .refs import auto_key, identity
+
+        ident = identity(ref)
+        if ident not in self._ref_n:
+            base, key, n = auto_key(ref), auto_key(ref), 2
+            while key in self._ref_n.values():
+                key = f"{base}-{n}"
+                n += 1
+            self._ref_n[ident] = key
+        ref["key"] = self._ref_n[ident]
+        return f"[@{ref['key']}]"
 
     # ---------------------------------------------------------------- images
     def asset(self, filename: str, data: bytes, what: str) -> str | None:
@@ -237,7 +247,13 @@ def _ref_from(text_md: str) -> dict | None:
     if url and title != url:
         title = re.sub(r"\s+", " ", title.replace(url, " ")).strip(" .,;:()<>") or url
     title = title or url
-    return {"title": title[:500], "url": url} if title else None
+    if not title:
+        return None
+    from .refs import parse_citation
+
+    # "Rivera, A. (2024). Title. Publisher." becomes authors, year, title and publisher.
+    fields = parse_citation(title) if title != url else {"title": title}
+    return {**{k: v[:500] for k, v in fields.items()}, "url": url}
 
 
 # ------------------------------------------------------------------------------ Markdown
@@ -594,9 +610,10 @@ def from_markdown(text: str, *, resolve: Resolver | None = None, split: str = "p
                     b.note(f"footnote [^{m.group(1)}] has no definition; its marker was kept as text")
                     return m.group(0)
                 used_foots.add(key)
+                mark = b.cite(ref)
                 if ref not in refs:
                     refs.append(ref)
-                return f"[{b.ref_number(ref)}]"
+                return mark
 
             seg = re.sub(r"\[\^([^\]\s]+)\]", foot, seg)
             if links:
@@ -1018,9 +1035,10 @@ def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
                 txt = notes_text.get((p[1], p[2]))
                 ref = _ref_from(txt) if txt else None
                 if ref is not None:
+                    mark = b.cite(ref)
                     if ref not in refs:
                         refs.append(ref)
-                    merged.append([f"[{b.ref_number(ref)}]", None, ""])
+                    merged.append([mark, None, ""])
                 continue
             if p[0] != "text" or not p[1]:
                 continue

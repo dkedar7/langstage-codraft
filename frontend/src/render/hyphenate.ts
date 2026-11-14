@@ -97,9 +97,9 @@ const SKIP = new Set(["CODE", "PRE", "A", "SUP", "SUB", "KBD", "SAMP"]);
 
 /** Add soft hyphens to rendered Markdown: always inside table cells (they only take effect
  *  when a table is too wide to keep its words whole), and in paragraphs when `prose` is set. */
-export function hyphenateHtml(html: string, lang: string | null | undefined, prose: boolean): string {
+export function hyphenateHtml(html: string, lang: string | null | undefined, prose: boolean, cells = false): string {
   if (!ready[base(lang)] || typeof document === "undefined") return html;
-  if (!prose && !html.includes("<table")) return html;
+  if (!prose && !cells && !html.includes("<table")) return html;
   const tpl = document.createElement("template");
   tpl.innerHTML = html;
   const walker = document.createTreeWalker(tpl.content, NodeFilter.SHOW_TEXT);
@@ -107,7 +107,7 @@ export function hyphenateHtml(html: string, lang: string | null | undefined, pro
   while (walker.nextNode()) nodes.push(walker.currentNode as Text);
   for (const node of nodes) {
     let wanted = false;
-    let cell = false;
+    let cell = cells;   // the whole fragment is one table cell
     let skip = false;
     for (let el = node.parentElement; el; el = el.parentElement) {
       if (SKIP.has(el.tagName)) skip = true;

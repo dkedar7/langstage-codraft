@@ -192,7 +192,8 @@ class Renderer:
                                max_pages: int = 4, preview: bool = False) -> list[dict]:
         """JPEG screenshots for the agent's eyes, saved under out_dir/vision. Each shot
         carries ``total`` (pages in the document), ``more`` (pages asked for but cut by
-        ``max_pages``) and ``blocks`` (the block ids on that page). ``preview`` renders
+        ``max_pages``), ``blocks`` (the block ids on that page) and ``overflow`` (the blocks
+        on it whose content is cut off by a fixed height or the page). ``preview`` renders
         the document with its pending suggestions applied."""
         ctx, page = await self._open(doc_id, scale=1.0, preview=preview)
         try:
@@ -203,6 +204,9 @@ class Renderer:
             on_page = await page.evaluate(
                 "() => Array.from(document.querySelectorAll('.cd-page')).map((pg) => Array.from(new Set("
                 "Array.from(pg.querySelectorAll('.cd-item[data-block-id]')).map((n) => n.dataset.blockId))))")
+            cut = await page.evaluate(
+                "() => Array.from(document.querySelectorAll('.cd-page')).map((pg) => Array.from(new Set("
+                "Array.from(pg.querySelectorAll('.cd-item[data-overflow=\"1\"]')).map((n) => n.dataset.blockId))))")
             d = self.out_dir / "vision" / doc_id
             d.mkdir(parents=True, exist_ok=True)
             shots = []
@@ -211,7 +215,8 @@ class Renderer:
                 path = d / f"{stamp}-p{p}.jpg"
                 path.write_bytes(data)
                 shots.append({"page": p, "path": str(path), "total": total, "more": asked[max_pages:],
-                              "blocks": on_page[p - 1] if p - 1 < len(on_page) else []})
+                              "blocks": on_page[p - 1] if p - 1 < len(on_page) else [],
+                              "overflow": cut[p - 1] if p - 1 < len(cut) else []})
             return shots
         finally:
             await ctx.close()

@@ -38,8 +38,9 @@ you ask it to.
   history: **Undo** on the toast, or **Document → Recently deleted** later (this also covers a
   deletion the agent suggested and you accepted). The agent can do the same when you ask for
   something back (`list_deleted_blocks`, `restore_block`).
-- **Sources stay with each block.** The agent cites as it writes, and a `references` block
-  compiles them.
+- **Sources stay with each block.** The agent cites as it writes: `[@key]` in the text prints
+  as the source's number, and a `references` block lists them with authors, year and
+  publisher (see [References and citations](#references-and-citations)).
 - **The agent sees the page.** `view_pages` gives a vision model screenshots of the rendered
   pages, so it can fix layout problems you'd spot by eye.
 - **Export matches the screen.** PDF, PNG/JPG per page, or a self-contained HTML zip, all
@@ -270,7 +271,7 @@ evaluation of 0.5.17, a one-pager like the one above took 266 tool calls, 190 of
 blocks to pixel positions, and still came out wrong.
 
 - A row or a set of tiles is one block. It moves to the next column or page as a whole and
-  never splits; one taller than a page is flagged as overflow, like an oversized table.
+  never splits; one taller than a page is flagged as overflow.
 - Cells that would be narrower than an inch stack instead (a four-cell row put in one column of
   a three-column page), and six tiles that don't fit one line take two.
 - Word export writes a row and the tiles as borderless tables and shades a band. PowerPoint
@@ -574,6 +575,13 @@ unknown document, 503 when Chromium isn't installed).
   text block looks like a table block, and its alignment row (`:--`, `:-:`, `--:`) is honoured.
   A table block takes `"align": ["left", "right", ...]`, one entry per column. Word export
   writes both as real tables.
+- **Table cells are Markdown.** A cell of a table block is one line of Markdown: `**bold**`,
+  `*italic*`, `` `code` ``, links, `m^2^`, `CO~2~` and citations. `"total": true` sets the last
+  row as a total: bold, under a rule.
+- **A long table continues on the next page.** A table splits between rows, in a column or
+  across pages, and every continued piece repeats the header row. A split keeps at least two
+  rows on each side, so a page never ends with a lone header or starts with a single row. A
+  table with a fixed height stays one box. Word marks the header row to repeat as well.
 - **Captions wrap.** A figure's caption, title and source line take the lines they need. A
   figure with a fixed height keeps that height: the picture or chart gives up the room.
 - **Hyphenation.** Justified text is hyphenated by default, which evens out the word gaps
@@ -587,14 +595,53 @@ unknown document, 503 when Chromium isn't installed).
   shows a space there. Codraft's own upload reader uses PDFium for a browser-printed PDF, so
   an export you upload back as reference material reads as whole words.
 
+## References and citations
+
+A block's sources carry what a reference list prints:
+
+```json
+{"key": "rivera2024", "title": "Fleet costs", "authors": "Rivera, A. and Chen, B.", "year": "2024",
+ "publisher": "Example Press", "url": "https://example.org/fleet", "accessed": "2026-01-05",
+ "note": "supports the cost table"}
+```
+
+- **Cite by key.** `[@rivera2024]` in a text block, a callout, a row cell or a table cell prints
+  as `[2]`, linked to entry 2 of the list; `[@rivera2024; @chen2023]` prints as `[2, 1]`. A
+  source without a `key` gets one from its first author and year (or its title), shown in the
+  Block panel under the source. A key no source has prints as `[?]`.
+- **Numbers follow first appearance.** A source is numbered where the text first cites it, or
+  where the first block that carries it stands. Move a block and the numbers follow; nothing is
+  typed in by hand.
+- **The list prints** `Authors (Year). Title. Publisher. URL. Accessed DATE.` in the
+  `references` block (numbered, or `hanging` for a magazine-style list), in PDF, HTML, PNG,
+  Word and PowerPoint.
+- **`note` is private.** It is for you and the agent ("supports the cost table") and is never
+  printed. Before 0.9.0 it was printed after the title.
+- **Import** turns footnotes into sources cited by key, and reads a footnote shaped like
+  `Rivera, A. (2024). Title. Publisher.` into authors, year, title and publisher.
+
 ## How the layout works
 
 Blocks are measured in the browser at the width they'll occupy. A pure function then paginates
 them (see `frontend/src/layout/paginate.ts`, which has its own unit tests):
 
 - Blocks flow column-major. A full-width block balances the columns above it.
-- A pinned block reserves a rectangle on the page instead of wrapping text around it.
+- A pinned block reserves a rectangle on the page instead of wrapping text around it. Content
+  taller than a pinned or fixed-height block is flagged as overflow in the editor, and
+  `view_pages` names the block to the agent.
+- A block **anchored to the bottom** (`"layout": {"anchor": "bottom"}`, Block panel → *Stick to
+  the bottom of the page*) sits at the foot of the page the flow has reached, and later blocks
+  flow above it. It is how a call to action, a closing band or a sign-off goes at the bottom
+  of a page: no pin and no reserved area. If it doesn't fit under what is already on the page,
+  it goes to the foot of the next one.
 - Text splits only at paragraph or line boundaries, keeping at least two lines on each side.
+  A table splits between rows and repeats its header.
+- **Back-fill.** A chart, picture, video, row or set of tiles that doesn't fit at the bottom of
+  a page used to move whole and leave the rest of the page empty. With back-fill on, the text
+  after it (up to the next heading) fills the gap and the figure opens the next column or page.
+  One figure steps aside at a time, so figures keep their order. It is on for new documents
+  (`"backfill": true` in settings; Document → *Let text fill the gap before a figure*). A
+  document saved before 0.9.0 keeps its pages as they were until you turn it on.
 - A block taller than a page is flagged rather than looping forever.
 - A row of cells and a set of number tiles are each one block, measured at their width like a
   table. They need no logic of their own in the paginator.

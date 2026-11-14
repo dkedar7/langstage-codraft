@@ -50,7 +50,7 @@ def test_outline_and_read(store, cfg_for):
     assert "audience=execs" in out and h["id"] in out and "1 open comment" in out
     assert "fixed height ~" in out and "1 ref(s)" in out
     body = call(read_blocks, cfg, block_ids=[t["id"], "blk_missing"])
-    assert "Some **bold** words here." in body and "ref: Src https://s" in body and "not found" in body
+    assert "Some **bold** words here." in body and "ref [@src]: Src. https://s" in body and "not found" in body
 
 
 def test_propose_edit_waits_for_approval(store, cfg_for):

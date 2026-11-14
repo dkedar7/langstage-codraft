@@ -83,6 +83,12 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
                   ))}
                 </div>
               </div>
+              <div className="col-span-2">
+                <label className="flex items-center gap-2" title="A chart, picture, row or tiles that does not fit at the bottom of a page lets the text after it (up to the next heading) fill the gap, and opens the next page itself.">
+                  <input type="checkbox" data-testid="backfill" checked={!!s.backfill} onChange={(e) => set({ backfill: e.target.checked })} />
+                  Let text fill the gap before a figure
+                </label>
+              </div>
               <div>
                 <span className="label">Pages</span>
                 <div className="flex gap-1">

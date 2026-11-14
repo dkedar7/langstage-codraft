@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { blockWidth, paginate, type LayoutResult, type MeasuredBlock, type Split } from "../layout/paginate";
 import { geometry } from "../layout/units";
 import type { Block, Settings, Theme } from "../types";
-import { BlockView, compileReferences, type RenderCtx } from "./BlockView";
+import { BlockView, type RenderCtx } from "./BlockView";
+import { citeNumbers, compileReferences } from "./refs";
 import { useHyphenation } from "./hyphenate";
 import { themeVars } from "./theme";
 
@@ -18,6 +19,41 @@ export interface Measured {
   height: number;
   natural: number;
   splits: Split[];
+  /** a table's header row: the top of the block that every continued piece repeats */
+  head?: number;
+}
+
+/** Rows a split keeps together on each side, so no piece is a lone header or a single row. */
+const MIN_ROWS = 2;
+
+/** The part of a row's bottom rule that lies below the row: with collapsed borders the rule
+ *  straddles the line between two rows, so a cut at the line would slice it in half. */
+function ruleBelow(row: HTMLTableRowElement | null | undefined): number {
+  const cell = row?.cells[0];
+  return cell ? Math.ceil((parseFloat(getComputedStyle(cell).borderBottomWidth) || 0) / 2) : 0;
+}
+
+/** Break points between the body rows of a table (y relative to `top`). A piece ends just
+ *  below the rule under its last row, and the next one starts there. */
+function rowSplits(table: HTMLTableElement, top: number): Split[] {
+  const rows = Array.from(table.tBodies).flatMap((tb) => Array.from(tb.rows));
+  const out: Split[] = [];
+  for (let k = MIN_ROWS; k <= rows.length - MIN_ROWS; k++) {
+    const y = rows[k].getBoundingClientRect().top - top + ruleBelow(rows[k - 1]);
+    out.push({ end: y, next: y });
+  }
+  return out;
+}
+
+/** A table block: it splits between rows, and each continued piece repeats the header row. */
+function tableSplits(root: HTMLElement): { splits: Split[]; head: number } {
+  const table = root.querySelector<HTMLTableElement>("table.cd-table");
+  if (!table) return { splits: [], head: 0 };
+  const top = root.getBoundingClientRect().top;
+  const first = table.tBodies[0]?.rows[0];
+  const head = table.tHead && first
+    ? Math.max(0, first.getBoundingClientRect().top - top + ruleBelow(table.tHead.rows[table.tHead.rows.length - 1])) : 0;
+  return { splits: rowSplits(table, top), head };
 }
 
 const SPLITTABLE_UNITS = new Set(["P", "LI", "BLOCKQUOTE", "PRE", "H1", "H2", "H3", "H4", "H5", "H6", "TABLE", "HR", "DIV"]);
@@ -59,6 +95,8 @@ function textSplits(root: HTMLElement): Split[] {
         splits.push({ end: y, next: y });
       }
     }
+    // A Markdown table inside the text splits between its rows too (its header is not repeated).
+    if (units[i].tagName === "TABLE") splits.push(...rowSplits(units[i] as HTMLTableElement, top));
     if (i < units.length - 1) {
       const nextTop = units[i + 1].getBoundingClientRect().top - top;
       // Keep a heading with the paragraph that follows it.
@@ -76,17 +114,29 @@ export function pinHeight(b: Block): number | null {
   return (p.anchor === "page" ? p.h : p.height) || null;
 }
 
-export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>): MeasuredBlock[] {
+/** Block types that split across pages (at the points measured in the DOM). */
+const SPLITS = new Set(["text", "references", "table"]);
+/** Figure-like blocks: with back-fill on, one that does not fit lets the text after it fill the gap. */
+const FLOATS = new Set(["image", "video", "chart", "row", "stat"]);
+/** Blocks whose content can be taller than a fixed height (and is then cut off). */
+export const CLIPS = new Set(["text", "callout", "row", "stat", "heading", "table", "references"]);
+
+export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>, opts: { backfill?: boolean } = {}): MeasuredBlock[] {
   return blocks.map((b) => {
     const meas = m[b.id] || { height: 24, natural: 24, splits: [] };
     const fixed = pinHeight(b) || b.layout.height;
+    const flows = (b.layout.role || "flow") === "flow" && !b.layout.pin;
     return {
       id: b.id,
-      kind: b.type === "page-break" ? "break" : (b.type === "text" || b.type === "references") && !fixed && !b.layout.pin ? "text" : "atomic",
+      kind: b.type === "page-break" ? "break" : SPLITS.has(b.type) && !fixed && !b.layout.pin ? "text" : "atomic",
       role: b.layout.role || "flow",
       full: b.layout.span === "full",
       height: fixed || meas.height,
       splits: meas.splits,
+      head: meas.head || 0,
+      float: !!opts.backfill && flows && FLOATS.has(b.type) && b.layout.anchor !== "bottom",
+      anchor: flows && b.layout.anchor === "bottom" ? "bottom" : null,
+      natural: fixed && CLIPS.has(b.type) ? meas.natural : undefined,
       pin: b.layout.pin
         ? b.layout.pin.anchor === "page"
           ? { anchor: "page" as const, page: b.layout.pin.page, top: b.layout.pin.y ?? 0, x: b.layout.pin.x ?? 0,
@@ -117,8 +167,11 @@ export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme |
     const [color_accent, color_text, color_muted, color_heading, color_callout, color_figure, color_rule] = JSON.parse(colorKey);
     return { color_accent, color_text, color_muted, color_heading, color_callout, color_figure, color_rule } as Partial<Theme>;
   }, [colorKey]);
-  const ctx: RenderCtx = useMemo(() => ({ references: compileReferences(blocks), editing, print, pageCount: 0,
-    lang: canHyphenate ? lang : null, hyphenate, colors, colGap: geo.colGap }),
+  const ctx: RenderCtx = useMemo(() => {
+    const references = compileReferences(blocks);
+    return { references, cites: citeNumbers(blocks, references), editing, print, pageCount: 0,
+      lang: canHyphenate ? lang : null, hyphenate, colors, colGap: geo.colGap };
+  },
     [blocks, editing, print, lang, canHyphenate, hyphenate, colors, geo.colGap]);
   const boxRef = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState<Record<string, Measured>>({});
@@ -143,8 +196,16 @@ export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme |
       const id = el.dataset.id!;
       const root = el.firstElementChild as HTMLElement | null;
       if (!root) continue;
-      const natural = root.getBoundingClientRect().height;
       const b = blocks.find((x) => x.id === id);
+      const fixed = b ? pinHeight(b) || b.layout.height : null;
+      const box = root.getBoundingClientRect().height;
+      // A block with a fixed height keeps it; its content's own height says whether it is cut off.
+      const natural = fixed ? Math.max(box, root.scrollHeight) : box;
+      if (b?.type === "table") {
+        const t = tableSplits(root);
+        out[id] = { height: Math.ceil(natural), natural, splits: t.splits, head: t.head };
+        continue;
+      }
       const splits = b && (b.type === "text" || b.type === "references") ? textSplits(root) : [];
       out[id] = { height: Math.ceil(natural), natural, splits };
     }
@@ -179,8 +240,8 @@ export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme |
   }, [measure, blocks]);
 
   const layout: LayoutResult = useMemo(
-    () => paginate(toMeasuredBlocks(blocks, measured), geo),
-    [blocks, measured, geo],
+    () => paginate(toMeasuredBlocks(blocks, measured, { backfill: !!settings.backfill }), geo),
+    [blocks, measured, geo, settings.backfill],
   );
 
   const measureNode: ReactNode = (

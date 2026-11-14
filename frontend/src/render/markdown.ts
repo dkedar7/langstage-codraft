@@ -2,6 +2,7 @@ import DOMPurify from "dompurify";
 import { marked } from "marked";
 import TurndownService from "turndown";
 import { hyphenateHtml } from "./hyphenate";
+import { CITE_START, citeKeysOf, refAnchor } from "./refs";
 
 marked.setOptions({ gfm: true, breaks: false });
 
@@ -30,6 +31,31 @@ function inlineMark(name: "sup" | "sub", mark: string, pattern: RegExp) {
   };
 }
 
+// Citations: [@key] prints as [3], the number of that source in the reference list, linked to
+// its entry ([@one; @two] -> [1, 2]). The numbers belong to the document, so the caller passes
+// them in (`cites`); without them the text is left as written.
+let citeCtx: Record<string, number> | null = null;
+const cite = {
+  name: "cite",
+  level: "inline" as const,
+  start(src: string) {
+    const i = src.indexOf("[@");
+    return i < 0 ? undefined : i;
+  },
+  tokenizer(src: string) {
+    const m = citeCtx ? CITE_START.exec(src) : null;
+    return m ? { type: "cite", raw: m[0], keys: citeKeysOf(m[1]) } : undefined;
+  },
+  renderer(token: any) {
+    const marks = (token.keys as string[]).map((k) => {
+      const n = citeCtx?.[k.toLowerCase()];
+      return n != null ? `<a class="cd-cite" href="#${refAnchor(n)}">${n}</a>`
+        : `<span class="cd-cite cd-cite-missing" title="No source has the key ${k.replace(/[^\w:.+-]/g, "")}">?</span>`;
+    });
+    return `[${marks.join(", ")}]`;
+  },
+};
+
 marked.use({
   tokenizer: {
     // Only ~~two tildes~~ strike text out. GFM also takes ~one~, which turned "~5 to~10" into
@@ -41,22 +67,48 @@ marked.use({
     },
   },
   extensions: [
+    cite,
     inlineMark("sup", "^", /^\^([^\s^[\]]{1,40})\^/),
     inlineMark("sub", "~", /^~(?!~)([^\s~]{1,40})~(?!~)/),
   ],
 });
 
-/** Markdown -> HTML, not yet sanitized (exported for tests; use mdToHtml). */
-export function renderMarkdown(md: string): string {
-  return marked.parse(md || "", { async: false }) as string;
+/** Markdown -> HTML, not yet sanitized (exported for tests; use mdToHtml). `cites` numbers
+ *  the citations; `inline` renders one line without wrapping it in a paragraph. */
+export function renderMarkdown(md: string, cites: Record<string, number> | null = null, inline = false): string {
+  citeCtx = cites;
+  try {
+    return (inline ? marked.parseInline(md || "", { async: false }) : marked.parse(md || "", { async: false })) as string;
+  } finally {
+    citeCtx = null;
+  }
+}
+
+export interface MdOptions {
+  lang?: string | null;
+  hyphenate?: boolean;
+  /** key -> number of the source in the reference list, for [@key] citations */
+  cites?: Record<string, number> | null;
 }
 
 /** Markdown -> sanitized HTML (agent-written content is untrusted). `lang` adds soft hyphens
  *  to table cells (used only when a table is too wide for whole words) and, with `hyphenate`,
  *  to paragraphs. The editor's own copy of the text is never hyphenated. */
-export function mdToHtml(md: string, opts: { lang?: string | null; hyphenate?: boolean } = {}): string {
-  const html = DOMPurify.sanitize(renderMarkdown(md), { ADD_ATTR: ["target"] });
+export function mdToHtml(md: string, opts: MdOptions = {}): string {
+  const html = DOMPurify.sanitize(renderMarkdown(md, opts.cites ?? null), { ADD_ATTR: ["target"] });
   return opts.lang ? hyphenateHtml(html, opts.lang, !!opts.hyphenate) : html;
+}
+
+/** True when a table cell is more than plain text: it has Markdown marks, a tag or an entity. */
+export function cellHasMarkup(cell: string): boolean {
+  return /[*_`~^[\]<&\\]/.test(cell);
+}
+
+/** One table cell: inline Markdown (bold, italic, code, links, superscript, subscript,
+ *  citations) -> sanitized HTML. Soft hyphens are added as in any table cell. */
+export function cellToHtml(cell: string, opts: MdOptions = {}): string {
+  const html = DOMPurify.sanitize(renderMarkdown(cell, opts.cites ?? null, true), { ADD_ATTR: ["target"] });
+  return opts.lang ? hyphenateHtml(html, opts.lang, false, true) : html;
 }
 
 // What the rich-text editor keeps when it loads a block. Anything else in a block's Markdown
@@ -100,9 +152,11 @@ td.addRule("sub", {
   replacement: (content) => (content ? short(content, "~") ?? `<sub>${content}</sub>` : ""),
 });
 
-/** Editor HTML -> Markdown (the canonical stored form of text blocks). */
+/** Editor HTML -> Markdown (the canonical stored form of text blocks). Turndown escapes the
+ *  brackets (and underscores) of a citation; they are put back so [@key] still cites. */
 export function htmlToMd(html: string): string {
-  return td.turndown(html || "").replace(/\n{3,}/g, "\n\n").trim();
+  return td.turndown(html || "").replace(/\n{3,}/g, "\n\n").trim()
+    .replace(/\\\[(@(?:\\_|[A-Za-z0-9_:.+;,@ -])+)\\\]/g, (_m, inner: string) => `[${inner.replace(/\\_/g, "_")}]`);
 }
 
 export function plainText(md: string): string {

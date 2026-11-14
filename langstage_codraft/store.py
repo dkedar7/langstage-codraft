@@ -61,6 +61,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # {pages}, {title}, {year}. first_page=False skips the first body page.
     "header": {"left": "", "center": "", "right": "", "first_page": True, "rule": False},
     "footer": {"left": "", "center": "", "right": "", "first_page": True, "rule": False},
+    # Back-fill: a figure, chart, picture, row or tiles that doesn't fit lets the text after it
+    # (up to the next heading) fill the gap, and opens the next column or page itself. On for
+    # new documents; a document saved before 0.9.0 keeps its pagination (see get_document).
+    "backfill": True,
     "brief": {
         "writing_style": "",
         "objective": "",
@@ -78,7 +82,9 @@ DEFAULT_CONTENT: dict[str, dict[str, Any]] = {
     "image": {"src": "", "alt": "", "caption": "", "fit": "contain", "sketch": "",
               "label": "", "title": "", "source": ""},
     "video": {"src": "", "poster": "", "caption": "", "loop": False, "muted": True},
-    "table": {"rows": [["", ""], ["", ""]], "header": True, "caption": ""},
+    # A cell is one line of Markdown (bold, italic, code, links, x^2^, H~2~O, [@key]).
+    # total: the last row is a total, set bold under a rule.
+    "table": {"rows": [["", ""], ["", ""]], "header": True, "caption": "", "total": False},
     "chart": {"spec": {}, "caption": ""},
     "callout": {"markdown": "", "tone": "info"},
     "divider": {},
@@ -101,6 +107,7 @@ DEFAULT_LAYOUT: dict[str, Any] = {
     "variant": None,     # a typographic style, see BLOCK_VARIANTS
     "dropcap": False,    # text blocks: a large initial letter
     "fill": None,        # a background colour: a theme colour name (themes.FILL_NAMES) or a hex colour
+    "anchor": None,      # "bottom": sit at the foot of the page the flow has reached (flowing blocks only)
 }
 # The block types a fill applies to: a band heading, a filled callout, row cards, number tiles.
 FILL_TYPES = ("heading", "callout", "row", "stat")
@@ -242,7 +249,7 @@ _TEXT_FIELDS: dict[str, tuple[str, ...]] = {
     "references": ("title", "style"),
     "spacer": ("label",),
 }
-_BOOL_FIELDS: dict[str, tuple[str, ...]] = {"video": ("loop", "muted"), "table": ("header",)}
+_BOOL_FIELDS: dict[str, tuple[str, ...]] = {"video": ("loop", "muted"), "table": ("header", "total")}
 
 
 def _check_fields(block_type: str, content: dict | None) -> dict | None:
@@ -475,6 +482,13 @@ def validate_layout(layout: dict, columns: int = 3) -> dict:
             raise Invalid(f"layout.fill must be a theme colour ({', '.join(FILL_NAMES)}) or a hex colour "
                           "like #ff5a1f")
         out["fill"] = fill
+    anchor = out.get("anchor")
+    if anchor in ("", "none", "flow", "default"):
+        anchor = out["anchor"] = None
+    if anchor is not None and anchor != "bottom":
+        raise Invalid("layout.anchor must be 'bottom' or null")
+    if anchor and out.get("pin"):
+        raise Invalid("a pinned block can't also be anchored to the bottom: unpin it (pin: null) or drop the anchor")
     pin = out.get("pin")
     if pin and pin.get("anchor") == "page":
         # Page-anchored: px from the page's top-left corner (may bleed past the margins).
@@ -673,6 +687,8 @@ class Store:
             _integer("min_pages", s.get("min_pages"), 1, 500)
         if new("number_cover_pages") and not isinstance(s.get("number_cover_pages"), bool):
             raise Invalid("settings.number_cover_pages must be true or false")
+        if new("backfill") and not isinstance(s.get("backfill"), bool):
+            raise Invalid("settings.backfill must be true or false")
         if new("brief"):
             b = s.get("brief")
             if not isinstance(b, dict) or not all(isinstance(v, str) and len(v) <= 5000 for v in b.values()):
@@ -744,10 +760,16 @@ class Store:
             r = self._one("SELECT * FROM documents WHERE id = ? AND deleted = 0", (doc_id,))
             if r is None:
                 raise NotFound(f"document {doc_id} not found")
+            stored = json.loads(r["settings"])
+            settings = _merge(DEFAULT_SETTINGS, stored)
+            if "backfill" not in stored:
+                # Saved before back-fill existed: its pages stay as they were until the author
+                # or the agent turns it on.
+                settings["backfill"] = False
             return {
                 "id": r["id"], "title": r["title"],
                 # Defaults underneath, so documents from older versions get new settings.
-                "settings": _merge(DEFAULT_SETTINGS, json.loads(r["settings"])),
+                "settings": settings,
                 "rev": r["rev"], "created_at": r["created_at"], "updated_at": r["updated_at"],
             }
 
@@ -842,7 +864,7 @@ class Store:
             "id": r["id"], "doc_id": r["doc_id"], "type": r["type"], "ord": r["ord"],
             "layout": json.loads(r["layout"]),
             "content": repair_content(r["type"], json.loads(v["content"])) if v else {},
-            "refs": json.loads(v["refs"]) if v else [],
+            "refs": _clean_refs(json.loads(v["refs"])) if v else [],
             "head": r["head"], "n_versions": n,
             "author": v["author"] if v else "", "updated_at": v["created_at"] if v else r["created_at"],
         }
@@ -988,6 +1010,32 @@ class Store:
             self._db.commit()
             return self.get_block(block_id)
 
+    def reserve_area(self, doc_id: str, pin: dict, *, repeat: Any = None, label: str = "",
+                     author: str = "agent", remove: bool = False) -> dict:
+        """Keep a rectangle of a page empty (a pinned ``spacer`` block). A reserved area that
+        the new rectangle overlaps on the same page is replaced, so asking twice never leaves
+        two spacers on top of each other. ``remove`` only removes the ones it overlaps.
+        Returns ``{"block": the new spacer or None, "replaced": [ids removed]}``."""
+        with self._lock:
+            lay = validate_layout({"pin": {"anchor": "page", **pin}, **({"repeat": repeat} if repeat else {})},
+                                  self.get_document(doc_id)["settings"]["columns"])
+            new = lay["pin"]
+
+            def overlaps(b: dict) -> bool:
+                p = (b["layout"] or {}).get("pin") or {}
+                if b["type"] != "spacer" or p.get("anchor") != "page":
+                    return False
+                same_page = p.get("page") == new["page"] or b["layout"].get("repeat") or lay.get("repeat")
+                return bool(same_page and p["x"] < new["x"] + new["w"] and new["x"] < p["x"] + p["w"]
+                            and p["y"] < new["y"] + new["h"] and new["y"] < p["y"] + p["h"])
+
+            gone = [b["id"] for b in self.list_blocks(doc_id) if overlaps(b)]
+            for bid in gone:
+                self.delete_block(bid)
+            block = None if remove else self.insert_block(doc_id, "spacer", {"label": label}, layout=lay,
+                                                          author=author, note="reserved area")
+            return {"block": block, "replaced": gone}
+
     def move_block(self, block_id: str, after: str | None) -> dict:
         with self._lock:
             b = self.get_block(block_id)
@@ -1091,7 +1139,7 @@ class Store:
             items = [
                 {"id": r["id"], "parent_id": r["parent_id"],
                  "content": repair_content(b["type"], json.loads(r["content"])),
-                 "refs": json.loads(r["refs"]), "author": r["author"], "note": r["note"],
+                 "refs": _clean_refs(json.loads(r["refs"])), "author": r["author"], "note": r["note"],
                  "created_at": r["created_at"]}
                 for r in rows
             ]
@@ -1960,18 +2008,12 @@ class Store:
 
 
 def _clean_refs(refs: list | None) -> list[dict]:
-    out = []
-    for r in refs or []:
-        if isinstance(r, str):
-            r = {"title": r}
-        if not isinstance(r, dict):
-            continue
-        title = str(r.get("title") or r.get("url") or "").strip()
-        if not title:
-            continue
-        out.append({"title": title, "url": str(r.get("url") or "").strip(),
-                    "note": str(r.get("note") or "").strip()})
-    return out
+    """A block's references in their stored shape (see refs.py): key, title, url, authors,
+    year, publisher, accessed and the private note. References saved by an older version
+    (title, url, note) read back in the same shape, with a key made from their title."""
+    from .refs import clean_refs
+
+    return clean_refs(refs)
 
 
 # A process-wide store, set by the server, so agent tools reach the same data.

@@ -105,7 +105,7 @@ BUILTIN_TEMPLATES: dict[str, dict[str, Any]] = {
                 {"value": "0x", "label": "What this number measures"},
                 {"value": "000", "label": "What this number measures"}]}, "layout": {"span": "full"}},
             {"type": "callout", "content": {"markdown": "**Get started:** the call to action.", "tone": "info"},
-             "layout": {"span": "full", "variant": "band"}},
+             "layout": {"span": "full", "variant": "band", "anchor": "bottom"}},   # at the foot of the page
         ],
     },
     "newsletter": {

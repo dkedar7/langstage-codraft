@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 — 2026-11-14
 
 **Pages without holes, tables that split, references with authors.** From a second real-model
 evaluation, of 0.8.0: the documents were sound but none could be sent as exported, mostly

@@ -36,7 +36,8 @@ you ask it to.
 - **Nothing is overwritten.** Each block keeps a version tree. Step back, step forward, and
   edit an old version to start a new branch. A deleted block can be restored, with its
   history: **Undo** on the toast, or **Document → Recently deleted** later (this also covers a
-  deletion the agent suggested and you accepted).
+  deletion the agent suggested and you accepted). The agent can do the same when you ask for
+  something back (`list_deleted_blocks`, `restore_block`).
 - **Sources stay with each block.** The agent cites as it writes, and a `references` block
   compiles them.
 - **The agent sees the page.** `view_pages` gives a vision model screenshots of the rendered
@@ -159,13 +160,13 @@ Name your agent and the editor uses that name wherever it would say "agent": "As
 "Suggestions from Juniper", replies and history credited to Juniper. Codraft reads `graph.name`
 (`create_agent(model, name="Juniper")`); `[ui] agent_name` overrides it.
 
-The agent's toolset (`CODRAFT_TOOLS`) has 25 tools. Each one reads and writes through the same
+The agent's toolset (`CODRAFT_TOOLS`) has 27 tools. Each one reads and writes through the same
 API the editor uses, so the agent has no private path, and nothing the agent can do is out of
 the author's reach:
 
 | Read | Write (suggestions) | Style (applies directly) | Other |
 |---|---|---|---|
-| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload`, `calculate` |
+| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload`, `calculate`, `list_deleted_blocks`, `restore_block` |
 
 **The agent sees what it has proposed.** While its suggestions wait for you, the agent works from
 the document as it will be, not only the one you have accepted:
@@ -183,7 +184,10 @@ the document as it will be, not only the one you have accepted:
   all** applies chained moves in dependency order. Anything it can't apply is listed with the
   reason, never dropped.
 - Each turn starts with a short note of what you did since the agent's last one: which
-  suggestions you accepted or rejected, and the blocks you edited, added or deleted.
+  suggestions you accepted or rejected, and the blocks you edited, added or deleted. The note
+  survives a server restart.
+- `restore_block` brings a deleted block back where it was, with its history. It applies
+  immediately in either approval mode, because it only puts your own block back as it was.
 
 `calculate` does the arithmetic (totals, percentages, growth, table cells) so figures in the
 document are computed, not guessed.
@@ -323,8 +327,10 @@ footer = { left = "{page}", right = "Acme Corp" }
 `[agent] spec` sets its own. The cap keeps a gateway from reserving the model's whole output
 window for every call, which fails outright on a key with little credit. `reasoning = "auto"`
 turns reasoning on at low effort where Codraft knows the model's switch (OpenRouter models,
-OpenAI GPT-5 and o-series, Anthropic). If the provider refuses the setting, the agent carries
-on without it and logs why; it never fails a turn over it.
+OpenAI GPT-5 and o-series, Anthropic). For OpenAI's GPT-5 and o-series models the built-in agent
+uses the Responses API, the one place those models reason together with tools. If the provider
+refuses the setting, the agent carries on without it (over plain Chat Completions for OpenAI)
+and logs why; it never fails a turn over it.
 
 `web_fonts = false` (in `[codraft]`) keeps documents to the bundled fonts, with nothing fetched
 from Google Fonts. `[ui.features] style_editor = false` hides the font and colour editor (the
@@ -522,7 +528,8 @@ unknown document, 503 when Chromium isn't installed).
   Dutch and Portuguese load when a document's language asks for them. Words that start with a
   capital are left whole. In the PDF each break point is tagged as a soft hyphen, which PDF
   viewers skip when you search or copy; a text extractor that ignores the tag (pypdf is one)
-  shows a space there.
+  shows a space there. Codraft's own upload reader uses PDFium for a browser-printed PDF, so
+  an export you upload back as reference material reads as whole words.
 
 ## How the layout works
 

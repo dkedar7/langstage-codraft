@@ -29,6 +29,7 @@ from .store import (
     BLOCK_TYPES,
     BLOCK_VARIANTS,
     DEFAULT_CONTENT,
+    VARIANT_NOTES,
     Invalid,
     NoChange,
     NotFound,
@@ -108,7 +109,8 @@ def _block(store: Any, doc_id: str, block_id: str) -> dict:
         raise NotFound(f"{ref} is a {_ID_KINDS[prefix]} id, not a block id (blocks are blk_…)") from None
     row = store._one("SELECT doc_id, deleted FROM blocks WHERE id = ?", (ref,))
     if row is not None and row["doc_id"] == doc_id and row["deleted"]:
-        raise NotFound(f"block {ref} was deleted; call get_document for the current outline") from None
+        raise NotFound(f"block {ref} was deleted (restore_block brings it back); call get_document for the "
+                       "current outline") from None
     ids = [b["id"] for b in store.list_blocks(doc_id)]
     near = difflib.get_close_matches(ref, ids, n=3, cutoff=0.75)
     hint = f" Closest ids: {', '.join(near)}." if near else ""
@@ -255,7 +257,13 @@ def get_document(config: RunnableConfig) -> str:
         cols = ", ".join(f"col {i}: x={round(m['left'] * MM + i * (colw + gap))}" for i in range(ncol))
         lines.append(f"Geometry (px, 96/in): page {round(pw)}x{round(ph)}; content box x={round(m['left'] * MM)} "
                      f"y={round(m['top'] * MM)} w={round(cw)} h={round(chh)}; column width {round(colw)}; {cols}.")
-        lines.append("Variants: " + "; ".join(f"{t}: {', '.join(v)}" for t, v in BLOCK_VARIANTS.items()))
+        lines.append("Variants: "
+                     + "; ".join(f"{t}: {', '.join(v)}" for t, v in BLOCK_VARIANTS.items()))
+        seen: list[str] = []
+        for names in BLOCK_VARIANTS.values():
+            seen += [v for v in names if v not in seen]
+        lines.append("What each variant looks like: "
+                     + "; ".join(f"{v} = {VARIANT_NOTES[v]}" for v in seen if v in VARIANT_NOTES) + ".")
         lines.extend(_design_lines(s))
         if place.get("_pages"):
             lines.append(f"Rendered pages: {place['_pages']}")
@@ -495,9 +503,10 @@ def propose_edit(
     """Propose new content for an existing block. `content` is the COMPLETE new
     content: Markdown for text and callout blocks, plain text for headings, a Markdown
     table (or JSON {rows, header, caption}) for tables, Vega-Lite JSON for charts,
-    JSON {src, alt, caption} for images. Markdown is GitHub-flavoured; for superscripts
-    and subscripts write <sup>2</sup> / <sub>2</sub> or the Unicode character (m², °C,
-    CO₂): ^2^, ~2~ and LaTeX ($x^2$) print literally. `references`: list of {title, url,
+    JSON {src, alt, caption} for images. Markdown is GitHub-flavoured, plus superscript
+    x^2^ and subscript H~2~O (attached to the text before, no spaces inside, 40 characters
+    at most); <sup>2</sup> / <sub>2</sub> and Unicode characters (m², °C, CO₂) work too.
+    Only ~~text~~ strikes out. No maths: LaTeX ($x^2$) prints literally. `references`: list of {title, url,
     note} that replaces the block's sources. `note`: one line saying why, shown to the
     author. `comment_id`: the comment this addresses. heading_level (1-3) changes a
     heading's level; do not type section numbers the document doesn't already use.
@@ -601,6 +610,44 @@ def propose_move(block_id: str, config: RunnableConfig, after_block_id: str | No
         _block(store, doc_id, block_id)
         return _sugg_result(store.propose(doc_id, "move", {"after": after_block_id},
                                           block_id=block_id, comment_id=comment_id, note=note))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def list_deleted_blocks(config: RunnableConfig) -> str:
+    """List this document's recently deleted blocks (most recent first): id, type and the
+    first words. A deleted block keeps its content, layout and history; `restore_block`
+    brings one back."""
+    try:
+        store = get_store()
+        rows = store.deleted_blocks(_doc_id(config), limit=30)
+        if not rows:
+            return "No deleted blocks in this document."
+        return "Recently deleted (restore_block brings one back where it was):\n" + "\n".join(
+            f"- [{r['id']}] {r['type']}, {r['n_versions']} version(s)"
+            + (f" — {r['preview']}" if r["preview"] else "") for r in rows)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def restore_block(block_id: str, config: RunnableConfig) -> str:
+    """Bring a deleted block back where it was, with its content, layout and version
+    history (ids from `list_deleted_blocks`). It applies immediately in either approval
+    mode: it puts the author's own block back and writes nothing new. Use it when the
+    author asks for something back, or to undo a delete that was a mistake."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        if block_id not in {r["id"] for r in store.deleted_blocks(doc_id, limit=100000)}:
+            _block(store, doc_id, block_id)  # a wrong kind of id, another document's block: say so
+            return f"Block {block_id} is not deleted, so there is nothing to restore."
+        b = store.restore_block(block_id)
+        text = plain_text(b["type"], b["content"])
+        return (f"Restored {b['type']} block {b['id']} where it was, with its history"
+                + (f" — {textutil.excerpt(text, 90)}" if text else "") + ". This applied immediately (no approval "
+                "needed: it is the author's own block as it was). Tell the author you restored it.")
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -1122,7 +1169,7 @@ def set_typography(
     color_muted: str | None = None, color_accent: str | None = None, color_page: str | None = None,
     color_rule: str | None = None, color_callout: str | None = None, color_figure: str | None = None,
     text_align: str | None = None, paragraph_gap_em: float | None = None,
-    paragraph_indent_em: float | None = None, reset: bool = False,
+    paragraph_indent_em: float | None = None, hyphens: str | None = None, reset: bool = False,
 ) -> str:
     """Override this document's typography and colours on top of its theme (applies
     immediately; only the values you pass change). Fonts: a family name ("Lato",
@@ -1131,7 +1178,10 @@ def set_typography(
     like "#002f58"; color_heading colours the headings, color_accent links, drop caps,
     rules and callout edges, color_callout/color_figure the tinted boxes. font_size_px is
     the body size (13-16 is usual). heading_case: none, uppercase or capitalize.
-    text_align: left or justify. reset=True clears every override. Prefer the theme;
+    text_align: left or justify. hyphens: "auto" breaks long words at syllables (the same
+    way in the editor and the export; use it with justified text, to avoid rivers and
+    loose lines), "manual" breaks only where the text has a soft hyphen.
+    reset=True clears every override. Prefer the theme;
     override on purpose (a brand, or a document the author asked you to match)."""
     try:
         store = get_store()
@@ -1147,6 +1197,7 @@ def set_typography(
             "color_accent": color_accent, "color_page": color_page, "color_rule": color_rule,
             "color_callout": color_callout, "color_figure": color_figure, "text_align": text_align,
             "paragraph_gap": paragraph_gap_em, "paragraph_indent": paragraph_indent_em,
+            "hyphens": hyphens,
         }
         vals = {k: (_font_stack(v) if k.startswith("font_") and isinstance(v, str) else v)
                 for k, v in vals.items() if v is not None}
@@ -1432,6 +1483,8 @@ CODRAFT_TOOLS = [
     propose_insert,
     propose_delete,
     propose_move,
+    list_deleted_blocks,
+    restore_block,
     reply_to_comment,
     set_block_layout,
     set_document_style,

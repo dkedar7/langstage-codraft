@@ -415,7 +415,9 @@ class Store:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.uploads_dir = self.path.parent / "uploads"
+        # Absolute, so an upload's stored path does not depend on the directory the server
+        # happened to be started from.
+        self.uploads_dir = (self.path.parent / "uploads").resolve()
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
         self._lock = _TxLock(self)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
@@ -425,6 +427,9 @@ class Store:
         cols = {r["name"] for r in self._db.execute("PRAGMA table_info(uploads)").fetchall()}
         if "meta" not in cols:  # 0.5: rendered pages and the extracted style of an upload
             self._db.execute("ALTER TABLE uploads ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
+        # Where the agent's last turn ended, per document (see agent_turn).
+        self._db.execute("CREATE TABLE IF NOT EXISTS agent_turns (doc_id TEXT PRIMARY KEY, key TEXT NOT NULL,"
+                         " note TEXT NOT NULL DEFAULT '', last_call REAL NOT NULL)")
         cols = {r["name"] for r in self._db.execute("PRAGMA table_info(blocks)").fetchall()}
         if "deleted_at" not in cols:  # when a block was deleted: to list and restore it, and for the
             # agent's "what changed" note
@@ -438,8 +443,34 @@ class Store:
         # after it paginates, so the agent's outline can say which page a block is on.
         self._layout_reports: dict[str, dict] = {}
         # Per document: where the agent's last turn ended, so its next turn can be told what
-        # the author did in between (middleware). In memory: a restart just skips one note.
+        # the author did in between (middleware). A cache over the agent_turns table, which
+        # keeps it across a restart.
         self._agent_turns: dict[str, dict] = {}
+
+    # ------------------------------------------------------------ agent turns
+    def agent_turn(self, doc_id: str) -> dict | None:
+        """``{"key", "note", "last_call"}`` for the agent's latest turn on this document, or
+        None when it has not had one. ``key`` names the turn (its human message),
+        ``last_call`` is when the agent last called the model, and ``note`` is what the turn
+        was told the author had done before it."""
+        with self._lock:
+            st = self._agent_turns.get(doc_id)
+            if st is None:
+                r = self._one("SELECT key, note, last_call FROM agent_turns WHERE doc_id = ?", (doc_id,))
+                if r is None:
+                    return None
+                st = self._agent_turns[doc_id] = {"key": r["key"], "note": r["note"], "last_call": r["last_call"]}
+            return dict(st)
+
+    def set_agent_turn(self, doc_id: str, key: str, note: str, last_call: float) -> None:
+        """Record the agent's current turn (kept across a restart)."""
+        with self._lock:
+            self._agent_turns[doc_id] = {"key": key, "note": note, "last_call": last_call}
+            self._db.execute(
+                "INSERT INTO agent_turns (doc_id, key, note, last_call) VALUES (?,?,?,?)"
+                " ON CONFLICT(doc_id) DO UPDATE SET key = excluded.key, note = excluded.note,"
+                " last_call = excluded.last_call", (doc_id, key, note, last_call))
+            self._db.commit()
 
     # ---------------------------------------------------------------- helpers
     def _q(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
@@ -1698,12 +1729,27 @@ class Store:
                 raise NotFound(f"upload {uid} not found")
             meta = json.loads(r["meta"] or "{}")
             d = {"id": r["id"], "doc_id": r["doc_id"], "filename": r["filename"], "purpose": r["purpose"],
-                 "mime": r["mime"], "path": r["path"], "chars": len(r["text"]),
+                 "mime": r["mime"], "path": self._upload_file(r["path"]), "chars": len(r["text"]),
                  "created_at": r["created_at"], "url": f"/api/uploads/{r['id']}/file",
-                 "pages": meta.get("pages", []), "style": meta.get("style")}
+                 "pages": [self._upload_file(p) for p in meta.get("pages", [])],
+                 "style": meta.get("style")}
             if with_text:
                 d["text"] = r["text"]
             return d
+
+    def _upload_file(self, stored: str) -> str:
+        """Where an upload's file is now. Uploads live in ``<data dir>/uploads``. The path
+        saved with the row was relative to the server's working directory before 0.7.0, and
+        an absolute one goes stale when the data directory is moved or mounted elsewhere, so
+        a saved path that no longer points at a file is looked up by name in this store's
+        own uploads directory."""
+        p = Path(stored)
+        if p.is_absolute() and p.exists():
+            return str(p)
+        here = self.uploads_dir / p.name
+        if here.exists() or not p.exists():
+            return str(here)
+        return str(p.resolve())
 
     def set_upload_meta(self, uid: str, meta: dict) -> dict:
         """Rendered page images and the extracted style profile of an upload."""

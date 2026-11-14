@@ -620,8 +620,20 @@ def test_the_default_model_has_an_output_cap_and_reasoning(monkeypatch):
     assert model.max_tokens == 4000 and model.extra_body == {"reasoning": {"effort": "high"}}
     model, plain, _ = agent.make_models("openrouter:anthropic/claude-haiku-5.5", max_tokens=0, reasoning="off")
     assert model.max_tokens is None and plain is None and not model.extra_body
-    model, plain, _ = agent.make_models("openai:gpt-5-mini")
-    assert model.reasoning_effort == "low" and model.max_tokens == 16000 and plain.reasoning_effort is None
+    # GPT-5 and o-series: the Responses API, the only place GPT-5.4+ reason together with tools
+    for name in ("gpt-5-mini", "gpt-5.4", "o4-mini"):
+        assert agent.reasoning_kwargs(f"openai:{name}", "auto") == {
+            "use_responses_api": True, "reasoning": {"effort": "low"}}
+    assert agent.reasoning_kwargs("openai:gpt-5.4", "high") == {
+        "use_responses_api": True, "reasoning": {"effort": "high"}}
+    assert agent.reasoning_kwargs("openai:gpt-5.4", "off") == {}
+    assert agent.reasoning_kwargs("openai:gpt-4.1-mini", "high") == {}
+    model, plain, notes = agent.make_models("openai:gpt-5-mini")
+    assert model.use_responses_api is True and model.reasoning == {"effort": "low"} and model.max_tokens == 16000
+    assert model.reasoning_effort is None and notes == []
+    # the fallback model is plain Chat Completions: no Responses API, no reasoning
+    assert not plain.use_responses_api and plain.reasoning is None and plain.reasoning_effort is None
+    assert plain.max_tokens == 16000
     model, plain, _ = agent.make_models("openai:gpt-4.1-mini")  # no reasoning switch: just the cap
     assert plain is None and model.max_tokens == 16000 and model.reasoning_effort is None
     assert agent.make_model("openai:gpt-4.1-mini").max_tokens == 16000
@@ -667,6 +679,13 @@ def test_reasoning_is_dropped_not_fatal_when_the_provider_refuses_it():
     assert not rejects_reasoning(_Boom("context length exceeded", 400))
     assert not rejects_reasoning(_Boom("reasoning quota exceeded", 429))
     assert not rejects_reasoning(RuntimeError("thinking failed"))
+    # an account or a gateway without the Responses API (what GPT-5 and o-series now use)
+    assert rejects_reasoning(_Boom("Error code: 404 - Not Found", 404))
+    assert rejects_reasoning(_Boom("Method Not Allowed", 405))
+    assert rejects_reasoning(_Boom("Invalid URL (POST /v1/responses)", 400))
+    assert rejects_reasoning(_Boom("The Responses API is not enabled for this organization", 400))
+    assert not rejects_reasoning(_Boom("Incorrect API key provided", 401))
+    assert not rejects_reasoning(_Boom("Rate limit reached for responses", 429))
 
     class Req:
         def __init__(self, model="reasoning"):
@@ -694,6 +713,27 @@ def test_reasoning_is_dropped_not_fatal_when_the_provider_refuses_it():
     with pytest.raises(_Boom):
         fb2.wrap_model_call(Req(), broken)
     assert not fb2.degraded
+
+    # no Responses API: the turn carries on over Chat Completions, and stays there
+    seen.clear()
+
+    def no_responses_api(req):
+        seen.append(req.model)
+        if req.model == "reasoning":
+            raise _Boom("Error code: 404 - Not Found", 404)
+        return "ok"
+
+    fb3 = ReasoningFallback("plain", "openai:gpt-5.4")
+    assert fb3.wrap_model_call(Req(), no_responses_api) == "ok" and seen == ["reasoning", "plain"]
+    assert fb3.wrap_model_call(Req(), no_responses_api) == "ok" and seen == ["reasoning", "plain", "plain"]
+
+    # an unknown model fails on the plain model too, and that error is the one raised
+    def unknown_model(req):
+        raise _Boom(f"The model does not exist ({req.model})", 404)
+
+    fb4 = ReasoningFallback("plain")
+    with pytest.raises(_Boom, match="plain"):
+        fb4.wrap_model_call(Req(), unknown_model)
 
 
 async def test_reasoning_fallback_works_for_async_model_calls():

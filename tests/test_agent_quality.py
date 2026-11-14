@@ -438,7 +438,8 @@ def test_the_prompt_and_tools_state_the_house_rules():
         assert needle in CODRAFT_PROMPT, needle
     assert "<sup>2</sup>" in propose_edit.description and "LaTeX" in propose_edit.description
     assert "one text block per paragraph" in insert_blocks.description
-    assert "Never delete or cut content, yours or the\nauthor's" in propose_delete.description
+    # a docstring keeps its indentation before Python 3.13: compare with the whitespace folded
+    assert "Never delete or cut content, yours or the author's" in " ".join(propose_delete.description.split())
     assert "Not for routine edits" in get_block_history.description
     assert "At most 4" in view_pages.description and "PREVIEW" in view_pages.description
 

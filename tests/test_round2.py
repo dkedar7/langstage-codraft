@@ -178,7 +178,7 @@ def test_deleting_the_reference_list_always_waits_for_the_author(store, cfg_for,
 def test_the_rule_against_cutting_covers_the_agents_own_content_and_every_mode():
     assert "not the author's and not your own, in any approval mode" in CODRAFT_PROMPT
     assert "the reference list and every\n  block that cites a source stay" in CODRAFT_PROMPT
-    assert "always\nwaits for the author's approval" in propose_delete.description
+    assert "always waits for the author's approval" in " ".join(propose_delete.description.split())
 
 
 # ------------------------------------------------------------------ 3. search and fetching

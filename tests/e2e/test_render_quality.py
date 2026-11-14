@@ -30,10 +30,15 @@ LAYOUT_JS = """() => [...document.querySelectorAll('.cd-page [data-block-id]')].
 
 
 def _open(pg, url: str):
+    # Wide enough that the editor shows the page at 100%: at other zoom levels the browser
+    # lays the visible copy out again at the zoomed size, and a line can break elsewhere.
+    pg.set_viewport_size({"width": 1900, "height": 1100})
     pg.goto(url)
     pg.wait_for_selector(".cd-page [data-block-id]")
     pg.evaluate("document.fonts.ready")
     pg.wait_for_timeout(1200)
+    if "/d/" in url:
+        assert pg.locator("[data-testid=zoom-label]").inner_text() == "100%"
 
 
 def _layout(pg, url: str):

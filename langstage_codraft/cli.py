@@ -3,6 +3,7 @@
     langstage-codraft run [--agent path.py:graph | --model provider:model | --demo]
     langstage-codraft check [--live]
     langstage-codraft new "Title" [--template report]
+    langstage-codraft import draft.md [--title T] [--template paper] [--theme modern]
     langstage-codraft list
     langstage-codraft export DOC_ID --format pdf -o out.pdf   (no server needed)
     langstage-codraft install-browser
@@ -240,6 +241,64 @@ def new(title, template, data_dir) -> None:
     except Invalid as exc:  # a one-line reason, not a traceback (gh #41)
         _fail(f"can't create from template {template!r}: {exc}")
         sys.exit(2)
+    _echo(doc["id"])
+
+
+@main.command("import")
+@click.argument("file", type=click.Path(path_type=Path))
+@click.option("--title", help="Document title (default: the file's title, else its name).")
+@click.option("--template", default="blank",
+              help="Template whose look to use (theme, columns, cover); its placeholder text is not added.")
+@click.option("--theme", help="Theme name, overriding the template's.")
+@click.option("--split", type=click.Choice(["paragraph", "section"]), default="paragraph",
+              help="One text block per paragraph (default), or per section between headings.")
+@click.option("--data-dir", type=click.Path(path_type=Path))
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable result: id, title, blocks, images, notes.")
+def import_cmd(file, title, template, theme, split, data_dir, as_json) -> None:
+    """Create a document from a Markdown (.md) or Word (.docx) file.
+
+    Headings, paragraphs, lists, tables, quotes, code, images and footnotes become blocks,
+    exactly as the editor's Import does. Images a Markdown file refers to are read from
+    its own folder; remote images stay links and nothing is fetched. Prints the new
+    document id; anything that needs a look is listed on stderr.
+    """
+    from . import importers, themes
+    from . import templates as tpl
+    from .config import codraft_toml_table
+    from .server import house_defaults
+    from .store import Invalid, Store
+
+    try:
+        size = file.stat().st_size
+        if not file.is_file():
+            raise OSError("it is not a file")
+        if size > importers.MAX_IMPORT_BYTES:  # before reading it into memory
+            raise Invalid(f"the file is too large to import ({importers.MAX_IMPORT_BYTES // (1024 * 1024)} MB max)")
+        data = file.read_bytes()
+    except OSError as exc:
+        _fail(f"can't read {file}: {exc.strerror or exc}")
+        sys.exit(2)
+    except Invalid as exc:
+        _fail(f"can't import {file.name}: {exc}")
+        sys.exit(2)
+    cfg = _cfg(data_dir=data_dir)
+    table = codraft_toml_table()
+    themes.configure(table.get("themes") if isinstance(table.get("themes"), dict) else None,
+                     table.get("allowed_themes"), cfg.default_theme)
+    tpl.configure(cfg.templates_dir)
+    store = Store(Path(cfg.data_dir) / "codraft.db")
+    try:
+        doc, imp = importers.import_document(
+            store, cfg, house_defaults(), file.name, data, title=title, template=template, theme=theme,
+            split=split, resolve=importers.folder_resolver(file.parent))
+    except Invalid as exc:  # a one-line reason, not a traceback
+        _fail(f"can't import {file.name}: {exc}")
+        sys.exit(2)
+    if as_json:
+        _echo(json.dumps({"id": doc["id"], "title": doc["title"], **imp.summary()}, indent=2))
+        return
+    for note in imp.notes:
+        _echo(f"[note] {note}", file=sys.stderr)
     _echo(doc["id"])
 
 

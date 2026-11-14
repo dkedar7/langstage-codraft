@@ -159,13 +159,34 @@ Name your agent and the editor uses that name wherever it would say "agent": "As
 "Suggestions from Juniper", replies and history credited to Juniper. Codraft reads `graph.name`
 (`create_agent(model, name="Juniper")`); `[ui] agent_name` overrides it.
 
-The agent's toolset (`CODRAFT_TOOLS`) has 24 tools. Each one reads and writes through the same
+The agent's toolset (`CODRAFT_TOOLS`) has 25 tools. Each one reads and writes through the same
 API the editor uses, so the agent has no private path, and nothing the agent can do is out of
 the author's reach:
 
 | Read | Write (suggestions) | Style (applies directly) | Other |
 |---|---|---|---|
-| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload` |
+| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload`, `calculate` |
+
+**The agent sees what it has proposed.** While its suggestions wait for you, the agent works from
+the document as it will be, not only the one you have accepted:
+
+- `get_document` lists pending suggestions where they will land, marked PENDING. A pending insert
+  goes by its suggestion id (`sug_…`), which `read_blocks`, `propose_edit` (to revise the draft),
+  `propose_delete` (to withdraw it), `set_block_layout` and `after_block_id` all accept.
+- `read_blocks` shows a block's accepted text next to the agent's pending edit of it.
+- `view_pages` renders a preview with the pending suggestions applied, through the same print
+  route as export, and says which blocks on each page are still pending. `pending=False` shows
+  only what you have accepted. It returns at most four pages per call and says which it left out.
+- A suggestion that changes nothing, or that repeats one still waiting, is not recorded; the
+  agent is told so.
+- A batch of new blocks stays in the order it was written, however you accept it, and **Accept
+  all** applies chained moves in dependency order. Anything it can't apply is listed with the
+  reason, never dropped.
+- Each turn starts with a short note of what you did since the agent's last one: which
+  suggestions you accepted or rejected, and the blocks you edited, added or deleted.
+
+`calculate` does the arithmetic (totals, percentages, growth, table cells) so figures in the
+document are computed, not guessed.
 
 Each document has its own agent thread (the AG-UI thread id is the document id). Conversations
 are stored in SQLite and survive restarts. The same agent is also served at `POST /agui` for any
@@ -253,7 +274,8 @@ langstage-codraft mcp --data-dir .codraft
 ```
 
 MCP tools: `list_documents`, `create_document`, every `CODRAFT_TOOLS` tool with a `doc_id`
-argument, plus `view_pages` and `view_sketch`, which return images.
+argument (except `calculate`, which is the built-in agent's own arithmetic), plus `view_pages`
+and `view_sketch`, which return images.
 
 Over stdio, `view_pages` works on its own: it uses the server on the configured port if one is
 running, and otherwise starts a private in-process renderer the first time the tool is called
@@ -271,6 +293,8 @@ spec = "my_agent.py:graph"
 
 [codraft]
 model = "openrouter:anthropic/claude-haiku-5.5"   # used when no agent spec is set
+max_output_tokens = 16000                        # cap on one model call's output (0 = provider default)
+reasoning = "auto"                               # auto | off | low | medium | high
 approval = "required"                            # or "auto" for new documents
 default_theme = "acme"
 default_page_size = "a4"                         # new documents (default letter)
@@ -294,6 +318,13 @@ cover_text = "light"
 cover = { enabled = false }                      # house style: no separate cover page
 footer = { left = "{page}", right = "Acme Corp" }
 ```
+
+`max_output_tokens` and `reasoning` apply to the built-in agent (`model`); an agent you bring with
+`[agent] spec` sets its own. The cap keeps a gateway from reserving the model's whole output
+window for every call, which fails outright on a key with little credit. `reasoning = "auto"`
+turns reasoning on at low effort where Codraft knows the model's switch (OpenRouter models,
+OpenAI GPT-5 and o-series, Anthropic). If the provider refuses the setting, the agent carries
+on without it and logs why; it never fails a turn over it.
 
 `web_fonts = false` (in `[codraft]`) keeps documents to the bundled fonts, with nothing fetched
 from Google Fonts. `[ui.features] style_editor = false` hides the font and colour editor (the

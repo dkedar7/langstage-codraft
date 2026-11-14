@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0 — 2026-11-13
+
+- **Import an existing document (gh #45).** A Markdown (`.md`) or Word (`.docx`) file becomes a
+  Codraft document: `langstage-codraft import FILE [--title] [--template] [--theme] [--split
+  paragraph|section] [--json]`, **New document → Import Markdown or Word file** in the editor,
+  and `POST /api/docs/import`. Headings, paragraphs, lists, quotes, code, tables, pictures, page
+  breaks, GitHub alerts (as callouts) and footnotes (as per-block references plus a References
+  block) map to the existing block types; a leading H1, a front-matter `title:` or Word's Title
+  becomes the document title. The chosen template supplies the look, not its placeholder text.
+  Imported blocks are the author's content, not suggestions. Anything that can't be represented
+  is imported as plain text or left out and listed (`import.notes`, stderr, or a list in the
+  editor); a file that can't be imported is refused with a one-line reason. Nothing is fetched:
+  remote pictures stay links, a Markdown file's local pictures are read only from its own folder
+  (CLI) or from the files sent with it, SVG is sanitized, and sizes are capped (25 MB per file,
+  5,000 blocks, 400,000 lines, 300 MB for a `.docx` once unzipped). New: `Store.insert_blocks`
+  appends many blocks in one transaction.
+- **Export and `view_pages` without a running server (gh #44).** `langstage-codraft export
+  DOC_ID -f pdf -o out.pdf --data-dir .codraft` renders straight from the data directory: it
+  starts the app in-process on a private loopback port, prints through the same page route as
+  the editor's Export button, and shuts down. `--standalone` does the same for the configured
+  data directory; `--port` / `--url` still export through a running server; with neither,
+  `export` uses the server on the configured port if one is running and renders in-process if
+  not. Several documents and formats share one browser launch (`export DOC1 DOC2 -f pdf -f png
+  -o out/`). `langstage-codraft mcp` over stdio now serves `view_pages` on its own, starting the
+  same renderer the first time the tool is called. From Python: `export_document(data_dir,
+  doc_id, "pdf")` and the `Standalone` context manager. The in-process app listens on 127.0.0.1
+  only, on a port the OS picks, and every request to it needs a one-off password.
+- **Fixed:** on a password-protected server the HTML export left uploaded images out of the zip.
+- **Requires `langstage-core>=1.0.63`** (was `>=1.0.50`), so an install picks up the shared
+  fixes since then, including finished-message order for agents that run as subgraph nodes.
+
 ## 0.5.17 — 2026-11-07
 
 - **Fixed: a template `check` called ok then failed on every create path (#41).** A

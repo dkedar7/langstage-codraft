@@ -63,7 +63,7 @@ export const api = {
     if (author) fd.append("author", author);
     return req<Doc & { import: ImportReport }>("POST", "/api/docs/import", fd);
   },
-  getDoc: (id: string) => req<Doc>("GET", `/api/docs/${id}`),
+  getDoc: (id: string, preview = false) => req<Doc>("GET", `/api/docs/${id}${preview ? "?preview=pending" : ""}`),
   rev: (id: string) => req<{ rev: number; running: boolean }>("GET", `/api/docs/${id}/rev`),
   patchDoc: (id: string, body: { title?: string; settings?: any }) => req<Doc>("PATCH", `/api/docs/${id}`, body),
   deleteDoc: (id: string) => req("DELETE", `/api/docs/${id}`),
@@ -95,7 +95,7 @@ export const api = {
     req<Suggestion>("POST", `/api/suggestions/${id}/accept`, force ? { payload, force } : { payload }),
   reject: (id: string, reason = "") => req<Suggestion>("POST", `/api/suggestions/${id}/reject`, { reason }),
   bulk: (docId: string, action: "accept-all" | "reject-all") =>
-    req<{ ok: boolean; count: number; skipped?: string[]; skipped_gone?: string[] }>("POST", `/api/docs/${docId}/suggestions/${action}`),
+    req<{ ok: boolean; count: number; skipped?: string[]; skipped_gone?: string[]; failed?: { id: string; kind: string; reason: string }[] }>("POST", `/api/docs/${docId}/suggestions/${action}`),
 
   upload: (docId: string, file: File, purpose: string) => {
     const fd = new FormData();

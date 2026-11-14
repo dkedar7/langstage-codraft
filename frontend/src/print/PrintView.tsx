@@ -25,7 +25,9 @@ export function PrintView({ docId }: { docId: string }) {
 
   useEffect(() => {
     window.__codraftReady = false;
-    Promise.all([api.getDoc(docId), api.config()]).then(([d, c]) => {
+    // ?preview=pending: the document with its pending suggestions applied (the agent's view).
+    const preview = new URLSearchParams(window.location.search).get("preview") === "pending";
+    Promise.all([api.getDoc(docId, preview), api.config()]).then(([d, c]) => {
       setDoc(d);
       setCfg(c);
     }).catch((e) => setErr(String(e.message || e)));

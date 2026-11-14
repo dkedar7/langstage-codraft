@@ -128,7 +128,7 @@ class Renderer:
             pass
         self._loop.call_soon_threadsafe(self._loop.stop)
 
-    async def _open(self, doc_id: str, *, scale: float = 1.0):
+    async def _open(self, doc_id: str, *, scale: float = 1.0, preview: bool = False):
         browser = await self._browser_ready()
         ctx = await browser.new_context(device_scale_factor=scale, viewport={"width": 1400, "height": 1000})
         if self.headers:
@@ -140,7 +140,10 @@ class Renderer:
         errors: list[str] = []
         page.on("pageerror", lambda e: errors.append(str(e)))
         try:
-            await page.goto(f"{self.base_url}/print/{doc_id}", wait_until="networkidle")
+            # preview: the same print view, fed the document with its pending suggestions
+            # applied (GET /api/docs/<id>?preview=pending). One render path either way.
+            query = "?preview=pending" if preview else ""
+            await page.goto(f"{self.base_url}/print/{doc_id}{query}", wait_until="networkidle")
             # Wait for the layout, but give up a few seconds after the page throws instead of
             # sitting out the full 30 s (gh #34).
             deadline = time.monotonic() + 30
@@ -186,13 +189,20 @@ class Renderer:
             await ctx.close()
 
     async def screenshot_pages(self, doc_id: str, *, pages: list[int] | None = None,
-                               max_pages: int = 4) -> list[dict]:
-        """JPEG screenshots for the agent's eyes, saved under out_dir/vision."""
-        ctx, page = await self._open(doc_id, scale=1.0)
+                               max_pages: int = 4, preview: bool = False) -> list[dict]:
+        """JPEG screenshots for the agent's eyes, saved under out_dir/vision. Each shot
+        carries ``total`` (pages in the document), ``more`` (pages asked for but cut by
+        ``max_pages``) and ``blocks`` (the block ids on that page). ``preview`` renders
+        the document with its pending suggestions applied."""
+        ctx, page = await self._open(doc_id, scale=1.0, preview=preview)
         try:
             els = await page.query_selector_all(".cd-page")
             total = len(els)
-            wanted = [p for p in (pages or range(1, total + 1)) if 1 <= p <= total][:max_pages]
+            asked = [p for p in (pages or range(1, total + 1)) if 1 <= p <= total]
+            wanted = asked[:max_pages]
+            on_page = await page.evaluate(
+                "() => Array.from(document.querySelectorAll('.cd-page')).map((pg) => Array.from(new Set("
+                "Array.from(pg.querySelectorAll('.cd-item[data-block-id]')).map((n) => n.dataset.blockId))))")
             d = self.out_dir / "vision" / doc_id
             d.mkdir(parents=True, exist_ok=True)
             shots = []
@@ -200,7 +210,8 @@ class Renderer:
             for p, data in await _page_shots(page, 1.0, wanted, jpeg=True, quality=70):
                 path = d / f"{stamp}-p{p}.jpg"
                 path.write_bytes(data)
-                shots.append({"page": p, "path": str(path), "total": total})
+                shots.append({"page": p, "path": str(path), "total": total, "more": asked[max_pages:],
+                              "blocks": on_page[p - 1] if p - 1 < len(on_page) else []})
             return shots
         finally:
             await ctx.close()

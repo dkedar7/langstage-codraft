@@ -37,6 +37,22 @@ def _approval_mode(v: str) -> str:
     return mode
 
 
+def _reasoning_level(v: str) -> str:
+    level = str(v).strip().lower()
+    if level in ("none", "false", "no", "0"):
+        level = "off"
+    if level not in ("auto", "off", "low", "medium", "high"):
+        raise ValueError("must be auto, off, low, medium or high")
+    return level
+
+
+def _output_cap(v: Any) -> int:
+    n = int(v)
+    if n < 0 or 0 < n < 1024:
+        raise ValueError("must be 0 (the provider's default) or at least 1024")
+    return n
+
+
 def is_css_path(value: str) -> bool:
     """``custom_css`` holds inline CSS or a path to a .css file; this says which."""
     v = (value or "").strip()
@@ -48,6 +64,9 @@ class CodraftConfig(HostConfig):
     port: int = 8060
     title: str = "Codraft"
     model: str | None = None              # e.g. "openrouter:anthropic/claude-haiku-5.5", "openai:gpt-4.1-mini"
+    # The default agent only (a --agent graph brings its own model):
+    max_output_tokens: int = 16000        # cap on one model call's output, reasoning included; 0 = provider default
+    reasoning: str = "auto"               # auto | off | low | medium | high (auto = low where the model can reason)
     approval: str = "required"            # default approval mode for new documents
     data_dir: Path = Path(".codraft")     # SQLite store, uploads, checkpoints, renders
     templates_dir: Path | None = None
@@ -75,6 +94,8 @@ class CodraftConfig(HostConfig):
 
     _ENV: ClassVar[dict] = {
         "model": ("LANGSTAGE_CODRAFT_MODEL", str),
+        "max_output_tokens": ("LANGSTAGE_CODRAFT_MAX_OUTPUT_TOKENS", int),
+        "reasoning": ("LANGSTAGE_CODRAFT_REASONING", str),
         "approval": ("LANGSTAGE_CODRAFT_APPROVAL", str),
         "data_dir": ("LANGSTAGE_CODRAFT_DATA_DIR", Path),
         "templates_dir": ("LANGSTAGE_CODRAFT_TEMPLATES_DIR", Path),
@@ -99,6 +120,8 @@ class CodraftConfig(HostConfig):
     }
     _TOML: ClassVar[dict] = {
         "model": "codraft.model",
+        "max_output_tokens": "codraft.max_output_tokens",
+        "reasoning": "codraft.reasoning",
         "approval": "codraft.approval",
         "data_dir": "codraft.data_dir",
         "templates_dir": "codraft.templates_dir",
@@ -124,7 +147,8 @@ class CodraftConfig(HostConfig):
     _TOML_PATHS: ClassVar[dict] = {"data_dir": "path", "templates_dir": "path"}
     # A bad value degrades to the layer beneath it (else the default) with a note, never a
     # setting --show-config advertises but no document can use (gh #30).
-    _VALIDATORS: ClassVar[dict] = {"default_page_size": _page_size_name, "approval": _approval_mode}
+    _VALIDATORS: ClassVar[dict] = {"default_page_size": _page_size_name, "approval": _approval_mode,
+                                   "reasoning": _reasoning_level, "max_output_tokens": _output_cap}
     # Read directly from the [codraft] table (themes.py), not config fields: never "unknown".
     _TOML_PASSTHROUGH: ClassVar[tuple[str, ...]] = (
         "configurable", "codraft.themes", "codraft.allowed_themes", "codraft.doc_defaults",

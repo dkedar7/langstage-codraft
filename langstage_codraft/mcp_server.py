@@ -14,7 +14,8 @@ Two ways to reach it:
   ``view_pages`` works.
 * **stdio**: ``langstage-codraft mcp``. It works on the same data directory. For
   ``view_pages`` it uses the renderer of a server running on the configured port,
-  if there is one.
+  if there is one; otherwise it starts the app in-process the first time the tool is
+  called (``standalone.py``, gh #44).
 """
 from __future__ import annotations
 
@@ -89,14 +90,17 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
 
     @server.tool(description=(
         "See the document as the author sees it: screenshots of rendered pages "
-        "(default first 4; pass page numbers). Needs a running Codraft server."))
+        "(default first 4; pass page numbers)."))
     def view_pages(doc_id: str, pages: list[int] | None = None) -> list:
-        from .render import get_renderer
+        from .render import ensure_renderer
 
-        r = get_renderer()
-        if r is None:
-            return ["view_pages needs a running `langstage-codraft run` server (connect to its /mcp endpoint)."]
         try:
+            get_store().get_document(doc_id)  # an unknown id reads like the other tools' errors
+            # A running server's renderer, else one started in-process on first use (gh #44).
+            r = ensure_renderer()
+            if r is None:
+                return ["view_pages needs a running `langstage-codraft run` server (connect to its "
+                        "/mcp endpoint), or `langstage-codraft mcp`, which renders in-process."]
             shots = r.call(r.screenshot_pages(doc_id, pages=pages, max_pages=4))
         except Exception as exc:  # noqa: BLE001  e.g. BrowserMissing: say how to fix it (gh #17)
             return [_err(exc)]

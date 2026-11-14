@@ -254,7 +254,9 @@ class Renderer:
             assets: dict[str, bytes] = {}
             import httpx
 
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=30) as client:
+            # With the renderer's own credentials: a password-protected server (and the standalone
+            # renderer, gh #44) answers 401 without them and the snapshot lost its assets.
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=30, headers=self.headers) as client:
                 async def grab(url: str) -> str:
                     path = urlparse(url).path if url.startswith("http") else url
                     if not path.startswith("/"):
@@ -373,3 +375,21 @@ def set_renderer(r: Renderer | None) -> None:
 
 def get_renderer() -> Renderer | None:
     return _RENDERER
+
+
+_FACTORY: Any = None
+
+
+def set_renderer_factory(factory: Any) -> None:
+    """How to get a renderer when none is running yet (gh #44): the stdio MCP server sets
+    one that starts the app in-process the first time ``view_pages`` is called."""
+    global _FACTORY
+    _FACTORY = factory
+
+
+def ensure_renderer() -> Renderer | None:
+    """The running renderer, else the one the factory starts; ``None`` if there's neither."""
+    r = get_renderer()
+    if r is not None or _FACTORY is None:
+        return r
+    return _FACTORY()

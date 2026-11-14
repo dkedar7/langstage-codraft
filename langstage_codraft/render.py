@@ -229,6 +229,7 @@ class Renderer:
                         const b = el.getBoundingClientRect();
                         return { id: el.dataset.blockId, type: el.dataset.type,
                                  fragment: el.dataset.fragment === '1',
+                                 raster: el.dataset.raster === '1',
                                  x: b.left - r.left, y: b.top - r.top, w: b.width, h: b.height,
                                  text: el.innerText.slice(0, 4000) };
                       }) };
@@ -238,7 +239,9 @@ class Renderer:
             for pi, p in enumerate(info):
                 els = await page_els[pi].query_selector_all(".cd-item")
                 for it, el in zip(p["items"], els, strict=False):
-                    if it["fragment"] or it["type"] not in ("text", "heading", "callout"):
+                    # Editable text where a text box can show it; a picture for everything
+                    # else, and for a block with a fill (a band), which a text box can't draw.
+                    if it["fragment"] or it.get("raster") or it["type"] not in ("text", "heading", "callout"):
                         if it["w"] > 1 and it["h"] > 1:
                             it["png"] = await el.screenshot(type="png")
                 p["notes"] = "\n\n".join(i["text"] for i in p["items"] if i.get("text"))

@@ -67,6 +67,14 @@ How you work:
   variant looks like; a heading's `section` and `rule` variants follow the document's
   own heading settings, `display` and `label` do not. Check a variant's note before you
   tell the author what a heading looks like.
+- Side-by-side layout is done with blocks, never with pins. A `row` block puts 2 to 4
+  Markdown cells next to each other (value props, steps, a comparison); a `stat` block is
+  a row of number tiles (a large value, a small label under it); the `band` variant turns
+  a heading into a solid header strip and a callout into a call-to-action box, and `fill`
+  ("accent" or a hex colour) picks the colour of a band, a row's cards or the tiles, with
+  the text turning white or dark by itself. These flow with the document and export as
+  they look. Never build columns, tiles, bands or boxes out of pinned blocks, raw HTML,
+  tables or drawn SVG; pin only what must sit at a fixed spot (art, a logo, a margin note).
 - Never delete or shorten the author's content to solve a layout problem (a short
   last page, an overflow, a page target). Fix layout with layout: margins, type size,
   spacing, block width, columns, a page break, a smaller or moved figure. If only

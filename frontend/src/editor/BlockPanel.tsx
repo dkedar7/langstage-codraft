@@ -7,6 +7,8 @@ import { useEditorApi } from "./context";
 import { SketchPad } from "./SketchPad";
 import { withBase } from "../base";
 import { agentName, authorLabel } from "../branding";
+import { FILL_LABELS, FILL_NAMES, FILL_TYPES, ROW_CELLS, STAT_ITEMS, rowCells, statItems } from "../render/layoutBlocks";
+import { ColorInput } from "./DesignPanel";
 
 export function BlockPanel() {
   const ed = useEditorApi();
@@ -27,6 +29,7 @@ function BlockInspector({ block }: { block: Block }) {
   const L = block.layout;
   const onOwnPage = L.role !== "flow"; // cover or back page: pins place it on that page
   const variantNotes = ed.cfg.block_variants?.[block.type] || {};
+  const accent = String(doc.settings.style?.color_accent || ed.cfg.themes[doc.settings.theme]?.color_accent || "");
   const variants = ed.cfg.block_variants ? Object.keys(variantNotes) : VARIANTS[block.type] || [];
 
   return (
@@ -86,6 +89,26 @@ function BlockInspector({ block }: { block: Block }) {
               <div className="text-[11.5px] text-[var(--color-text-muted)] mt-1" data-testid="variant-note">
                 {variantNotes[L.variant][0].toUpperCase() + variantNotes[L.variant].slice(1)}.</div>
             )}
+          </>
+        )}
+        {FILL_TYPES.has(block.type) && (
+          <>
+            <span className="label">Fill</span>
+            <select className="select" data-testid="fill-select"
+              value={!L.fill ? "" : L.fill in FILL_NAMES ? L.fill : "custom"}
+              onChange={(e) => patchLayout({ fill: e.target.value === "custom"
+                ? (/^#[0-9a-f]{6}$/i.test(accent) ? accent : "#1a4d8f") : e.target.value || null })}>
+              <option value="">{L.variant === "band" ? "Accent (a band's own colour)" : "None"}</option>
+              {Object.keys(FILL_NAMES).map((k) => <option key={k} value={k}>{FILL_LABELS[k]}</option>)}
+              <option value="custom">A colour of your own…</option>
+            </select>
+            {L.fill && !(L.fill in FILL_NAMES) && (
+              <div className="mt-1"><ColorInput value={L.fill} testid="fill-color" onCommit={(v) => patchLayout({ fill: v })} /></div>
+            )}
+            <div className="text-[11.5px] text-[var(--color-text-muted)] mt-1">
+              {block.type === "row" ? "Colours the cells as cards." : block.type === "stat" ? "Colours the tiles."
+                : "A solid strip behind the text."} The text turns white or dark to suit it.
+            </div>
           </>
         )}
         {block.type === "text" && (
@@ -390,6 +413,10 @@ function ContentEditor({ block, patch }: { block: Block; patch: (c: any, note?: 
       );
     case "table":
       return <TableEditor block={block} patch={patch} />;
+    case "row":
+      return <RowEditor block={block} patch={patch} />;
+    case "stat":
+      return <StatEditor block={block} patch={patch} />;
     case "chart":
       return (
         <>
@@ -482,6 +509,85 @@ function TableEditor({ block, patch }: { block: Block; patch: (c: any) => Promis
   );
 }
 
+/** Save a group of fields when the focus leaves the group, not after each field. Saving a
+ *  block re-mounts its panel, which would wipe what is being typed in the next field. */
+function leftGroup(e: React.FocusEvent<HTMLElement>): boolean {
+  return !e.currentTarget.contains(e.relatedTarget as Node | null);
+}
+
+/** A row's cells: Markdown per cell, 2 to 4 of them, with optional relative widths. */
+function RowEditor({ block, patch }: { block: Block; patch: (c: any) => Promise<any> }) {
+  const saved = rowCells(block.content);
+  const savedWidths = Array.isArray(block.content.widths) ? block.content.widths.join(", ") : "";
+  const [cells, setCells] = useState(saved);
+  const [widths, setWidths] = useState(savedWidths);
+  const [lo, hi] = ROW_CELLS;
+  const commit = (next = cells, w = widths) => {
+    const nums = (w.match(/\d+(\.\d+)?/g) || []).map(Number).filter((n) => n > 0);
+    const body = { cells: next.map((markdown) => ({ markdown })), widths: nums.length === next.length ? nums : null };
+    const was = { cells: saved.map((markdown) => ({ markdown })), widths: Array.isArray(block.content.widths) ? block.content.widths : null };
+    if (JSON.stringify(body) !== JSON.stringify(was)) patch(body);
+  };
+  return (
+    <div onBlur={(e) => leftGroup(e) && commit()}>
+      {cells.map((md, i) => (
+        <div key={i} data-testid={`row-cell-${i}`}>
+          <div className="flex items-center">
+            <span className="label">Column {i + 1}</span>
+            {cells.length > lo && (
+              <button className="btn btn-icon ml-auto" title={`Remove column ${i + 1}`} data-testid={`row-remove-${i}`}
+                onClick={() => { const next = cells.filter((_, j) => j !== i); setCells(next); setWidths(""); commit(next, ""); }}>
+                <Trash2 size={12} /></button>
+            )}
+          </div>
+          <textarea className="textarea font-mono" style={{ fontSize: 12, minHeight: 84 }} value={md}
+            onChange={(e) => setCells(cells.map((c, j) => (j === i ? e.target.value : c)))} />
+        </div>
+      ))}
+      <div className="flex flex-wrap gap-1 mt-2">
+        <button className="btn" disabled={cells.length >= hi} data-testid="row-add"
+          onClick={() => { const next = [...cells, ""]; setCells(next); setWidths(""); commit(next, ""); }}>
+          <Plus size={12} /> Column</button>
+      </div>
+      <span className="label">Relative widths</span>
+      <input className="input" value={widths} data-testid="row-widths"
+        placeholder={`equal (or e.g. ${cells.map((_, i) => (i === cells.length - 1 ? 2 : 1)).join(", ")})`}
+        onChange={(e) => setWidths(e.target.value)} onKeyDown={(e) => e.key === "Enter" && commit()} />
+      <div className="text-[11px] text-[var(--color-text-muted)] mt-1">
+        The cells sit side by side and move together: a row never splits across pages. The "cards" style boxes each cell.
+      </div>
+    </div>
+  );
+}
+
+/** Number tiles: a value and a label per tile. */
+function StatEditor({ block, patch }: { block: Block; patch: (c: any) => Promise<any> }) {
+  const saved = statItems(block.content);
+  const [items, setItems] = useState(saved);
+  const [lo, hi] = STAT_ITEMS;
+  const commit = (next = items) => { if (JSON.stringify(next) !== JSON.stringify(saved)) patch({ items: next }); };
+  const edit = (i: number, part: Partial<{ value: string; label: string }>) =>
+    setItems(items.map((x, j) => (j === i ? { ...x, ...part } : x)));
+  return (
+    <div onBlur={(e) => leftGroup(e) && commit()}>
+      {items.map((it, i) => (
+        <div key={i} className="border border-[var(--color-border)] rounded p-2 mb-2 space-y-1" data-testid={`stat-item-${i}`}>
+          <div className="flex gap-1">
+            <input className="input" value={it.value} placeholder="99.9%" data-testid={`stat-value-${i}`}
+              onChange={(e) => edit(i, { value: e.target.value })} onKeyDown={(e) => e.key === "Enter" && commit()} />
+            <button className="btn btn-icon" title={`Remove tile ${i + 1}`} disabled={items.length <= lo}
+              onClick={() => { const next = items.filter((_, j) => j !== i); setItems(next); commit(next); }}><Trash2 size={12} /></button>
+          </div>
+          <input className="input" value={it.label} placeholder="what the number is" data-testid={`stat-label-${i}`}
+            onChange={(e) => edit(i, { label: e.target.value })} onKeyDown={(e) => e.key === "Enter" && commit()} />
+        </div>
+      ))}
+      <button className="btn" disabled={items.length >= hi} data-testid="stat-add"
+        onClick={() => { const next = [...items, { value: "", label: "" }]; setItems(next); commit(next); }}><Plus size={12} /> Tile</button>
+    </div>
+  );
+}
+
 function References({ block }: { block: Block }) {
   const ed = useEditorApi();
   const [refs, setRefs] = useState<Ref[]>(block.refs);
@@ -537,10 +643,12 @@ function posterFrame(url: string): Promise<Blob> {
 /** Typographic styles per block type (mirrors BLOCK_VARIANTS in store.py). */
 const VARIANTS: Record<string, string[]> = {
   text: ["lead", "pullquote", "kicker", "byline", "small", "caption", "footer", "bio"],
-  heading: ["display", "section", "rule", "label"],
+  heading: ["display", "section", "rule", "label", "band"],
   image: ["figure-box"],
   chart: ["figure-box"],
   table: ["figure-box"],
-  callout: ["figure-box", "dark"],
+  callout: ["figure-box", "dark", "band"],
   references: ["hanging"],
+  row: ["cards"],
+  stat: ["plain"],
 };

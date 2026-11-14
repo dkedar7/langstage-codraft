@@ -38,6 +38,8 @@ from .store import (
 )
 
 _MAX_READ = 6000
+# Block types that span all columns unless told otherwise: their cells need the width.
+_WIDE = ("row", "stat")
 _MAX_PAGES = 4  # page images per view_pages call
 
 
@@ -135,6 +137,8 @@ def parse_content(block_type: str, content: Any) -> dict:
     """Turn the agent's ``content`` argument into a block content dict."""
     if isinstance(content, dict):
         return content
+    if isinstance(content, list) and block_type in ("row", "stat"):
+        return {"cells" if block_type == "row" else "items": content}
     s = "" if content is None else str(content)
     # Agents often send structured content as a JSON string ({"markdown": …, "tone": …} for a
     # callout, {"title": …} for references). Accept it when it uses this block type's own
@@ -180,7 +184,52 @@ def parse_content(block_type: str, content: Any) -> dict:
         return {"src": st}
     if block_type == "references":
         return {"title": s or "References"}
+    if block_type == "row":
+        return _row(s)
+    if block_type == "stat":
+        return _stat(s)
     return {}
+
+
+def _json_list(s: str) -> list | None:
+    if not s.strip().startswith("["):
+        return None
+    try:
+        data = json.loads(s)
+    except ValueError:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def _row(s: str) -> dict:
+    """A row's content from what the agent typed: a JSON list of cells, or Markdown with a
+    line of ``---`` between the cells."""
+    cells = _json_list(s)
+    if cells is None:
+        cells = [part.strip() for part in re.split(r"(?m)^[ \t]*-{3,}[ \t]*$", s)]
+        cells = [c for c in cells if c]
+    if len(cells) < 2:
+        raise Invalid('a row needs 2 to 4 cells: send {"cells": ["first", "second", ...]} (each cell is '
+                      "Markdown), or Markdown with a line of --- between the cells")
+    return {"cells": cells}
+
+
+def _stat(s: str) -> dict:
+    """Number tiles from what the agent typed: a JSON list of {value, label} (or [value,
+    label] pairs), or one tile per line as ``value | label``."""
+    items = _json_list(s)
+    if items is None:
+        items = []
+        for line in s.splitlines():
+            line = line.strip().strip("|").strip()
+            if not line or re.fullmatch(r"[:\-| ]+", line):
+                continue
+            value, _, label = line.partition("|")
+            items.append({"value": value.strip(), "label": label.strip()})
+    if not items:
+        raise Invalid('number tiles need at least one item: send {"items": [{"value": "99.9%", "label": '
+                      '"uptime"}, ...]}, or one tile per line as "value | label"')
+    return {"items": items}
 
 
 def _heading(text: str) -> dict:
@@ -291,6 +340,12 @@ def get_document(config: RunnableConfig) -> str:
                 bits.append("full-width")
             if lay.get("variant"):
                 bits.append(f"variant={lay['variant']}")
+            if lay.get("fill"):
+                bits.append(f"fill={lay['fill']}")
+            if b["type"] == "row":
+                bits.append(f"{len(b['content'].get('cells') or [])} cells side by side")
+            if b["type"] == "stat":
+                bits.append(f"{len(b['content'].get('items') or [])} number tiles")
             if lay.get("dropcap"):
                 bits.append("dropcap")
             if lay.get("pin"):
@@ -503,7 +558,9 @@ def propose_edit(
     """Propose new content for an existing block. `content` is the COMPLETE new
     content: Markdown for text and callout blocks, plain text for headings, a Markdown
     table (or JSON {rows, header, caption}) for tables, Vega-Lite JSON for charts,
-    JSON {src, alt, caption} for images. Markdown is GitHub-flavoured, plus superscript
+    JSON {src, alt, caption} for images, JSON {"cells": ["...", "..."]} for a row (each cell
+    Markdown; optional "widths": [1, 1, 2]) and JSON {"items": [{"value", "label"}]} for
+    number tiles (stat). Markdown is GitHub-flavoured, plus superscript
     x^2^ and subscript H~2~O (attached to the text before, no spaces inside, 40 characters
     at most); <sup>2</sup> / <sub>2</sub> and Unicode characters (m², °C, CO₂) work too.
     Only ~~text~~ strikes out. No maths: LaTeX ($x^2$) prints literally. `references`: list of {title, url,
@@ -529,6 +586,10 @@ def propose_edit(
         c = parse_content(b["type"], content)
         if b["type"] == "heading" and heading_level:
             c["level"] = max(1, min(int(heading_level), 3))
+        if b["type"] == "row" and isinstance(c.get("cells"), list) and "widths" not in c:
+            was = b["content"].get("widths")
+            if was and len(was) != len(c["cells"]):
+                c["widths"] = None  # a different number of cells: the old widths no longer fit
         payload: dict[str, Any] = {"content": c}
         if references is not None:
             payload["refs"] = references
@@ -543,11 +604,20 @@ def propose_insert(
     block_type: str, content: str, config: RunnableConfig, after_block_id: str | None = None,
     at_start: bool = False, note: str = "", references: list[dict] | None = None,
     full_width: bool = False, heading_level: int = 2, comment_id: str | None = None,
-    variant: str | None = None, role: str | None = None,
+    variant: str | None = None, role: str | None = None, fill: str | None = None,
 ) -> str:
     """Propose a new block. block_type is one of: text, heading, image, video, table,
-    chart, callout, divider, references, page-break, spacer. A callout's tone (content
-    JSON {"markdown", "tone"}) is info, note, success, warn or dark (white on black). It is inserted after `after_block_id`,
+    chart, callout, divider, references, page-break, spacer, row, stat. A callout's tone (content
+    JSON {"markdown", "tone"}) is info, note, success, warn or dark (white on black).
+    Side by side: `row` puts 2 to 4 Markdown cells next to each other (content JSON
+    {"cells": ["**Fast.** ...", "**Safe.** ...", "..."]}, optional "widths": [1, 1, 2];
+    variant="cards" boxes each cell); `stat` is a row of number tiles (content JSON
+    {"items": [{"value": "99.99%", "label": "delivered in 60 s"}, ...]}). Both are full
+    width unless you say otherwise. variant="band" makes a heading a solid header strip and
+    a callout a call-to-action box; `fill` ("accent", "text", "muted", "callout", "figure"
+    or a hex colour) picks the colour of a band, the row's cards or the tiles, and the text
+    on it turns white or dark by itself. Use these, never pins, raw HTML or drawn SVG, for
+    columns of points, number tiles, header bands and call-to-action boxes. It is inserted after `after_block_id`,
     or at the start if at_start=True, or at the end otherwise. `content` uses the
     same formats as propose_edit. full_width=True makes it span all columns.
     role: "cover" or "back" puts it on the cover or back page; a block inserted right
@@ -563,11 +633,12 @@ def propose_insert(
         c = parse_content(block_type, content)
         if block_type == "heading":
             c.setdefault("level", max(1, min(int(heading_level), 3)))
+        wide = full_width or block_type in _WIDE
         payload: dict[str, Any] = {
             "type": block_type, "content": c,
             "after": None if at_start else (after_block_id or "__end__"),
-            "layout": {"span": "full" if full_width else "column", **({"variant": variant} if variant else {}),
-                       **({"role": role} if role else {})},
+            "layout": {"span": "full" if wide else "column", **({"variant": variant} if variant else {}),
+                       **({"role": role} if role else {}), **({"fill": fill} if fill else {})},
         }
         if references:
             payload["refs"] = references
@@ -679,6 +750,7 @@ def set_block_layout(
     variant: str | None = None, dropcap: bool | None = None,
     page_x_px: int | None = None, page_y_px: int | None = None,
     page_w_px: int | None = None, page_h_px: int | None = None,
+    fill: str | None = None,
 ) -> str:
     """Change a block's layout (styling; applies immediately). full_width spans all
     columns. height_px fixes its height (auto_height=True clears it). role: flow,
@@ -686,16 +758,23 @@ def set_block_layout(
     pin it to a column position so other blocks flow around it; unpin=True releases it.
     page_x_px/page_y_px/page_w_px/page_h_px (with pin_page) instead anchor it to the
     PAGE in px from the page's top-left corner, so it can bleed past the margins (hero
-    art, a full-width band, a footer in the bottom margin). On the cover or back page
+    art, an edge-to-edge strip, a footer in the bottom margin). On the cover or back page
     (role cover/back) a pin places the block on that page and pin_page is ignored: use
     page_*_px for cover art or a logo; the other cover blocks stack around it. repeat ('all', 'odd', 'even'
     or comma-separated page numbers) repeats a pinned block, for headers and footers;
     text in repeated blocks may use {page}, {pages} and {title}.
     variant sets the typographic style (get_document lists them per block type), e.g.
     text: lead, pullquote, kicker, byline, small, caption, footer, bio; heading: display,
-    section, rule, label; image/chart/table: figure-box. dropcap=True gives a text block a
-    large initial letter. variant='none' clears it. `block_id` may be a pending insert of
-    yours (sug_…): its layout is then part of the suggestion."""
+    section, rule, label, band; image/chart/table: figure-box; callout: band; row: cards;
+    stat: plain. dropcap=True gives a text block a large initial letter. variant='none'
+    clears it. fill colours a heading or callout (a band), a row's cells or number tiles:
+    "accent", "text", "muted", "heading", "callout", "figure", "rule" (the document's theme
+    colours) or a hex colour like "#ff5a1f"; the text on it turns white or dark by itself;
+    fill='none' clears it. For a header band use a heading with variant="band" and
+    full_width=True; for a call-to-action box a callout with variant="band". Do not pin
+    blocks to build columns, tiles or bands: insert a row or stat block instead.
+    `block_id` may be a pending insert of yours (sug_…): its layout is then part of the
+    suggestion."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -714,6 +793,8 @@ def set_block_layout(
             lay["variant"] = None if variant.strip().lower() in ("", "none", "default") else variant.strip()
         if dropcap is not None:
             lay["dropcap"] = bool(dropcap)
+        if fill is not None:
+            lay["fill"] = None if fill.strip().lower() in ("", "none", "default") else fill.strip()
         if unpin:
             lay["pin"] = None
         elif page_x_px is not None or page_y_px is not None or page_w_px is not None:
@@ -1083,8 +1164,14 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
     """Insert several blocks in one call (drafting a section, an outline, a whole page).
     Each item: {"type": "text"|"heading"|..., "content": <same formats as propose_edit, or a
     content dict>, "level": 1-3 for headings, "layout": {"span": "full"|"column",
-    "variant": "...", "dropcap": true, "pin": {...}, "repeat": "odd", "role": "cover"}, "references":
-    [{title, url, note}]}. They go in order after `after_block_id` (a block, or a pending
+    "variant": "...", "fill": "accent", "dropcap": true, "pin": {...}, "repeat": "odd", "role": "cover"},
+    "references": [{title, url, note}]}. Side by side: {"type": "row", "content": {"cells":
+    ["**Fast.** ...", "**Safe.** ...", "..."]}} puts 2 to 4 Markdown cells next to each other
+    ("layout": {"variant": "cards"} boxes them) and {"type": "stat", "content": {"items":
+    [{"value": "99.99%", "label": "delivered in 60 s"}, ...]}} is a row of number tiles; both
+    are full width by default. {"type": "heading", "layout": {"variant": "band", "span":
+    "full"}} is a header band and {"type": "callout", "layout": {"variant": "band"}} a
+    call-to-action box. They go in order after `after_block_id` (a block, or a pending
     insert of yours) or at the end, and they stay in that order however the author accepts
     them. Write one text block per paragraph (a heading, then each paragraph as its own
     block): the author approves, comments on and versions each block separately, so a whole
@@ -1102,10 +1189,17 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
             if t not in BLOCK_TYPES:
                 out.append(f"{i}: ERROR unknown type {t!r}")
                 continue
-            c = parse_content(t, item.get("content", ""))
+            try:
+                c = parse_content(t, item.get("content", ""))
+            except (Invalid, ValueError) as exc:  # one bad item must not lose the rest of the batch
+                out.append(f"{i}: ERROR {t} content: {exc.args[0] if exc.args else exc}")
+                continue
             if t == "heading" and item.get("level"):
                 c["level"] = max(1, min(int(item["level"]), 3))
-            payload = {"type": t, "content": c, "after": after, "layout": item.get("layout") or {}}
+            lay = item.get("layout") or {}
+            if t in _WIDE and isinstance(lay, dict) and "span" not in lay:
+                lay = {**lay, "span": "full"}
+            payload = {"type": t, "content": c, "after": after, "layout": lay}
             if item.get("references"):
                 payload["refs"] = item["references"]
             try:

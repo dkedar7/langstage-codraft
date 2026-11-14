@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.8.0 — 2026-11-14
+
+**Layout building blocks (gh #52).** Things that sit side by side are now blocks that flow
+with the document. Before, the only tools that fit were pins and raw HTML: in a real-model
+evaluation of 0.5.17, a one-page sales sheet took 266 tool calls, 190 of them pinning blocks to
+pixel positions, and still came out wrong.
+
+- **Columns (`row` block).** 2 to 4 cells side by side, each one Markdown:
+  `{"cells": [{"markdown": "..."}, ...], "widths": [1, 1, 2], "gap": 6}`. Cells are equal unless
+  you give relative widths; the gap (mm) defaults to the document's column gap. The `cards`
+  style puts each cell in a tinted box.
+- **Number tiles (`stat` block).** A large value with a small label under it:
+  `{"items": [{"value": "99.99%", "label": "delivered within 60 seconds"}, ...]}`, up to six. The
+  `plain` style drops the tinted boxes.
+- **`band` style for headings and callouts.** A band heading is a solid header strip; a band
+  callout is a call-to-action box with centred text.
+- **`layout.fill`.** The colour behind a band, a row's cards or the tiles: a theme colour by
+  name (`accent`, `text`, `muted`, `heading`, `callout`, `figure`, `rule`) or a hex colour. The
+  text on it turns white or dark, whichever reads. A fill on any other block type is refused.
+- **Editor.** Add block → **Columns** or **Number tiles**; cells and tiles are edited in the
+  Block panel, which saves when you leave them. **Style → band** and **Fill** are in the same
+  panel. The marketing one-pager template now starts with a row, tiles and a band.
+- **Agent.** `insert_blocks`, `propose_insert` and `propose_edit` take the new blocks (a row as
+  JSON, a list of cells, or Markdown with a line of `---` between cells; tiles as JSON or one
+  `value | label` per line), `set_block_layout` and `propose_insert` take `fill`, and a row or
+  tiles are full width unless told otherwise. The prompt and the tool descriptions say to use
+  these, never pins, raw HTML, tables or drawn SVG, for columns, tiles, bands and boxes. The
+  same tools serve MCP clients.
+- **Layout.** Each is one atomic block, measured at its width like a table; the paginator is
+  unchanged. A row or tiles never split across pages, and one taller than a page is flagged as
+  overflow. Cells that would be narrower than an inch stack; tiles that don't fit one line take
+  two.
+- **Exports.** PDF, PNG and HTML through the same print route, with a pixel-parity test for
+  each new block. Word writes a row and the tiles as borderless tables and shades a band.
+  PowerPoint shows a row, the tiles and a band as pictures where the paginator placed them.
+- **Import** maps nothing to these blocks.
+
+Also:
+
+- **A pending insert with a layout its block can't take is refused when it is proposed.** A
+  variant or a fill that doesn't apply to the block type used to be accepted as a suggestion
+  and fail only when the author accepted it.
+- **One bad item no longer loses the rest of an `insert_blocks` batch.** Content that can't be
+  parsed (a chart that isn't JSON, a row with one cell) is reported for that item and the
+  others are still inserted.
+
 ## 0.7.0 — 2026-11-14
 
 From a real-model evaluation of 0.5.17: a strong model wrote four multi-page documents through

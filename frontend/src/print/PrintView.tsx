@@ -7,6 +7,7 @@ import { pendingHyphenation } from "../render/hyphenate";
 import { pendingFonts, useDocFonts } from "../fonts";
 import { Fragment, Page, PageFurniture } from "../render/Page";
 import { effectiveTheme, pageDesign, themeVars } from "../render/theme";
+import { blockFill } from "../render/layoutBlocks";
 import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
 import { pageNumbers, usesPageToken } from "../layout/numbering";
 import type { AppConfig, Doc } from "../types";
@@ -98,7 +99,8 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
             const pageNo = numbering.map[p.number] ?? undefined;
             if (pageNo === undefined && b.layout.pin && usesPageToken(b.content)) return null; // unnumbered page
             return (
-              <div key={`${it.id}-${it.offset}`} className="cd-item" data-block-id={it.id} data-type={b.type} data-fragment={it.fragment ? "1" : "0"} style={{ position: "absolute", left: it.x, top: it.y, width: it.w, height: it.h }}>
+              <div key={`${it.id}-${it.offset}`} className="cd-item" data-block-id={it.id} data-type={b.type} data-fragment={it.fragment ? "1" : "0"}
+                data-raster={blockFill(b, theme) ? "1" : "0"} style={{ position: "absolute", left: it.x, top: it.y, width: it.w, height: it.h }}>
                 <Fragment item={it}>
                   <BlockView block={b} width={it.w} ctx={pctx} fixedHeight={pinHeight(b) || b.layout.height} pageNo={pageNo} />
                 </Fragment>

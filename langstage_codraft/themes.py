@@ -54,6 +54,48 @@ def is_color(v: Any) -> bool:
     return isinstance(v, str) and bool(_COLOR.match(v.strip()))
 
 
+# A block's fill (layout.fill): a hex colour, or the name of one of the document's theme
+# colours, so a band or a row of tiles follows the theme when it changes.
+FILL_NAMES: dict[str, str] = {
+    "accent": "color_accent", "text": "color_text", "muted": "color_muted", "heading": "color_heading",
+    "callout": "color_callout", "figure": "color_figure", "rule": "color_rule",
+}
+_HEX = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
+
+
+def is_fill(v: Any) -> bool:
+    return isinstance(v, str) and (v in FILL_NAMES or bool(_HEX.match(v)))
+
+
+def _luminance(color: str) -> float | None:
+    m = _HEX.match((color or "").strip())
+    if not m:
+        return None
+    h = color.strip()[1:]
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    out = []
+    for i in (0, 2, 4):
+        v = int(h[i:i + 2], 16) / 255
+        out.append(v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * out[0] + 0.7152 * out[1] + 0.0722 * out[2]
+
+
+def resolve_fill(fill: str | None, theme: dict[str, Any]) -> tuple[str, bool] | None:
+    """``(colour, dark)`` for a block's fill in this theme, or None when it has none.
+    ``dark`` says the text on it must be light. Mirrors ``render/fill.ts`` in the editor."""
+    if not fill:
+        return None
+    color = fill
+    if fill in FILL_NAMES:
+        color = theme.get(FILL_NAMES[fill]) or (
+            theme.get("color_text") if fill == "heading" else theme.get("color_callout") if fill == "figure" else None)
+    if not isinstance(color, str) or not color:
+        return None
+    lum = _luminance(color)
+    return color, (lum is not None and lum < 0.4)
+
+
 def is_image_ref(v: Any) -> bool:
     return isinstance(v, str) and len(v) <= 1_500_000 and bool(_IMAGE.match(v.strip()))
 

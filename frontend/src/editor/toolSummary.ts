@@ -50,6 +50,8 @@ export function blockName(b: BlockLike | undefined): string {
   const c = b.content || {};
   const words = b.type === "heading" ? c.text
     : b.type === "text" || b.type === "callout" ? String(c.markdown || "").replace(/[#>*_`~|^[\]()-]+/g, " ")
+    : b.type === "row" ? String((Array.isArray(c.cells) && c.cells[0]?.markdown) || "").replace(/[#>*_`~|^[\]()-]+/g, " ")
+    : b.type === "stat" ? (Array.isArray(c.items) ? c.items : []).map((i: any) => i?.value).filter(Boolean).join(", ")
       : c.caption || c.title || c.label || "";
   const text = clip(String(words || ""), 44);
   return text ? `${b.type} “${text}”` : `a${/^[aeiou]/.test(b.type) ? "n" : ""} ${b.type} block`;

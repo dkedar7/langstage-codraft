@@ -368,6 +368,31 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .cd-tone-dark .cd-md p, .cd-v-dark .cd-callout .cd-md p { text-align: center; text-indent: 0; hyphens: none; }
 .cd-tone-dark a, .cd-v-dark .cd-callout a { color: #fff; }
 
+/* ------------------------------------------------- layout blocks: rows, number tiles, fills */
+/* A row: 2 to 4 cells of Markdown side by side. One atomic block, measured like a table. */
+.cd-row { display: grid; align-items: start; row-gap: .9em; }
+.cd-row-cell { min-width: 0; }
+.cd-v-cards .cd-row, .cd-type-row.cd-filled .cd-row { align-items: stretch; }
+.cd-v-cards .cd-row-cell, .cd-type-row.cd-filled .cd-row-cell { background: var(--cd-fill, var(--cd-callout)); padding: .8em .95em;
+  border-radius: 3px; }
+/* Number tiles: a large value and a small label. The value shrinks with a narrow tile (cqi). */
+.cd-stat { display: grid; align-items: stretch; }
+.cd-stat-tile { container-type: inline-size; min-width: 0; background: var(--cd-fill, var(--cd-figure)); padding: .85em .7em .8em;
+  border-radius: 3px; text-align: center; }
+.cd-stat-value { font-family: var(--cd-font-heading); font-weight: var(--cd-hw); font-size: min(2.2em, 26cqi); line-height: 1.1;
+  letter-spacing: -.01em; color: var(--cd-heading, var(--cd-accent)); overflow-wrap: break-word; }
+.cd-stat-label { font-size: .82em; line-height: 1.3; color: var(--cd-muted); margin-top: .4em; }
+.cd-v-plain:not(.cd-filled) .cd-stat-tile { background: none; padding: .1em 0; }
+/* A fill (layout.fill, or the accent for a band): the block sets --cd-fill, and takes light or
+   dark text to suit it (render/layoutBlocks.ts decides which). */
+.cd-fill-dark { --cd-text: #ffffff; --cd-heading: #ffffff; --cd-muted: rgba(255,255,255,.84); --cd-accent: #ffffff;
+  --cd-rule: rgba(255,255,255,.5); color: var(--cd-text); }
+.cd-fill-light { --cd-text: #1d1d1f; --cd-heading: #1d1d1f; --cd-muted: #4a4a52; --cd-accent: #1d1d1f;
+  --cd-rule: rgba(0,0,0,.25); color: var(--cd-text); }
+.cd-type-heading.cd-filled .cd-h { background: var(--cd-fill); padding: .45em .7em; color: var(--cd-text) !important; }
+.cd-type-callout.cd-filled .cd-callout { background: var(--cd-fill); border-left: 0; border-radius: 0; padding: .9em 1.1em; }
+.cd-v-band.cd-type-callout .cd-md p { text-align: center; text-indent: 0; hyphens: none; }
+
 /* reserved areas (spacer blocks) */
 .cd-spacer { display: flex; align-items: center; justify-content: center; border: 1px dashed #b6bcc8; border-radius: 3px;
   background: repeating-linear-gradient(135deg, rgba(37,99,235,.05), rgba(37,99,235,.05) 6px, transparent 6px, transparent 12px);

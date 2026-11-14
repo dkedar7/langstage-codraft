@@ -73,8 +73,9 @@ def test_noop_edit_creates_no_version(store):
 def test_refs_are_versioned_and_cleaned(store):
     d = store.create_document("A")
     b = store.insert_block(d["id"], "text", {"markdown": "x"}, refs=["Plain title", {"url": "https://e.x"}, 3])
-    assert b["refs"] == [{"title": "Plain title", "url": "", "note": ""},
-                         {"title": "https://e.x", "url": "https://e.x", "note": ""}]
+    blank = {"authors": "", "year": "", "publisher": "", "accessed": "", "note": ""}
+    assert b["refs"] == [{"key": "plaintitle", "title": "Plain title", "url": "", **blank},
+                         {"key": "ex", "title": "https://e.x", "url": "https://e.x", **blank}]
     store.edit_block(b["id"], refs=[])
     assert store.step(b["id"], "back")["refs"][0]["title"] == "Plain title"
 

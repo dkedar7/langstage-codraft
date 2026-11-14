@@ -152,14 +152,17 @@ def test_reference_links_are_inlined_but_code_is_left_alone():
     assert len(imp.blocks) == 2  # the definition is not a paragraph
 
 
-def test_footnotes_become_block_references_numbered_in_reading_order():
+def test_footnotes_become_block_references_cited_by_key():
     imp = from_markdown(
         "First claim.[^b]\n\nSecond claim.[^a] Again.[^b]\n\n"
         "[^a]: Example Institute, *Review Economics* (2025).\n"
         "[^b]: Acme Handbook, https://example.org/handbook.\n[^c]: never used\n")
-    assert imp.blocks[0]["content"]["markdown"] == "First claim.[1]"
-    assert imp.blocks[0]["refs"] == [{"title": "Acme Handbook", "url": "https://example.org/handbook"}]
-    assert imp.blocks[1]["content"]["markdown"] == "Second claim.[2] Again.[1]"
+    # A marker becomes a citation ([@key]), which prints as the source's number in the list
+    # and keeps pointing at it when blocks move (0.9.0; it used to be a typed-in "[1]").
+    assert imp.blocks[0]["content"]["markdown"] == "First claim.[@acmehandbook]"
+    assert imp.blocks[0]["refs"] == [{"title": "Acme Handbook", "url": "https://example.org/handbook",
+                                      "key": "acmehandbook"}]
+    assert imp.blocks[1]["content"]["markdown"] == "Second claim.[@exampleinstitute] Again.[@acmehandbook]"
     assert [r["title"] for r in imp.blocks[1]["refs"]] == ["Example Institute, Review Economics (2025).", "Acme Handbook"]
     assert types(imp)[-1] == "references"
     assert any("[^c]" in n for n in imp.notes) and any("footnotes became references" in n for n in imp.notes)
@@ -505,8 +508,9 @@ def test_docx_links_footnotes_and_tracked_changes():
 
     imp = from_docx(rezip(base, edit))
     assert types(imp) == ["text", "references"]
-    assert imp.blocks[0]["content"]["markdown"] == "See [the guide](https://example.org/guide).[1] Added."
-    assert imp.blocks[0]["refs"] == [{"title": "Acme Handbook", "url": "https://example.org/handbook"}]
+    assert imp.blocks[0]["content"]["markdown"] == "See [the guide](https://example.org/guide).[@acmehandbook] Added."
+    assert imp.blocks[0]["refs"] == [{"title": "Acme Handbook", "url": "https://example.org/handbook",
+                                      "key": "acmehandbook"}]
     assert "tracked changes were accepted (deleted text was left out)" in imp.notes
 
 

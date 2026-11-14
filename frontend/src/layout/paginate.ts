@@ -9,9 +9,16 @@
  *  - Pinned blocks are rectangle reservations on a page. Flowing blocks fill the
  *    space around them; this is never text wrapping.
  *  - Text blocks may split at the break points measured in the DOM (paragraph
- *    boundaries and line boundaries, with widow/orphan control). Every other block
- *    is atomic: if it doesn't fit, it moves to the next column or page. An atomic
- *    block taller than a whole empty column is placed anyway and flagged as overflow.
+ *    boundaries and line boundaries, with widow/orphan control). A table splits between
+ *    its rows the same way, and each continued piece repeats the header row (`head`).
+ *    Every other block is atomic: if it doesn't fit, it moves to the next column or page.
+ *    An atomic block taller than a whole empty column is placed anyway and flagged as overflow.
+ *  - A floating atomic block (`float`: a figure, chart, picture, row or tiles in a document
+ *    with back-fill on) that doesn't fit lets the text after it fill the gap, and opens the
+ *    next column or page itself. Only text up to the next heading moves ahead of it, one
+ *    block floats at a time (so figures keep their order), and each floats once.
+ *  - A block anchored to the bottom (`anchor: "bottom"`) sits at the foot of the page the
+ *    flow has reached, and later blocks flow in the space above it.
  *  - A keep-with-next block (a heading) is never the last thing in a column: if the
  *    start of the block after it doesn't fit below it, it moves on with that block.
  *  - Cover and back blocks get their own pages, stacked in a single column (centred by
@@ -43,6 +50,15 @@ export interface MeasuredBlock {
   repeat?: "all" | "odd" | "even" | number[] | null;
   /** A heading: keep it in the same column as the start of the next block (gh #18). */
   keepWithNext?: boolean;
+  /** A table's header row: this much of the block's top is drawn again above every continued piece. */
+  head?: number;
+  /** An atomic block that may let the text after it back-fill a gap it can't fit in. */
+  float?: boolean;
+  /** Sit at the bottom of the page the flow has reached. */
+  anchor?: "bottom" | null;
+  /** The content's own height when the block has a fixed one: a pinned block whose content
+   *  is taller than its box is flagged as overflow. */
+  natural?: number;
 }
 
 export interface Geometry {
@@ -75,6 +91,9 @@ export interface Placed {
   pinned: boolean;
   repeated: boolean;
   overflow: boolean;
+  /** A continued table piece: this much of the block's top (its header row) is drawn again
+   *  above the piece. Only set when it applies. */
+  head?: number;
 }
 
 export interface PageLayout {
@@ -105,7 +124,16 @@ interface Rect {
 interface Cursor {
   b: MeasuredBlock;
   offset: number;
+  /** this block has already stepped aside once for the text after it */
+  floated?: boolean;
 }
+
+/** The header a continued piece of this block repeats above itself. */
+const headOf = (c: Cursor): number => (c.offset > 0 ? c.b.head || 0 : 0);
+
+/** Text that may move ahead of a floating block: body text, never a heading. */
+const backfills = (c: Cursor | undefined): boolean =>
+  !!c && c.b.kind === "text" && !c.b.keepWithNext && !c.b.anchor && !c.b.full;
 
 export function contentSize(geo: Geometry) {
   const contentW = geo.pageW - geo.margin.left - geo.margin.right;
@@ -152,9 +180,10 @@ function pinRect(b: MeasuredBlock, geo: Geometry): Rect {
 function bestSplit(c: Cursor, room: number): Split | null {
   const splits = c.b.splits || [];
   let best: Split | null = null;
+  const head = headOf(c);
   for (const s of splits) {
     if (s.end <= c.offset + EPS) continue;
-    if (s.end - c.offset <= room + EPS) best = s;
+    if (s.end - c.offset + head <= room + EPS) best = s;
     else break;
   }
   return best;
@@ -174,7 +203,10 @@ function leadHeight(cursors: Cursor[], qi: number, gap: number): number | null {
     k++;
   }
   if (k >= cursors.length) return null;
-  const d = cursors[k];
+  let d = cursors[k];
+  // A figure that can step aside doesn't hold the heading back: the text after the figure
+  // is what the heading has to stay with.
+  if (d.b.float && d.b.kind === "atomic" && !d.floated && backfills(cursors[k + 1])) d = cursors[k + 1];
   const first = d.b.kind === "text" ? (d.b.splits || []).find((s) => s.end > d.offset + EPS) : undefined;
   return h + gap + (first ? first.end - d.offset : d.b.height - d.offset);
 }
@@ -182,6 +214,8 @@ function leadHeight(cursors: Cursor[], qi: number, gap: number): number | null {
 class PageBuilder {
   items: Placed[] = [];
   reserved: Rect[] = [];
+  /** blocks anchored to the bottom of this page */
+  bottoms = new Set<string>();
   constructor(
     public number: number,
     public bodyIndex: number,
@@ -275,7 +309,10 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
         const r = pinRect(b, geo);
         pb.reserved.push(r);
         pb.items.push({ id: b.id, x: r.x, y: r.y, w: r.w, h: r.h, offset: 0, fragment: false, continued: false,
-          pinned: true, repeated: !!b.repeat && bodyIndex !== b.pin!.page, overflow: r.y + r.h > contentH + EPS });
+          pinned: true, repeated: !!b.repeat && bodyIndex !== b.pin!.page,
+          // A page-anchored pin may bleed into the margin: it overflows only past the page's edge.
+          overflow: r.y + r.h > contentH + (b.pin!.anchor === "page" ? geo.margin.bottom : 0) + EPS
+            || (b.natural != null && b.natural > r.h + 1) });
         note(b.id, pb.number);
       }
     }
@@ -301,9 +338,13 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
     return cur < limit - EPS ? { start: cur, end: limit } : null;
   };
 
+  let lastCol = 0;
   const place = (pb: PageBuilder, c: Cursor, x: number, y: number, w: number, h: number, end: number, overflow = false) => {
-    pb.items.push({ id: c.b.id, x, y, w, h, offset: c.offset, fragment: c.offset > 0 || end < c.b.height - EPS,
-      continued: c.offset > 0, pinned: false, repeated: false, overflow });
+    const item: Placed = { id: c.b.id, x, y, w, h, offset: c.offset, fragment: c.offset > 0 || end < c.b.height - EPS,
+      continued: c.offset > 0, pinned: false, repeated: false, overflow };
+    if (headOf(c)) item.head = headOf(c);
+    pb.items.push(item);
+    lastCol = Math.max(0, Math.min(n - 1, Math.round(x / (colW + geo.colGap))));
     note(c.b.id, pb.number);
   };
 
@@ -316,11 +357,19 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
     let qi = 0;
     let bottom = startY;
     const cursors = queue.map((c) => ({ ...c }));
+    // A floating block that didn't fit, waiting for the next interval while text back-fills.
+    let held: Cursor | null = null;
+    const release = () => {
+      if (held) cursors.splice(qi, 0, held);
+      held = null;
+    };
     for (let col = 0; col < n && qi < cursors.length; col++) {
       const x = col * (colW + geo.colGap);
       let y = startY;
       let usedInInterval = false;
-      while (qi < cursors.length) {
+      while (qi < cursors.length || held) {
+        // The held block comes back once nothing after it may move ahead of it.
+        if (held && !backfills(cursors[qi])) release();
         const iv = freeAt(pb, x, colW, y, limit);
         if (!iv) break;
         if (iv.start > y + EPS) {
@@ -329,7 +378,8 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
         }
         const c = cursors[qi];
         const gap = usedInInterval ? geo.blockGap : 0;
-        const remaining = c.b.height - c.offset;
+        const head = headOf(c);
+        const remaining = c.b.height - c.offset + head;
         const room = iv.end - (y + gap);
         // Keep with next: a heading that fits but would end this interval alone moves on
         // with the start of the block it introduces. Not at the top of the column, where
@@ -352,9 +402,10 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
         }
         const s = c.b.kind === "text" ? bestSplit(c, room) : null;
         if (s) {
-          if (!dryRun) place(pb, c, x, y + gap, colW, s.end - c.offset, s.end);
-          bottom = Math.max(bottom, y + gap + (s.end - c.offset));
+          if (!dryRun) place(pb, c, x, y + gap, colW, s.end - c.offset + head, s.end);
+          bottom = Math.max(bottom, y + gap + (s.end - c.offset + head));
           c.offset = s.next;
+          release(); // a held figure opens the next interval, ahead of the rest of this text
           y = iv.end + geo.blockGap; // the rest continues below the blocker or in the next column
           usedInInterval = false;
           continue;
@@ -368,71 +419,88 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
           qi++;
           break;
         }
+        // A floating block steps aside: the text after it fills this gap, and the block
+        // opens the next interval. One at a time, and once each, so figures keep their order.
+        if (c.b.float && c.b.kind === "atomic" && !c.floated && !held && backfills(cursors[qi + 1])) {
+          c.floated = true;
+          held = c;
+          cursors.splice(qi, 1);
+          continue;
+        }
+        release();
         y = iv.end + geo.blockGap;
         usedInInterval = false;
         if (iv.end >= limit - EPS) break; // column exhausted
       }
+      release();
     }
     return { qi, cursors, bottom };
   };
 
   let pb = newPage();
   let bandTop = 0;
-  let i = 0;
-  while (i < flowing.length) {
-    const b = flowing[i];
-    if (b.kind === "break") {
+
+  /** Would this full-width block fit on the current page, at or below the band? */
+  const fullFits = (b: MeasuredBlock): boolean => {
+    let y = bandTop;
+    for (let guard = 0; guard < 100; guard++) {
+      const iv = freeAt(pb, 0, contentW, y, contentH);
+      if (!iv) return false;
+      if (b.height <= iv.end - iv.start + EPS) return true;
+      if (iv.end >= contentH - EPS) return false;
+      y = iv.end + geo.blockGap;
+    }
+    return false;
+  };
+
+  /** A full-width block: place below the band at the first free full-width interval. */
+  const placeFull = (b: MeasuredBlock) => {
+    let c: Cursor = { b, offset: 0 };
+    let y = bandTop;
+    let guard = 0;
+    while (guard++ < 500) {
+      const iv = freeAt(pb, 0, contentW, y, contentH);
+      const head = headOf(c);
+      const remaining = c.b.height - c.offset + head;
+      if (iv && remaining <= iv.end - iv.start + EPS) {
+        place(pb, c, 0, iv.start, contentW, remaining, c.b.height);
+        bandTop = iv.start + remaining + geo.blockGap;
+        break;
+      }
+      const s = iv && c.b.kind === "text" ? bestSplit(c, iv.end - iv.start) : null;
+      if (iv && s) {
+        place(pb, c, 0, iv.start, contentW, s.end - c.offset + head, s.end);
+        c = { b, offset: s.next };
+        y = iv.end + geo.blockGap;
+        continue;
+      }
+      if (iv && iv.end < contentH - EPS) {
+        y = iv.end + geo.blockGap; // try below the blocking pin
+        continue;
+      }
+      const pageEmpty = pb.items.every((it) => it.pinned) && bandTop <= EPS && c.offset === 0;
+      if (pageEmpty && iv) {
+        place(pb, c, 0, iv.start, contentW, iv.end - iv.start, c.b.height, true);
+        bandTop = contentH;
+        break;
+      }
       pb = newPage();
       bandTop = 0;
-      i++;
-      continue;
+      y = 0;
     }
-    if (b.full) {
-      // A full-width block: place below the band at the first free full-width interval.
-      let c: Cursor = { b, offset: 0 };
-      let y = bandTop;
-      let guard = 0;
-      while (guard++ < 500) {
-        const iv = freeAt(pb, 0, contentW, y, contentH);
-        const remaining = c.b.height - c.offset;
-        if (iv && remaining <= iv.end - iv.start + EPS) {
-          place(pb, c, 0, iv.start, contentW, remaining, c.b.height);
-          bandTop = iv.start + remaining + geo.blockGap;
-          break;
-        }
-        const s = iv && c.b.kind === "text" ? bestSplit(c, iv.end - iv.start) : null;
-        if (iv && s) {
-          place(pb, c, 0, iv.start, contentW, s.end - c.offset, s.end);
-          c = { b, offset: s.next };
-          y = iv.end + geo.blockGap;
-          continue;
-        }
-        if (iv && iv.end < contentH - EPS) {
-          y = iv.end + geo.blockGap; // try below the blocking pin
-          continue;
-        }
-        const pageEmpty = pb.items.every((it) => it.pinned) && bandTop <= EPS && c.offset === 0;
-        if (pageEmpty && iv) {
-          place(pb, c, 0, iv.start, contentW, iv.end - iv.start, c.b.height, true);
-          bandTop = contentH;
-          break;
-        }
-        pb = newPage();
-        bandTop = 0;
-        y = 0;
-      }
-      i++;
-      continue;
-    }
-    // A band: consecutive column-span blocks up to the next full-width block or page break.
-    let j = i;
-    while (j < flowing.length && !flowing[j].full && flowing[j].kind !== "break") j++;
-    const followedByFull = j < flowing.length && flowing[j].full;
-    let queue: Cursor[] = flowing.slice(i, j).map((x) => ({ b: x, offset: 0 }));
+  };
+
+  /**
+   * A band of column-span blocks. With `balance`, a band that fits on the page is balanced
+   * across the columns. `heldFull` is a floating full-width block that stepped aside for
+   * this band: it opens the next page if the band runs over, and follows the band if not.
+   */
+  const runBand = (list: MeasuredBlock[], balance: boolean, heldFull: MeasuredBlock | null = null) => {
+    let queue: Cursor[] = list.map((x) => ({ b: x, offset: 0 }));
     let guard = 0;
     while (queue.length && guard++ < 500) {
       const trial = fillBand(pb, queue, bandTop, contentH, true);
-      if (trial.qi >= queue.length && followedByFull && n > 1) {
+      if (trial.qi >= queue.length && balance && n > 1) {
         // Everything fits on this page: balance the columns (find the lowest limit that still fits).
         let lo = bandTop;
         let hi = contentH;
@@ -462,7 +530,82 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
       }
       pb = newPage();
       bandTop = 0;
+      if (heldFull) {
+        placeFull(heldFull);
+        heldFull = null;
+      }
     }
+    if (heldFull) placeFull(heldFull);
+  };
+
+  /** The lowest free slot of height h in [x, x+w) on this page, below everything placed there. */
+  const bottomSlot = (pg: PageBuilder, x: number, w: number, h: number): number | null => {
+    const hit = (r: Rect) => r.x < x + w - EPS && r.x + r.w > x + EPS;
+    let floor = 0; // the lowest flowing item in the span
+    for (const it of pg.items) if (!it.pinned && !pg.bottoms.has(it.id) && hit(it)) floor = Math.max(floor, it.y + it.h + geo.blockGap);
+    let bottom = contentH;
+    const blockers = pg.reserved.filter(hit).sort((a, b) => b.y - a.y);
+    for (const r of blockers) {
+      if (r.y < bottom + EPS && r.y + r.h > bottom - h - EPS) bottom = Math.min(bottom, r.y - geo.blockGap);
+    }
+    const y = bottom - h;
+    return y >= floor - EPS && y >= -EPS ? Math.max(0, y) : null;
+  };
+
+  /** A bottom-anchored block: at the foot of the page the flow has reached (the next page if
+   *  it doesn't fit under what is already there). Later blocks flow in the space above it. */
+  const placeBottom = (b: MeasuredBlock) => {
+    const w = b.full ? contentW : colW;
+    const x = b.full ? 0 : lastCol * (colW + geo.colGap);
+    const c: Cursor = { b, offset: 0 };
+    const col = lastCol;
+    for (let tries = 0; tries < 2; tries++) {
+      const y = bottomSlot(pb, x, w, b.height);
+      const fresh = pb.items.every((it) => it.pinned) && bandTop <= EPS;
+      if (y != null || fresh) {
+        const top = y ?? Math.max(0, contentH - b.height);
+        place(pb, c, x, top, w, Math.min(b.height, contentH - top), b.height, y == null || b.height > contentH + EPS);
+        pb.reserved.push({ x, y: top, w, h: Math.min(b.height, contentH - top) });
+        pb.bottoms.add(b.id);
+        lastCol = col;
+        return;
+      }
+      pb = newPage();
+      bandTop = 0;
+    }
+  };
+
+  let i = 0;
+  while (i < flowing.length) {
+    const b = flowing[i];
+    if (b.kind === "break") {
+      pb = newPage();
+      bandTop = 0;
+      i++;
+      continue;
+    }
+    if (b.anchor === "bottom") {
+      placeBottom(b);
+      i++;
+      continue;
+    }
+    if (b.full) {
+      // A floating full-width block that doesn't fit steps aside for the text after it (up to
+      // the next heading, figure or full-width block), and opens the next page.
+      let j = i + 1;
+      if (b.float && b.kind === "atomic" && !fullFits(b) && !(pb.items.every((it) => it.pinned) && bandTop <= EPS)) {
+        while (j < flowing.length && backfills({ b: flowing[j], offset: 0 })) j++;
+      }
+      if (j > i + 1) runBand(flowing.slice(i + 1, j), true, b);
+      else placeFull(b);
+      i = j;
+      continue;
+    }
+    // A band: consecutive column-span blocks up to the next full-width block, anchored block or page break.
+    let j = i;
+    while (j < flowing.length && !flowing[j].full && flowing[j].kind !== "break" && flowing[j].anchor !== "bottom") j++;
+    const followedByFull = j < flowing.length && flowing[j].full && flowing[j].anchor !== "bottom";
+    runBand(flowing.slice(i, j), followedByFull);
     i = j;
   }
 

@@ -26,9 +26,15 @@ export interface BlockLayout {
   dropcap?: boolean;
   /** a background colour: a theme colour name (accent, text, muted, …) or a hex colour */
   fill?: string | null;
+  /** "bottom": the block sits at the foot of the page the flow has reached */
+  anchor?: "bottom" | null;
 }
 
-export interface Ref { title: string; url: string; note: string }
+/** A source. `key` is what the text cites it by ([@key]); `note` is a private note, never printed. */
+export interface Ref {
+  title: string; url: string; note: string;
+  key?: string; authors?: string; year?: string; publisher?: string; accessed?: string;
+}
 
 export interface Block {
   id: string;
@@ -80,6 +86,8 @@ export interface Settings {
   style?: Partial<Theme>;
   header?: HeaderFooter;
   footer?: HeaderFooter;
+  /** a figure that does not fit lets the text after it fill the gap, and opens the next page */
+  backfill?: boolean;
 }
 
 export interface PageDesign {

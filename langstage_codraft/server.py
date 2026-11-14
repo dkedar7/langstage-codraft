@@ -999,15 +999,10 @@ def _human_author(name: object) -> str:
 
 
 def _references(store: Store, doc_id: str) -> list[dict]:
-    seen: set[str] = set()
-    out = []
-    for b in store.list_blocks(doc_id):
-        for r in b["refs"]:
-            key = (r.get("url") or r["title"]).lower()
-            if key not in seen:
-                seen.add(key)
-                out.append(r)
-    return out
+    """The document's sources, numbered in order of first appearance (refs.compile_refs)."""
+    from .refs import compile_refs
+
+    return compile_refs(store.list_blocks(doc_id))
 
 
 def house_defaults(doc_defaults: dict[str, Any] | None = None) -> dict[str, Any]:

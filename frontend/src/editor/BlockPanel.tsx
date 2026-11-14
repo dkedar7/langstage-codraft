@@ -127,11 +127,18 @@ function BlockInspector({ block }: { block: Block }) {
             <NumberInput value={L.height} suffix="px" onCommit={(v) => patchLayout({ height: v })} />
           ) : null}
         </div>
+        {!onOwnPage && !L.pin && (
+          <label className="flex items-center gap-2 mt-3" title="The block sits at the foot of the page it lands on, and later blocks flow above it. Use it for a call to action, a closing band or a footer note.">
+            <input type="checkbox" data-testid="anchor-bottom" checked={L.anchor === "bottom"}
+              onChange={(e) => patchLayout({ anchor: e.target.checked ? "bottom" : null })} />
+            Stick to the bottom of the page
+          </label>
+        )}
         {(
           <>
             <label className="flex items-center gap-2 mt-3">
               <input type="checkbox" data-testid="pin-toggle" checked={!!L.pin}
-                onChange={(e) => patchLayout({ pin: !e.target.checked ? null : onOwnPage
+                onChange={(e) => patchLayout({ anchor: null, pin: !e.target.checked ? null : onOwnPage
                   ? { anchor: "page", page: 1, x: 0, y: 0, w: 300, h: L.height || 200 }
                   : { page: 1, top: 0, column: 0, span: 1, height: L.height || null } })} />
               {onOwnPage ? `Pin to a spot on the ${L.role} page (art, a logo, a band)` : "Pin to a page position (other blocks flow around it)"}
@@ -503,6 +510,10 @@ function TableEditor({ block, patch }: { block: Block; patch: (c: any) => Promis
       <label className="flex items-center gap-2 mt-2">
         <input type="checkbox" checked={block.content.header !== false} onChange={(e) => patch({ header: e.target.checked })} /> First row is a header
       </label>
+      <label className="flex items-center gap-2 mt-1">
+        <input type="checkbox" data-testid="table-total" checked={block.content.total === true} onChange={(e) => patch({ total: e.target.checked })} /> Last row is a total
+      </label>
+      <div className="text-[11.5px] text-[var(--color-text-muted)] mt-1">A cell takes **bold**, *italic*, `code` and links. A long table continues on the next page under its header row.</div>
       <span className="label">Caption</span>
       <TextInput value={block.content.caption || ""} onCommit={(v) => patch({ caption: v })} />
     </>
@@ -592,6 +603,9 @@ function References({ block }: { block: Block }) {
   const ed = useEditorApi();
   const [refs, setRefs] = useState<Ref[]>(block.refs);
   const dirty = JSON.stringify(refs) !== JSON.stringify(block.refs);
+  const field = (i: number, k: keyof Ref, v: string) => setRefs(refs.map((x, n) => (n === i ? { ...x, [k]: v } : x)));
+  // The saved sources come back with their keys: show them once they are saved.
+  useEffect(() => { setRefs(block.refs); }, [block.head, block.refs.length]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="panel-section">
       <div className="flex items-center gap-2 mb-1">
@@ -599,13 +613,22 @@ function References({ block }: { block: Block }) {
         <span className="chip">{block.refs.length}</span>
       </div>
       {refs.map((r, i) => (
-        <div key={i} className="border border-[var(--color-border)] rounded p-2 mb-2 space-y-1">
-          <input className="input" placeholder="Title" value={r.title} onChange={(e) => setRefs(refs.map((x, k) => (k === i ? { ...x, title: e.target.value } : x)))} />
-          <input className="input" placeholder="URL" value={r.url} onChange={(e) => setRefs(refs.map((x, k) => (k === i ? { ...x, url: e.target.value } : x)))} />
+        <div key={i} className="border border-[var(--color-border)] rounded p-2 mb-2 space-y-1" data-testid="source">
+          <input className="input" placeholder="Title" data-testid="source-title" value={r.title} onChange={(e) => field(i, "title", e.target.value)} />
           <div className="flex gap-1">
-            <input className="input" placeholder="Note" value={r.note} onChange={(e) => setRefs(refs.map((x, k) => (k === i ? { ...x, note: e.target.value } : x)))} />
+            <input className="input" placeholder="Authors (Rivera, A. and Chen, B.)" data-testid="source-authors" value={r.authors || ""} onChange={(e) => field(i, "authors", e.target.value)} />
+            <input className="input" style={{ width: 70, flex: "none" }} placeholder="Year" data-testid="source-year" value={r.year || ""} onChange={(e) => field(i, "year", e.target.value)} />
+          </div>
+          <input className="input" placeholder="Publisher or journal" value={r.publisher || ""} onChange={(e) => field(i, "publisher", e.target.value)} />
+          <div className="flex gap-1">
+            <input className="input" placeholder="URL" value={r.url} onChange={(e) => field(i, "url", e.target.value)} />
+            <input className="input" style={{ width: 96, flex: "none" }} placeholder="Accessed" value={r.accessed || ""} onChange={(e) => field(i, "accessed", e.target.value)} />
+          </div>
+          <div className="flex gap-1">
+            <input className="input" placeholder="Private note (never printed)" value={r.note} onChange={(e) => field(i, "note", e.target.value)} />
             <button className="btn btn-icon btn-danger" onClick={() => setRefs(refs.filter((_, k) => k !== i))}><Trash2 size={13} /></button>
           </div>
+          {r.key ? <div className="text-[11.5px] text-[var(--color-text-muted)]" data-testid="source-cite">Cite it in the text as <code>[@{r.key}]</code></div> : null}
         </div>
       ))}
       <div className="flex gap-2">

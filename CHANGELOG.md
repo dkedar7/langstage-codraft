@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+**Pages without holes, tables that split, references with authors.** From a second real-model
+evaluation, of 0.8.0: the documents were sound but none could be sent as exported, mostly
+because of half-empty pages, plain-text tables and a reference list that printed working notes.
+
+- **A long table continues on the next page.** A table block splits between rows, across
+  columns and pages, and every continued piece repeats the header row. A split keeps at least
+  two rows on each side, the caption stays with the last rows, and a table with a fixed height
+  stays one box. A Markdown table inside a text block splits between rows too. Before, a table
+  that didn't fit moved whole and left up to half a page empty. Word export marks the header
+  row to repeat.
+- **Text fills the gap before a figure (back-fill).** A chart, picture, video, row or set of
+  tiles that doesn't fit at the bottom of a page lets the text after it, up to the next
+  heading, fill the gap, and opens the next column or page itself. One figure steps aside at a
+  time, so figures keep their order, and a heading stays with the text it introduces.
+  `settings.backfill` (Document → *Let text fill the gap before a figure*,
+  `set_document_style(backfill=...)`). **On for new documents; a document saved before 0.9.0
+  keeps its pages as they were** until the author or the agent turns it on.
+- **Stick to the bottom of the page.** `layout.anchor: "bottom"` (Block panel → *Stick to the
+  bottom of the page*, `set_block_layout(anchor="bottom")`) puts a flowing block at the foot of
+  the page the flow has reached; later blocks flow above it, and it moves to the foot of the
+  next page when it doesn't fit. A call to action or a closing band no longer needs a pin and
+  a reserved area. The one-pager template's call to action uses it.
+- **Fixed: a pinned band drew at its own height at the top of its box.** A filled heading or
+  callout with a fixed height now fills the box, with its text in the middle.
+- **Cut-off content is reported.** A pinned or fixed-height block whose content is taller than
+  its box was clipped silently in the export. The editor flags it (now for headings, tables and
+  reference lists too), and `view_pages` tells the agent `OVERFLOW: blk_… on page N`. A
+  page-anchored pin that bleeds into the margin is no longer flagged; one that runs past the
+  page edge is.
+- **`reserve_area` replaces what it overlaps.** Reserving a rectangle removes the reserved
+  areas it overlaps on that page, so repeated calls move or resize the area instead of stacking
+  spacers. `remove=True` only removes them. `Store.reserve_area`.
+- **Table cells are Markdown.** A cell of a table block takes `**bold**`, `*italic*`,
+  `` `code` ``, links, `m^2^`, `CO~2~` and citations, in the editor and every export.
+  `"total": true` sets the last row as a total (Block panel → *Last row is a total*).
+- **References have authors and a year, and the note is private.** A source keeps `authors`,
+  `year`, `publisher` and `accessed` beside its title and URL, and the list prints
+  `Authors (Year). Title. Publisher. URL. Accessed DATE.` in the editor, PDF, HTML, PNG, Word
+  and PowerPoint. The Block panel edits the fields. **Changed: `note` is no longer printed.**
+  It is a private note for the author and the agent; before, it was printed after the title.
+- **Citations.** `[@key]` in a text block, callout, row cell or table cell prints as the
+  source's number, linked to its entry (`[@a; @b]` prints `[1, 2]`). Every source has a `key`
+  (its own, or one made from the first author and year) and numbers follow first appearance:
+  where the text first cites a source, else where its first block stands. Sources saved by an
+  older version read back with a key and need no migration. `compile_references` and
+  `read_blocks` show the key to cite by. New module `langstage_codraft.refs`.
+- **Import cites by key.** A footnote marker becomes `[@key]` (it was a typed-in `[1]`), and a
+  footnote shaped like `Rivera, A. (2024). Title. Publisher.` is read into authors, year, title
+  and publisher.
+- **Charts.** A stacked bar or area chart now stacks in the order its legend lists (a
+  `color.sort` list was ignored by the stack, and a horizontal stack ran against its legend).
+  Value labels after a bar's end or above it get room and are no longer cut off at the chart's
+  edge. `langstage_codraft.charts.chart_warnings(spec)` reports one axis that mixes units and
+  colours that are hard to tell apart.
+- **Fixed: a click on a link in the editor left the page.** It selects the block; links are
+  live in the preview and the exports.
+
 **The co-author's side of the 0.8.0 re-evaluation.** A strong model wrote the same four
 documents again on 0.8.0. These are the agent and tool problems it still had.
 

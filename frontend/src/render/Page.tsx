@@ -46,6 +46,19 @@ export function Page({ page, geo, renderItem, children, className = "", decor, f
 
 /** The visible slice of a block: clipped to the item box, shifted for continued fragments. */
 export function Fragment({ item, children }: { item: Placed; children: ReactNode }) {
+  const head = item.head || 0;
+  if (head > 0) {
+    // A continued table piece: the top of the block (its header row) is drawn again, and the
+    // rows of this piece follow it. Both are the same rendering, clipped to a different window.
+    return (
+      <div className="cd-item-clip" style={{ position: "absolute", left: 0, top: 0, width: item.w, height: item.h, overflow: "hidden" }}>
+        <div className="cd-item-head" aria-hidden="true" style={{ height: head, overflow: "hidden" }}>{children}</div>
+        <div style={{ height: item.h - head, overflow: "hidden" }}>
+          <div style={{ marginTop: -item.offset }}>{children}</div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="cd-item-clip" style={{ position: "absolute", left: 0, top: 0, width: item.w, height: item.h, overflow: "hidden" }}>
       <div style={{ marginTop: -item.offset }}>{children}</div>

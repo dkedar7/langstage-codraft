@@ -170,9 +170,17 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
     from docx.oxml.ns import qn
     from docx.shared import Mm, Pt, RGBColor
 
+    from .refs import format_ref, numbers_for, replace_cites
+
     doc = store.get_document(doc_id)
     s = doc["settings"]
     blocks = store.list_blocks(doc_id)
+    numbers = numbers_for(blocks)
+
+    def cited(md: Any) -> str:
+        """[@key] -> [3], the source's number in the reference list."""
+        return replace_cites(str(md if md is not None else ""), numbers)
+
     d = docx.Document()
     sec = d.sections[0]
     w, h = page_mm(s)
@@ -212,8 +220,9 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
                 r.font.color.rgb = _rgb(theme.get("color_accent")) or RGBColor(0x1A, 0x4D, 0x8F)
                 r.underline = True
 
-    def add_table(rows: list, align: list | None = None, header: bool = True):
-        """A Word table: bold header row, each column aligned as the document has it."""
+    def add_table(rows: list, align: list | None = None, header: bool = True, total: bool = False):
+        """A Word table: bold header row (and total row), each column aligned as the document
+        has it. A cell is one line of Markdown. The header row repeats on every page."""
         n = max((len(r) for r in rows), default=0)
         if not n:
             return
@@ -226,13 +235,17 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
                 cell = tbl.cell(i, j)
                 cell.text = ""
                 par = cell.paragraphs[0]
-                add_runs(par, str(r[j]) if j < len(r) else "", {"bold": i == 0 and header})
+                strong = (i == 0 and header) or (total and i == len(rows) - 1 and len(rows) > 2)
+                add_runs(par, cited(r[j]) if j < len(r) else "", {"bold": strong})
                 side = align[j] if isinstance(align, list) and j < len(align) else None
                 if side in sides:
                     par.alignment = sides[side]
+        if header and len(rows) > 1:
+            tr_pr = tbl.rows[0]._tr.get_or_add_trPr()
+            tr_pr.append(tr_pr.makeelement(qn("w:tblHeader"), {qn("w:val"): "true"}))
 
     def add_markdown(md: str, style_quote=False):
-        for kind, text in md_blocks(md):
+        for kind, text in md_blocks(cited(md)):
             if kind == "table":
                 add_table(*md_table(text))
             elif kind.startswith("h"):
@@ -292,7 +305,7 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
     def cell_markdown(cell, md: str, dark: bool | None = None):
         """Markdown into a table cell (a row block's cell): paragraphs, bold headings, bullets."""
         first = True
-        for kind, text in md_blocks(md):
+        for kind, text in md_blocks(cited(md)):
             lines = ["  |  ".join(r) for r in md_table(text)[0]] if kind == "table" else [text]
             for line in lines:
                 par = cell.paragraphs[0] if first else cell.add_paragraph()
@@ -394,7 +407,8 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
         elif t == "stat":
             add_stat(b)
         elif t == "table":
-            add_table(c.get("rows") or [], c.get("align"), bool(c.get("header", True)))
+            add_table([r for r in (c.get("rows") or []) if isinstance(r, list)], c.get("align"),
+                      bool(c.get("header", True)), c.get("total") is True)
             if c.get("caption"):
                 d.add_paragraph(c["caption"]).style = d.styles["Caption"]
         elif t in ("image", "chart", "video"):
@@ -404,8 +418,9 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
         elif t == "references":
             d.add_heading(c.get("title", "References"), level=2)
             for r in references:
+                # Authors (Year). Title. Publisher. URL. The private note is not printed.
                 p = d.add_paragraph(style="List Number")
-                add_runs(p, r["title"] + (f". {r['url']}" if r.get("url") else ""))
+                p.add_run(format_ref(r))
         elif t == "page-break":
             d.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
 
@@ -552,8 +567,12 @@ def to_pptx(store: Store, doc_id: str, structure: dict) -> bytes:
     from pptx import Presentation
     from pptx.util import Emu, Pt
 
+    from .refs import numbers_for, replace_cites
+
     doc = store.get_document(doc_id)
-    blocks = {b["id"]: b for b in store.list_blocks(doc_id)}
+    listed = store.list_blocks(doc_id)
+    blocks = {b["id"]: b for b in listed}
+    numbers = numbers_for(listed)
     prs = Presentation()
     pw, ph = structure["page_px"]
     prs.slide_width, prs.slide_height = Emu(int(pw * EMU_PER_PX)), Emu(int(ph * EMU_PER_PX))
@@ -582,7 +601,7 @@ def to_pptx(store: Store, doc_id: str, structure: dict) -> bytes:
                     items = [("h", b["content"].get("text", ""), body_pt * scale ** (4 - lvl))]
                 else:
                     parts = []
-                    for k, t in md_blocks(b["content"].get("markdown", "")):
+                    for k, t in md_blocks(replace_cites(b["content"].get("markdown", ""), numbers)):
                         if k == "table":  # a text box has no grid: one line per row
                             parts.extend(("p", "  |  ".join(r)) for r in md_table(t)[0])
                         else:

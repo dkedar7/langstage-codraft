@@ -402,7 +402,8 @@ def get_document(config: RunnableConfig) -> str:
         lines = [
             f"Document {doc_id}: {doc['title']!r}",
             f"Layout: {s['mode']}, {_size_label(s)} {s['orientation']}, {s['columns']} column(s), "
-            f"theme {s['theme']}, margins {s['margins']} mm, block gap {s['block_gap']} mm. "
+            f"theme {s['theme']}, margins {s['margins']} mm, block gap {s['block_gap']} mm, "
+            f"back-fill {'on' if s.get('backfill') else 'off'}. "
             f"Approval: {s['approval']} ({'your edits wait for the author' if s['approval'] == 'required' else 'your edits apply immediately'}).",
             "Brief: " + ("; ".join(f"{k}={v}" for k, v in s.get("brief", {}).items() if v) or "(none)"),
         ]
@@ -511,7 +512,10 @@ def read_blocks(block_ids: list[str], config: RunnableConfig) -> str:
         out, total = [], 0
 
         def refs_of(b: dict) -> str:
-            return "".join(f"\n  ref: {r['title']} {r['url']} {r['note']}".rstrip() for r in b["refs"])
+            from .refs import format_ref
+
+            return "".join(f"\n  ref [@{r['key']}]: {format_ref(r)}"
+                           + (f" (private note: {r['note']})" if r.get("note") else "") for r in b["refs"])
 
         for bid in block_ids:
             e = entries.get(bid)
@@ -678,14 +682,19 @@ def propose_edit(
 ) -> str:
     """Propose new content for an existing block. `content` is the COMPLETE new
     content: Markdown for text and callout blocks, plain text for headings, a Markdown
-    table (or JSON {rows, header, caption}) for tables, Vega-Lite JSON for charts,
+    table (or JSON {rows, header, caption, total}) for tables (a cell is one line of Markdown:
+    **bold**, *italic*, `code`, links; total=true sets the last row as a total; a long table
+    splits across pages and repeats its header row), Vega-Lite JSON for charts,
     JSON {src, alt, caption} for images, JSON {"cells": ["...", "..."]} for a row (each cell
     Markdown; optional "widths": [1, 1, 2]) and JSON {"items": [{"value", "label"}]} for
     number tiles (stat). Markdown is GitHub-flavoured, plus superscript
     x^2^ and subscript H~2~O (attached to the text before, no spaces inside, 40 characters
     at most); <sup>2</sup> / <sub>2</sub> and Unicode characters (m², °C, CO₂) work too.
     Only ~~text~~ strikes out. No maths: LaTeX ($x^2$) prints literally. `references`: list of {title, url,
-    note} that replaces the block's sources. `note`: one line saying why, shown to the
+    authors, year, publisher, accessed, key, note} that replaces the block's sources. The
+    reference list prints Authors (Year). Title. Publisher. URL; a reference's `note` is a
+    private note and is never printed. Cite a source in the text as [@key] (its `key`, e.g.
+    [@smith2020]; [@a; @b] for two): it prints as its number in the list, [3]. `note`: one line saying why, shown to the
     author. `comment_id`: the comment this addresses. heading_level (1-3) changes a
     heading's level; do not type section numbers the document doesn't already use.
     `block_id` may be one of your own pending inserts (sug_…): that revises the pending
@@ -920,9 +929,12 @@ def set_block_layout(
     variant: str | None = None, dropcap: bool | None = None,
     page_x_px: int | None = None, page_y_px: int | None = None,
     page_w_px: int | None = None, page_h_px: int | None = None,
-    fill: str | None = None,
+    fill: str | None = None, anchor: str | None = None,
 ) -> str:
-    """Change a block's layout (styling; applies immediately). full_width spans all
+    """Change a block's layout (styling; applies immediately). anchor="bottom" sits a
+    flowing block at the foot of its page (a call to action, a closing band, a footer note)
+    and later blocks flow above it: use this, never a pin, to put something at the bottom
+    of a page; anchor="none" returns it to the flow. full_width spans all
     columns. height_px fixes its height (auto_height=True clears it). role: flow,
     cover or back (cover and back pages are exempt from columns). pin_page/pin_top_px
     pin it to a column position so other blocks flow around it; unpin=True releases it.
@@ -965,7 +977,9 @@ def set_block_layout(
             lay["dropcap"] = bool(dropcap)
         if fill is not None:
             lay["fill"] = None if fill.strip().lower() in ("", "none", "default") else fill.strip()
-        if unpin:
+        if anchor is not None:
+            lay["anchor"] = None if anchor.strip().lower() in ("", "none", "flow", "default") else anchor.strip().lower()
+        if unpin or lay.get("anchor"):
             lay["pin"] = None
         elif page_x_px is not None or page_y_px is not None or page_w_px is not None:
             cur = cur_layout.get("pin") or {}
@@ -984,6 +998,8 @@ def set_block_layout(
             r = repeat.strip().lower()
             lay["repeat"] = None if r in ("", "none") else (
                 r if r in ("all", "odd", "even") else [int(x) for x in re.findall(r"\d+", r)])
+        if lay.get("pin"):
+            lay.setdefault("anchor", None)   # a pin replaces a bottom anchor
         if pend is not None:
             if lay.get("pin") is None and "pin" in lay:
                 lay["repeat"] = None
@@ -1014,9 +1030,12 @@ def set_document_style(
     margin_top_mm: float | None = None, margin_right_mm: float | None = None,
     margin_bottom_mm: float | None = None, margin_left_mm: float | None = None,
     page_number_start: int | None = None, number_cover_pages: bool | None = None,
-    unnumbered_pages: str | None = None,
+    unnumbered_pages: str | None = None, backfill: bool | None = None,
 ) -> str:
-    """Change document-wide styling (applies immediately): theme (see get_document
+    """Change document-wide styling (applies immediately): backfill (true or false: a
+    chart, figure, picture, row or tiles that doesn't fit at the bottom of a page lets the
+    text after it fill the gap and opens the next page itself; on for new documents, turn it
+    on to close a large gap before a figure), theme (see get_document
     for the list), columns 1-3, page_size (letter, a4, legal, a5 or slide only; for any
     other size, e.g. A3 or tabloid, pass page_w_mm + page_h_mm instead), orientation, per-side margins, page_number_start (the
     number {page} prints on the first numbered page), number_cover_pages (count cover and
@@ -1036,6 +1055,8 @@ def set_document_style(
             s["theme"] = theme
         if columns is not None:
             s["columns"] = int(columns)
+        if backfill is not None:
+            s["backfill"] = bool(backfill)
         if page_size:
             s["page_size"] = page_size.lower()
         if orientation:
@@ -1079,17 +1100,12 @@ def compile_references(config: RunnableConfig) -> str:
     order. Use it to answer "list the references"; to put the list in the document,
     insert a `references` block, which renders this list automatically."""
     try:
+        from .refs import compile_refs, format_ref
+
         store = get_store()
-        seen: dict[str, int] = {}
-        lines = []
-        for b in store.list_blocks(_doc_id(config)):
-            for r in b["refs"]:
-                key = (r.get("url") or r["title"]).lower()
-                if key in seen:
-                    continue
-                seen[key] = len(seen) + 1
-                lines.append(f"[{seen[key]}] {r['title']}" + (f". {r['url']}" if r.get("url") else "")
-                             + (f" ({r['note']})" if r.get("note") else "") + f"  — cited by {b['id']}")
+        lines = [f"[{r['n']}] {format_ref(r)}  — cite as [@{r['key']}]; on {r['block']}"
+                 + (f"; private note: {r['note']}" if r.get("note") else "")
+                 for r in compile_refs(store.list_blocks(_doc_id(config)))]
         return "\n".join(lines) or "No block cites any source yet."
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -1124,6 +1140,10 @@ def page_shots(renderer: Any, doc_id: str, pages: list[int] | None = None, from_
         text += (f" NOT shown: page{'s' if len(rest) > 1 else ''} {rest[0]}"
                  + (f"-{rest[-1]}" if len(rest) > 1 else "")
                  + f" (at most {_MAX_PAGES} per call): call view_pages(from_page={rest[0]}) to see them.")
+    cut = [f"{b} on page {sh['page']}" for sh in shots for b in sh.get("overflow", [])]
+    if cut:
+        text += (f" OVERFLOW: {', '.join(cut)}: the content is taller than the block's box or the page and is "
+                 "cut off. Give it more height, shorten it, or let it flow (unpin, auto height).")
     if preview:
         marks = {e["block"]["id"]: "+".join(sg["kind"] for sg in e["pending"])
                  for e in pv["entries"] if e["pending"] and not e["deleted"]}
@@ -1236,23 +1256,29 @@ view_sketch = StructuredTool.from_function(
 
 @tool
 def reserve_area(config: RunnableConfig, page: int, x_px: int, y_px: int, w_px: int, h_px: int,
-                 repeat: str | None = None, label: str = "") -> str:
+                 repeat: str | None = None, label: str = "", remove: bool = False) -> str:
     """Keep part of a page empty so flowing text avoids it, for example a column's top
     half under hero art, a margin for a later figure, or white space in a layout. The
     rectangle is in px from the page's top-left corner (see get_document geometry). It
     prints as blank space; editors see it hatched. repeat: 'all', 'odd', 'even' or page
-    numbers. Styling, so it applies directly. Returns the spacer block id."""
+    numbers. Styling, so it applies directly. Returns the spacer block id. A reserved area
+    this rectangle overlaps on the same page is replaced, so calling again moves or resizes
+    it; remove=True only removes the reserved areas the rectangle overlaps. To put a block
+    at the bottom of a page, don't reserve room: set_block_layout(anchor="bottom")."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
-        lay: dict[str, Any] = {"pin": {"anchor": "page", "page": int(page), "x": int(x_px), "y": int(y_px),
-                                       "w": int(w_px), "h": int(h_px)}}
+        rep: Any = None
         if repeat:
             r = repeat.strip().lower()
-            lay["repeat"] = r if r in ("all", "odd", "even") else [int(v) for v in re.findall(r"\d+", r)]
-        b = store.insert_block(doc_id, "spacer", {"label": label}, layout=lay, author="agent",
-                               note="reserved area")
-        return f"Reserved {w_px}x{h_px}px at ({x_px},{y_px}) on page {page}: {b['id']}"
+            rep = r if r in ("all", "odd", "even") else [int(v) for v in re.findall(r"\d+", r)]
+        got = store.reserve_area(doc_id, {"page": int(page), "x": int(x_px), "y": int(y_px), "w": int(w_px),
+                                          "h": int(h_px)}, repeat=rep, label=label, remove=remove)
+        was = f" (replaced {', '.join(got['replaced'])})" if got["replaced"] and not remove else ""
+        if remove:
+            return (f"Removed {len(got['replaced'])} reserved area(s): {', '.join(got['replaced'])}" if got["replaced"]
+                    else "No reserved area overlaps that rectangle.")
+        return f"Reserved {w_px}x{h_px}px at ({x_px},{y_px}) on page {page}: {got['block']['id']}{was}"
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -1485,7 +1511,7 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
     Each item: {"type": "text"|"heading"|..., "content": <same formats as propose_edit, or a
     content dict>, "level": 1-3 for headings, "layout": {"span": "full"|"column",
     "variant": "...", "fill": "accent", "dropcap": true, "pin": {...}, "repeat": "odd", "role": "cover"},
-    "references": [{title, url, note}]}. Side by side: {"type": "row", "content": {"cells":
+    "references": [{title, url, authors, year, publisher, key}]}. Side by side: {"type": "row", "content": {"cells":
     ["**Fast.** ...", "**Safe.** ...", "..."]}} puts 2 to 4 Markdown cells next to each other
     ("layout": {"variant": "cards"} boxes them) and {"type": "stat", "content": {"items":
     [{"value": "99.99%", "label": "delivered in 60 s"}, ...]}} is a row of number tiles; both

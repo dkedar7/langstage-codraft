@@ -1,16 +1,19 @@
 import type React from "react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Block, Ref, Theme } from "../types";
+import type { Block, Theme } from "../types";
 import { Chart, DEFAULT_CHART_HEIGHT } from "./Chart";
 import { hyphenateText } from "./hyphenate";
 import { MIN_CELL_PX, blockFill, rowCells, rowColumns, rowGap, statColumns, statItems } from "./layoutBlocks";
-import { mdToHtml } from "./markdown";
+import { cellHasMarkup, cellToHtml, mdToHtml } from "./markdown";
+import { refAnchor, refParts, type NumberedRef } from "./refs";
 import { Boundary } from "./Boundary";
 import { withBase } from "../base";
 
 export interface RenderCtx {
-  /** de-duplicated references in reading order, for `references` blocks */
-  references: (Ref & { n: number })[];
+  /** de-duplicated references in order of first appearance, for `references` blocks */
+  references: NumberedRef[];
+  /** key -> number in that list, for the [@key] citations in the text */
+  cites?: Record<string, number>;
   /** editor mode shows placeholders for empty blocks and visible page breaks */
   editing: boolean;
   /** read-only print route (export / view_pages) */
@@ -162,14 +165,14 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
   const boxed = variant === "figure-box";
   const html = useMemo(
     () => (block.type === "text" || block.type === "callout"
-      ? mdToHtml(fillTokens(c.markdown || "", ctx, pageNo), { lang: ctx.lang, hyphenate: ctx.hyphenate }) : ""),
+      ? mdToHtml(fillTokens(c.markdown || "", ctx, pageNo), { lang: ctx.lang, hyphenate: ctx.hyphenate, cites: ctx.cites }) : ""),
     [block.type, c.markdown, ctx, pageNo],
   );
   // A row's cells, each rendered like a text block.
   const cellsKey = block.type === "row" ? JSON.stringify(rowCells(c)) : "";
   const cellHtml = useMemo(
     () => (cellsKey ? (JSON.parse(cellsKey) as string[]).map((md) => (md.trim()
-      ? mdToHtml(fillTokens(md, ctx, pageNo), { lang: ctx.lang, hyphenate: ctx.hyphenate }) : "")) : []),
+      ? mdToHtml(fillTokens(md, ctx, pageNo), { lang: ctx.lang, hyphenate: ctx.hyphenate, cites: ctx.cites }) : "")) : []),
     [cellsKey, ctx, pageNo],
   );
   const fill = blockFill(block, ctx.colors);
@@ -251,19 +254,28 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
       break;
     }
     case "table": {
-      const rows: string[][] = Array.isArray(c.rows) ? c.rows : [];
+      const rows: string[][] = Array.isArray(c.rows) ? c.rows.filter((r: unknown) => Array.isArray(r)) : [];
       const header = c.header !== false && rows.length > 0;
+      const body = header ? rows.slice(1) : rows;
+      // A cell is one line of Markdown: bold, italic, code, links, superscript, subscript and
+      // citations. Plain text takes the short path (the same text node as before).
+      const cellProps = (cell: unknown) => {
+        const s = String(cell ?? "");
+        return cellHasMarkup(s)
+          ? { dangerouslySetInnerHTML: { __html: cellToHtml(s, { lang: ctx.lang, cites: ctx.cites }) } }
+          : { children: hyphenateText(s, ctx.lang, true) };
+      };
       inner = (
         <div className="cd-table-wrap">
           <table className="cd-table">
             {header && (
               <thead><tr>{rows[0].map((cell, i) => (
-                <th key={i} align={cellAlign(c, i)}>{hyphenateText(String(cell ?? ""), ctx.lang, true)}</th>))}</tr></thead>
+                <th key={i} align={cellAlign(c, i)} {...cellProps(cell)} />))}</tr></thead>
             )}
             <tbody>
-              {(header ? rows.slice(1) : rows).map((r, i) => (
-                <tr key={i}>{r.map((cell, j) => (
-                  <td key={j} align={cellAlign(c, j)}>{hyphenateText(String(cell ?? ""), ctx.lang, true)}</td>))}</tr>
+              {body.map((r, i) => (
+                <tr key={i} className={c.total === true && i === body.length - 1 && body.length > 1 ? "cd-total" : undefined}>{r.map((cell, j) => (
+                  <td key={j} align={cellAlign(c, j)} {...cellProps(cell)} />))}</tr>
               ))}
             </tbody>
           </table>
@@ -322,22 +334,31 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
     case "divider":
       inner = <hr className="cd-divider" />;
       break;
-    case "references":
+    case "references": {
+      // Authors (Year). Title. Publisher. URL. Accessed DATE. A source's note is private: it
+      // is shown in the Block panel and to the agent, never printed.
+      const hanging = c.style === "hanging" || variant === "hanging";
+      const entry = (r: NumberedRef) => {
+        const p = refParts(r);
+        return (
+          <>
+            {p.text}
+            {p.url ? <>{p.text ? " " : ""}{hanging ? <span className="cd-ref-url">{p.url}</span> : <a href={p.url}>{p.url}</a>}</> : null}
+            {p.accessed ? <> {p.accessed}</> : null}
+          </>
+        );
+      };
       inner = (
         <div className="cd-refs">
           {c.title !== "" ? <div className="cd-h cd-h2">{c.title || "References"}</div> : null}
           {ctx.references.length ? (
-            c.style === "hanging" || variant === "hanging" ? (
+            hanging ? (
               <ul className="cd-refs-hanging">{ctx.references.map((r) => (
-                <li key={r.n}>
-                  {r.title}{r.note ? <> {r.note}</> : null}{r.url ? <> <span className="cd-ref-url">{r.url}</span></> : null}
-                </li>
+                <li key={r.n} id={refAnchor(r.n)}>{entry(r)}</li>
               ))}</ul>
             ) : (
               <ol>{ctx.references.map((r) => (
-                <li key={r.n} value={r.n}>
-                  {r.title}{r.url ? <> <a href={r.url}>{r.url}</a></> : null}{r.note ? <span className="cd-muted"> ({r.note})</span> : null}
-                </li>
+                <li key={r.n} value={r.n} id={refAnchor(r.n)}>{entry(r)}</li>
               ))}</ol>
             )
           ) : (
@@ -346,6 +367,7 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
         </div>
       );
       break;
+    }
     case "page-break":
       inner = ctx.editing ? <div className="cd-pagebreak">Page break</div> : <div />;
       break;
@@ -358,26 +380,19 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
     default:
       inner = <div className="cd-muted">Unsupported block type: {block.type}</div>;
   }
+  // A filled heading or callout with a fixed height (a pinned band): the fill covers the whole
+  // box and the text sits in the middle of it. It used to draw at its own height at the top.
+  const boxed2 = !!fixedHeight && !!fill && (block.type === "heading" || block.type === "callout");
+  const style: React.CSSProperties = { width };
+  if (fill) (style as Record<string, unknown>)["--cd-fill"] = fill.color;
+  if (boxed2) style.height = fixedHeight!;
   return (
     <div className={`cd-block cd-type-${block.type}${variant ? ` cd-v-${variant}` : ""}${block.layout?.dropcap ? " cd-dropcap" : ""}${
-      fill ? ` cd-filled cd-fill-${fill.dark ? "dark" : "light"}` : ""}`}
-      data-block={block.id} style={fill ? ({ width, "--cd-fill": fill.color } as React.CSSProperties) : { width }} ref={rootRef}>
+      fill ? ` cd-filled cd-fill-${fill.dark ? "dark" : "light"}` : ""}${boxed2 ? " cd-fixed" : ""}`}
+      data-block={block.id} style={style} ref={rootRef}>
       {inner}
     </div>
   );
 }
 
-/** All references in reading order, de-duplicated by url (or title). */
-export function compileReferences(blocks: Block[]): (Ref & { n: number })[] {
-  const seen = new Map<string, number>();
-  const out: (Ref & { n: number })[] = [];
-  for (const b of blocks) {
-    for (const r of b.refs || []) {
-      const key = (r.url || r.title).toLowerCase();
-      if (seen.has(key)) continue;
-      seen.set(key, out.length + 1);
-      out.push({ ...r, n: out.length + 1 });
-    }
-  }
-  return out;
-}
+export { compileReferences } from "./refs";

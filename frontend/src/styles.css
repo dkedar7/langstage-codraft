@@ -227,6 +227,11 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .cd-table[data-fit="3"] :is(th, td), .cd-md table[data-fit="3"] :is(th, td) { padding: .3em .35em; }
 .cd-table[data-fit="3"], .cd-md table[data-fit="3"] { overflow-wrap: anywhere; }
 
+/* A total row (content.total): the last row of a table block, set bold under a rule. */
+.cd-table tr.cd-total td { font-weight: 650; border-top: 1.5px solid var(--cd-text); border-bottom: 0; }
+/* A citation: [3], linked to its entry in the reference list. */
+.cd-cite { color: inherit; text-decoration: none; }
+.cd-cite-missing { color: #b91c1c; }
 .cd-divider { border: 0; border-top: 1px solid var(--cd-rule); margin: .4em 0; }
 .cd-refs ol { margin: .5em 0 0; padding-left: 1.6em; font-size: .9em; list-style: decimal; }
 .cd-refs li { margin: .25em 0; }
@@ -394,6 +399,9 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .cd-v-band.cd-type-callout .cd-md p { text-align: center; text-indent: 0; hyphens: none; }
 
 /* reserved areas (spacer blocks) */
+/* A filled heading or callout with a fixed height (a pinned band): the fill covers the box. */
+.cd-fixed { display: flex; flex-direction: column; }
+.cd-fixed > .cd-h, .cd-fixed > .cd-callout { flex: 1 1 auto; display: flex; flex-direction: column; justify-content: center; box-sizing: border-box; }
 .cd-spacer { display: flex; align-items: center; justify-content: center; border: 1px dashed #b6bcc8; border-radius: 3px;
   background: repeating-linear-gradient(135deg, rgba(37,99,235,.05), rgba(37,99,235,.05) 6px, transparent 6px, transparent 12px);
   font: 500 10px/1 Inter, sans-serif; color: #8a93a3; text-transform: uppercase; letter-spacing: .08em; }

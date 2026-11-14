@@ -8,7 +8,7 @@ import { BlockView } from "../render/BlockView";
 import { useDocFonts } from "../fonts";
 import { Fragment, Page, PageFurniture } from "../render/Page";
 import { effectiveTheme, pageDesign, themeVars } from "../render/theme";
-import { langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
+import { CLIPS, langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
 import { pageNumbers, usesPageToken } from "../layout/numbering";
 import type { Block, Suggestion } from "../types";
 import { useEditorApi } from "./context";
@@ -263,7 +263,7 @@ export function Canvas() {
     const isVirtual = !!b.virtual;
     const meas = measured[b.id];
     const fixed = pinHeight(b) || b.layout.height;
-    const contentOverflow = !!fixed && !!meas && meas.natural > fixed + 1 && ["text", "callout", "row", "stat"].includes(b.type);
+    const contentOverflow = !!fixed && !!meas && meas.natural > fixed + 1 && CLIPS.has(b.type);
     const cls = ["ed-item", sel && "selected", pend.length && "has-suggestion", isVirtual && "virtual",
       (it.overflow || contentOverflow) && "overflow", it.pinned && "pinned"].filter(Boolean).join(" ");
     const showChrome = !it.continued && !it.repeated;
@@ -281,6 +281,9 @@ export function Canvas() {
         }}
         onClick={(e) => {
           e.stopPropagation();
+          // In the editor a click on a link or a citation selects the block; it never leaves
+          // the page. (The links are live in the preview and the exports.)
+          if ((e.target as HTMLElement).closest?.("a")) e.preventDefault();
           if (isVirtual) { setOpenSugg(b.virtual!.suggestionId); return; }
           if (sel && (b.type === "text" || b.type === "callout" || b.type === "heading")) startEditing(b.id);
           else ed.select(b.id);

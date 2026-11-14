@@ -193,6 +193,36 @@ the document as it will be, not only the one you have accepted:
 `calculate` does the arithmetic (totals, percentages, growth, table cells) so figures in the
 document are computed, not guessed.
 
+**The agent sees the figure it drew.** `draw_figure` comes back with the figure as it sits on the
+page (a screenshot of the block from the same print view as export, at twice its size) and a
+label check measured on the rendered SVG at its printed size: labels cut off by the canvas, type
+that prints under 6.5 px, labels on top of each other, a label wider than the box it sits in, and
+lines or arrowheads that run through a label, and one arrow drawn along another. The agent fixes what the check lists in one redraw
+and looks at the preview for what a check can't see. Arrowhead markers sized in stroke widths
+(the usual cause of giant arrowheads on thick connectors) are brought back in proportion when the
+figure is stored. One figure can be drawn five times in a turn; after that the agent is told to
+simplify it or to say what is wrong.
+
+**What the agent won't do to make a page fit.** It doesn't delete or shorten content, its own or
+yours, to reach a page count. Deleting the reference list, or a block that cites a source, waits
+for your approval in every approval mode, including `auto`. Word counts are in `get_document`,
+`read_blocks` and every `propose_edit` result, so "tighten by a third" is checked against a
+number. A long draft of several paragraphs becomes one block per paragraph, so you approve and
+comment on each (`keep_together` keeps a draft whole).
+
+**Research tools of the built-in agent.** `fetch_url` reads a page or a PDF. `web_search` is part
+of the default install (the `ddgs` package). If it can't be imported, `langstage-codraft check`
+says so and the agent is told it has no search and must not guess URLs. After six failed fetches
+in a turn, only URLs that a search returned are opened. `generate_image` is offered when it can
+work: `OPENROUTER_API_KEY` is set and either the model is an `openrouter:` one or
+`LANGSTAGE_CODRAFT_IMAGE_MODEL` names the image model. A key that merely sits in the environment
+beside another provider's model no longer gets the tool.
+
+Tool results from earlier turns (pages the agent fetched, old outlines and block reads) are sent
+to the model cut down in later turns; the thread keeps them whole. On the long documents of the
+0.8.0 evaluation this was 40% of the text sent to the model. `CodraftMiddleware(trim_history=False)`
+turns it off.
+
 Each document has its own agent thread (the AG-UI thread id is the document id). Conversations
 are stored in SQLite and survive restarts. The same agent is also served at `POST /agui` for any
 AG-UI client.
@@ -335,7 +365,8 @@ langstage-codraft mcp --data-dir .codraft
 ```
 
 MCP tools: `list_documents`, `create_document`, every `CODRAFT_TOOLS` tool with a `doc_id`
-argument (except `calculate`, which is the built-in agent's own arithmetic), plus `view_pages`
+argument (except `calculate`, which is the built-in agent's own arithmetic; `draw_figure` returns
+its preview image and label check here too), plus `view_pages`
 and `view_sketch`, which return images.
 
 Over stdio, `view_pages` works on its own: it uses the server on the configured port if one is

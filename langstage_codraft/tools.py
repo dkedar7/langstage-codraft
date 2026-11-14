@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import ast
 import difflib
+import hashlib
 import json
 import math
 import operator
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,49 @@ _MAX_READ = 6000
 # Block types that span all columns unless told otherwise: their cells need the width.
 _WIDE = ("row", "stat")
 _MAX_PAGES = 4  # page images per view_pages call
+MAX_TURN_IMAGES = 8  # images the middleware shows the model in one turn (the newest ones)
+_MAX_DRAWS = 5  # versions of one figure in a turn; the third and later come with a warning
+_SPLIT_WORDS = 150  # a text draft longer than this, in two or more paragraphs, becomes one block each
+
+# What the agent has done in the current turn, per document: how often it redrew a figure,
+# which page images it has been shown, how many fetches failed. The middleware starts a new
+# turn (begin_turn) at each author message; without it (an MCP client, a bring-your-own
+# graph) the state simply expires after a quiet spell.
+_TURNS: dict[str, dict] = {}
+_TURN_IDLE = 900.0
+
+
+def _fresh_turn(key: Any) -> dict:
+    return {"key": key, "at": time.time(), "n": {}, "shown": [], "urls": set()}
+
+
+def turn_state(doc_id: str | None) -> dict:
+    """The current turn's scratch state for a document (see ``_TURNS``)."""
+    k = doc_id or "_"
+    st = _TURNS.get(k)
+    if st is None or time.time() - st["at"] > _TURN_IDLE:
+        st = _TURNS[k] = _fresh_turn(st["key"] if st else None)
+    st["at"] = time.time()
+    return st
+
+
+def begin_turn(doc_id: str | None, key: Any) -> None:
+    """Called by the middleware on every model call with the turn's key (its author
+    message): a new key starts a new turn."""
+    k = doc_id or "_"
+    st = _TURNS.get(k)
+    if st is None or st["key"] != key:
+        _TURNS[k] = _fresh_turn(key)
+
+
+def _bump(st: dict, name: str) -> int:
+    st["n"][name] = st["n"].get(name, 0) + 1
+    return st["n"][name]
+
+
+def _thread_id(config: RunnableConfig | None) -> str | None:
+    cfg = (config or {}).get("configurable", {}) if isinstance(config, dict) else {}
+    return cfg.get("codraft_doc_id") or cfg.get("thread_id")
 
 
 def _doc_id(config: RunnableConfig | None) -> str:
@@ -265,6 +310,70 @@ def _content_for_agent(block: dict) -> str:
     return json.dumps(c) if c else f"({t})"
 
 
+def _words(block: dict) -> int:
+    return textutil.word_count(plain_text(block["type"], block["content"]))
+
+
+def _history_hint(store: Any, block: dict) -> str:
+    """Says when a block has history worth reading before a rewrite (the author revised it,
+    or resolved a comment on it); "" otherwise, which is most blocks."""
+    if str(block.get("id", "")).startswith("sug_"):
+        return ""
+    bits = []
+    try:
+        if int(block.get("n_versions") or 1) > 1:
+            vs = store.versions(block["id"])["versions"]
+            mine = sum(1 for v in vs[1:] if v["author"] not in ("agent", "auto"))
+            if mine:
+                bits.append(f"the author revised it {mine} time(s)")
+        done = sum(1 for c in store.list_comments(block["doc_id"], include_resolved=True, block_id=block["id"])
+                   if c["status"] == "resolved")
+        if done:
+            bits.append(f"{done} resolved comment(s)")
+    except Exception:  # noqa: BLE001 - a hint, never a reason to fail a read
+        return ""
+    return f" · HISTORY: {' and '.join(bits)}; get_block_history before rewriting it" if bits else ""
+
+
+_NOT_PROSE = re.compile(r"\s*([-*+]\s|\d+[.)]\s|\||>|#{1,6}\s|```|~~~|<|!\[|\s{4,})")
+
+
+def split_paragraphs(markdown: str) -> list[str]:
+    """A text draft as one piece per paragraph. A list, a table, a quote, code, a picture
+    or raw HTML stays with the paragraph before it, and a fenced code block is never cut."""
+    chunks, cur, fence = [], [], False
+    for line in str(markdown).replace("\r\n", "\n").split("\n"):
+        if re.match(r"\s*(```|~~~)", line):
+            fence = not fence
+        if not line.strip() and not fence:
+            if cur:
+                chunks.append("\n".join(cur))
+                cur = []
+            continue
+        cur.append(line)
+    if cur:
+        chunks.append("\n".join(cur))
+    out: list[str] = []
+    for c in chunks:
+        if out and _NOT_PROSE.match(c):
+            out[-1] += "\n\n" + c
+        else:
+            out.append(c)
+    return out
+
+
+def _should_split(block_type: str, content: dict, layout: dict | None = None) -> list[str] | None:
+    """The paragraphs a long text draft should be split into, or None to keep it whole."""
+    lay = layout or {}
+    if block_type != "text" or lay.get("height") or lay.get("pin") or lay.get("variant") or lay.get("dropcap"):
+        return None
+    md = content.get("markdown")
+    if not isinstance(md, str) or textutil.word_count(md) <= _SPLIT_WORDS:
+        return None
+    parts = split_paragraphs(md)
+    return parts if len(parts) >= 2 else None
+
+
 def _placement(doc_id: str) -> dict[str, list[int]]:
     rep = get_store().layout_report(doc_id) or {}
     return rep.get("blocks", {}) if isinstance(rep, dict) else {}
@@ -373,6 +482,10 @@ def get_document(config: RunnableConfig) -> str:
             lines.append(" ".join(bits) + (f" — {textutil.excerpt(text, 90)}" if text else ""))
         if not pv["entries"]:
             lines.append("(no blocks yet)")
+        else:
+            total = sum(_words(e["block"]) for e in pv["entries"] if not e["deleted"])
+            lines.append(f"Words: {total} in all ({'with your pending suggestions applied' if npend else 'as accepted'}). "
+                         "Each block's count is the number before \"w\".")
         for lo in pv["left_out"]:
             lines.append(f"Pending but it will not apply: {lo['id']} ({lo['kind']}"
                          + (f" of {lo['block_id']}" if lo["block_id"] else "") + f"): {lo['reason']}. "
@@ -427,7 +540,9 @@ def read_blocks(block_ids: list[str], config: RunnableConfig) -> str:
                 head = (f"[{bid}] {b['type']} · PENDING INSERT: your suggestion, not in the author's document yet "
                         f"(propose_edit with this id revises it) · layout {json.dumps(b['layout'])}")
             else:
-                head = f"[{bid}] {b['type']} · {b['n_versions']} version(s) · layout {json.dumps(b['layout'])}"
+                head = (f"[{bid}] {b['type']} · {b['n_versions']} version(s) · layout {json.dumps(b['layout'])}"
+                        + _history_hint(store, b))
+            head += f" · {_words(b)} words"
             budget = _block_word_budget(s, b)
             if budget:
                 head += f" · fits ~{budget} words"
@@ -436,9 +551,10 @@ def read_blocks(block_ids: list[str], config: RunnableConfig) -> str:
             if "delete" in kinds:
                 head += f" · PENDING DELETE {kinds['delete']}"
             if was is not None:
-                out.append(f"{head}\nACCEPTED (what the author's document has now):\n{_content_for_agent(was)}"
+                out.append(f"{head}\nACCEPTED (what the author's document has now, {_words(was)} words):\n"
+                           f"{_content_for_agent(was)}"
                            f"{refs_of(was)}\nYOUR PENDING EDIT {kinds.get('edit', '')} (waiting for the author; "
-                           f"a new propose_edit replaces it):\n{body}{refs_of(b)}")
+                           f"a new propose_edit replaces it; {_words(b)} words):\n{body}{refs_of(b)}")
             else:
                 out.append(f"{head}\n{body}{refs_of(b)}")
         return "\n\n".join(out) or "(no block ids given)"
@@ -518,12 +634,17 @@ def list_comments(config: RunnableConfig, include_resolved: bool = False) -> str
 @tool
 def get_block_history(block_id: str, config: RunnableConfig) -> str:
     """A block's version history (who changed what, with notes) and its resolved
-    comments. Call it only before rewriting a block the author has revised or commented
-    on, to respect preferences they expressed earlier. It is not needed for routine edits,
-    and never for blocks you created this turn."""
+    comments. Call it only when read_blocks marks the block with HISTORY (the author
+    revised it, or resolved a comment on it), to respect what they decided earlier. An open
+    comment is not history: list_comments already shows it. Not for routine edits, and
+    never for blocks you created."""
     try:
         store = get_store()
-        _block(store, _doc_id(config), block_id)
+        blk = _block(store, _doc_id(config), block_id)
+        if not _history_hint(store, blk):
+            return (f"Block {block_id} has no history to respect: {blk['n_versions']} version(s), none revised by "
+                    "the author, and no resolved comments. Go ahead with the edit. (read_blocks marks the blocks "
+                    "that do have history; this call is only needed for those.)")
         tree = store.versions(block_id)
         lines = [f"Block {block_id}: {len(tree['versions'])} version(s), "
                  f"{len(tree['branches'])} branch tip(s); head = {tree['head']}"]
@@ -557,7 +678,7 @@ def _sugg_result(s: dict) -> str:
 def propose_edit(
     block_id: str, content: str, config: RunnableConfig, note: str = "",
     references: list[dict] | None = None, comment_id: str | None = None,
-    heading_level: int | None = None,
+    heading_level: int | None = None, keep_together: bool = False,
 ) -> str:
     """Propose new content for an existing block. `content` is the COMPLETE new
     content: Markdown for text and callout blocks, plain text for headings, a Markdown
@@ -578,7 +699,10 @@ def propose_edit(
     heading's level; do not type section numbers the document doesn't already use.
     `block_id` may be one of your own pending inserts (sug_…): that revises the pending
     block in place. Sending content identical to what the block has, or to an edit already
-    pending, records nothing. Returns the suggestion id."""
+    pending, records nothing. Write one paragraph per text block: a long draft of several
+    paragraphs sent to a one-paragraph block is split into one block per paragraph. For a
+    text or callout block the result gives the word count before and after: check it
+    against any length the author asked for. Returns the suggestion id."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -602,8 +726,34 @@ def propose_edit(
         payload: dict[str, Any] = {"content": c}
         if references is not None:
             payload["refs"] = references
-        return _sugg_result(store.propose(doc_id, "edit", payload, block_id=block_id,
-                                          comment_id=comment_id, note=note))
+        # A long multi-paragraph draft into a block that holds one paragraph (a template's
+        # placeholder, a stub) becomes one block per paragraph, so the author can approve,
+        # comment on and version each. A block the author already keeps as several
+        # paragraphs is theirs to structure and is edited whole.
+        parts = None if keep_together else _should_split(b["type"], c, b["layout"])
+        if parts and len(split_paragraphs(b["content"].get("markdown") or "")) <= 1:
+            first = store.propose(doc_id, "edit", {**payload, "content": {**c, "markdown": parts[0]}},
+                                  block_id=block_id, comment_id=comment_id, note=note)
+            ids, after = [], block_id
+            for part in parts[1:]:
+                sg = store.propose(doc_id, "insert", {"type": "text", "content": {"markdown": part}, "after": after,
+                                                      "layout": {"span": b["layout"].get("span", "column")}},
+                                   comment_id=comment_id, note=note or "Next paragraph")
+                after = (sg["payload"].get("result") or {}).get("block_id") or sg["id"]
+                ids.append(after)
+            return (_sugg_result(first) + f" Your draft had {len(parts)} paragraphs, so it was split into one block "
+                    f"per paragraph: {block_id} holds the first and the rest follow it in order as "
+                    f"{', '.join(ids)}. The author approves and comments on each separately. (keep_together=True "
+                    "keeps a draft in one block; use it only when the paragraphs must not be separated.)")
+        sg = store.propose(doc_id, "edit", payload, block_id=block_id, comment_id=comment_id, note=note)
+        res = _sugg_result(sg)
+        if b["type"] in ("text", "callout"):
+            # From what the store kept, so a value it repaired (a list of paragraphs) counts too.
+            was = _words(b)
+            now = _words({"type": b["type"], "content": sg["payload"].get("content") or c})
+            if was and now != was:
+                res += f" Words: {was} -> {now} ({(now - was) * 100 / was:+.0f}%)."
+        return res
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -651,6 +801,12 @@ def propose_insert(
         }
         if references:
             payload["refs"] = references
+        if not (at_start or comment_id) and _should_split(block_type, c, payload["layout"]):
+            # A long multi-paragraph draft: insert_blocks puts each paragraph in its own block.
+            return insert_blocks.invoke(
+                {"blocks": [{"type": "text", "content": c, "layout": payload["layout"],
+                             **({"references": references} if references else {})}],
+                 "after_block_id": after_block_id, "note": note}, config=config)
         return _sugg_result(store.propose(doc_id, "insert", payload, comment_id=comment_id, note=note))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -660,9 +816,11 @@ def propose_insert(
 def propose_delete(block_id: str, config: RunnableConfig, note: str = "",
                    comment_id: str | None = None) -> str:
     """Propose removing a block (the author approves). Only for content the author asked
-    you to remove or that is clearly redundant: never delete or cut the author's content
-    to make a layout fit. `block_id` may be one of your own pending inserts (sug_…),
-    which withdraws it."""
+    you to remove or that is clearly redundant. Never delete or cut content, yours or the
+    author's, to make a layout fit or to reach a page count: not a section, not a figure,
+    not sources. Deleting the reference list, or a block that carries sources, always
+    waits for the author's approval, even when your other edits apply immediately.
+    `block_id` may be one of your own pending inserts (sug_…), which withdraws it."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -670,9 +828,21 @@ def propose_delete(block_id: str, config: RunnableConfig, note: str = "",
         if pend is not None:
             store.withdraw_suggestion(pend["id"])
             return f"Withdrew your pending insert {pend['id']}; the author will not see it."
-        _block(store, doc_id, block_id)
-        return _sugg_result(store.propose(doc_id, "delete", {}, block_id=block_id,
-                                          comment_id=comment_id, note=note))
+        b = _block(store, doc_id, block_id)
+        # Sources are the one thing an unattended run must not lose: the reference list and
+        # any block that cites something stay until the author says so, in either mode.
+        sources = b["type"] == "references" or bool(b["refs"])
+        sg = store.propose(doc_id, "delete", {}, block_id=block_id, comment_id=comment_id, note=note,
+                           hold=sources)
+        if sources and sg["status"] == "pending":
+            what = "the reference list" if b["type"] == "references" else f"a block that cites {len(b['refs'])} source(s)"
+            return (f"Suggestion {sg['id']} (delete) is WAITING for the author: {block_id} is {what}, and removing "
+                    "sources always needs the author's approval, in every approval mode. It is still in the "
+                    "document. If you proposed this to save space or reach a page count, that is not a reason to "
+                    "drop sources: fix the layout with layout (type size, margins, spacing, columns), tighten "
+                    "wording, or tell the author the target can't be met without cutting. Do not repeat it; "
+                    "tell the author it is waiting for them.")
+        return _sugg_result(sg)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -1004,9 +1174,33 @@ def _view_pages(pages: list[int] | None = None, from_page: int = 1, pending: boo
         text, shots = page_shots(r, doc_id, pages, from_page, pending)
         if not shots:
             return (text, None)
+        # A page that renders exactly as it did the last time the agent looked, and whose
+        # image the model still has in this turn, is not sent again.
+        st = turn_state(doc_id)
+        recent = {h for _, h in st["shown"][-MAX_TURN_IMAGES:]}
+        fresh, same = [], []
+        for sh in shots:
+            try:
+                digest = f"p{sh['page']}:" + hashlib.sha1(Path(sh["path"]).read_bytes()).hexdigest()
+            except OSError:
+                digest = f"p{sh['page']}:{sh['path']}"
+            if st["key"] is not None and digest in recent:
+                same.append(sh["page"])
+            else:
+                fresh.append(sh)
+                st["shown"].append((sh["path"], digest))
+        if same:
+            text += (f" Page{'s' if len(same) > 1 else ''} {', '.join(map(str, same))} look"
+                     f"{'' if len(same) > 1 else 's'} exactly as when you last viewed "
+                     f"{'them' if len(same) > 1 else 'it'} this turn (nothing you did since changed "
+                     f"{'them' if len(same) > 1 else 'it'}), so "
+                     f"{'they are' if len(same) > 1 else 'it is'} not attached again.")
+        if not fresh:
+            return (text + " Nothing changed on the pages you asked for: looking again will not help. Change "
+                    "something first, or finish.", None)
         text += (" The images are attached to this turn. Look for overflow, orphaned headings, awkward gaps, "
                  "crowded columns, clipped text and labels that overlap.")
-        return (text, {"images": [s["path"] for s in shots]})
+        return (text, {"images": [s["path"] for s in fresh]})
     except Exception as exc:  # noqa: BLE001
         return (_err(exc), None)
 
@@ -1133,27 +1327,113 @@ def sanitize_svg(svg: str) -> str:
     s = re.sub(r'(?i)(xlink:href|href)\s*=\s*"(?!#|data:image/)[^"]*"', "", s)
     if "xmlns=" not in s[:200]:
         s = s.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"', 1)
-    return s
+    return _tame_markers(s)
 
 
-@tool
-def draw_figure(
-    svg: str, config: RunnableConfig, block_id: str | None = None, after_block_id: str | None = None,
+_ATTR = r"""\b%s\s*=\s*(?:"([^"]*)"|'([^']*)')"""
+
+
+def _attr(tag: str, name: str) -> str | None:
+    m = re.search(_ATTR % re.escape(name), tag)
+    return (m.group(1) if m.group(1) is not None else m.group(2)) if m else None
+
+
+def _num(v: str | None, default: float) -> float:
+    m = re.match(r"\s*(-?\d+(?:\.\d+)?)", v or "")
+    return float(m.group(1)) if m else default
+
+
+def _tame_markers(svg: str) -> str:
+    """Keep arrowheads in proportion to their lines.
+
+    An SVG ``<marker>`` is sized in multiples of the stroke width unless it says
+    ``markerUnits="userSpaceOnUse"``. Models draw thick connectors (stroke-width 8 to 12)
+    and give the marker a markerWidth of 10 or so, meaning "10 units": the arrowhead comes
+    out 80 to 120 units wide and buries the labels. A marker whose head would be more than
+    four times as wide as the thickest line using it is rewritten to user units at three
+    times that line's width (at least 12), with a viewBox so its drawing scales to fit."""
+    def fix(m: re.Match) -> str:
+        tag = m.group(0)
+        mid = _attr(tag, "id")
+        if not mid or (_attr(tag, "markerUnits") or "strokeWidth") != "strokeWidth":
+            return tag
+        widths = []
+        for use in re.finditer(r"<[a-zA-Z][^<>]*\bmarker-(?:end|start|mid)\s*[=:]\s*[\"']?url\(\s*[\"']?#"
+                               + re.escape(mid) + r"\b[^<>]*>", svg):
+            el = use.group(0)
+            sw = _attr(el, "stroke-width")
+            if sw is None:
+                sm = re.search(r"stroke-width\s*:\s*([\d.]+)", el)
+                sw = sm.group(1) if sm else None
+            widths.append(_num(sw, 1.0))
+        if not widths:
+            return tag
+        stroke = max(widths)
+        mw, mh = _num(_attr(tag, "markerWidth"), 3.0), _num(_attr(tag, "markerHeight"), 3.0)
+        if mw * stroke <= max(4 * stroke, 24) and mh * stroke <= max(4 * stroke, 24):
+            return tag
+        size = max(3 * stroke, 12.0)
+        w, h = (size, size * mh / mw) if mw >= mh else (size * mw / mh, size)
+        out = tag
+        for name, val in (("markerWidth", f"{w:g}"), ("markerHeight", f"{h:g}")):
+            if _attr(out, name) is None:
+                out = out[:-1].rstrip("/").rstrip() + f' {name}="{val}"' + (">" if not tag.endswith("/>") else "/>")
+            else:
+                out = re.sub(_ATTR % name, f'{name}="{val}"', out, count=1)
+        extra = ' markerUnits="userSpaceOnUse"'
+        if _attr(out, "viewBox") is None:
+            extra += f' viewBox="0 0 {mw:g} {mh:g}"'
+        if _attr(out, "markerUnits") is not None:
+            out = re.sub(_ATTR % "markerUnits", "", out, count=1)
+        return out[:-1] + extra + ">"
+
+    return re.sub(r"<marker\b[^<>]*>", fix, svg)
+
+
+def _figure_feedback(doc_id: str, ref: str, preview: bool, svg: str) -> tuple[str, str | None]:
+    """What the agent gets back after drawing: the figure as it sits on the page (an image
+    path for a vision model) and the label check, as text. ("", None) with no renderer."""
+    from .render import ensure_renderer
+
+    try:
+        r = ensure_renderer()
+        if r is None:
+            return (" No renderer is running, so there is no preview: check the figure with view_pages.", None)
+        shot = r.call(r.figure_shot(doc_id, ref, preview=preview, svg=svg))
+    except Exception as exc:  # noqa: BLE001 - a preview that fails must not lose the figure
+        return (f" (No preview: {type(exc).__name__}: {str(exc)[:120]}. Check the figure with view_pages.)", None)
+    if shot is None:
+        return (" It is not on any page yet, so there is no preview: check it with view_pages.", None)
+    text = (f"\nPREVIEW attached: the figure as it sits on page {shot['page']}, {shot['width']} x {shot['height']} px "
+            "on the page (shown at twice that size).")
+    if shot["issues"]:
+        text += (f"\nLABEL CHECK found {len(shot['issues'])} problem(s), measured at the printed size (positions are in "
+                 "viewBox units):\n- "
+                 + "\n- ".join(shot["issues"])
+                 + "\nFix them all in ONE redraw (pass this figure's id as block_id): shorter labels, labels beside "
+                   "or above their arrows and never on them, larger boxes, fewer parts.")
+    else:
+        text += ("\nLABEL CHECK: no cut-off, overlapping, overflowing or crossed labels. Now look at the preview "
+                 "for what a check can't see: that each arrow points the right way and each label sits on the "
+                 "right part. If it reads correctly, the figure is done.")
+    return (text, shot["path"])
+
+
+def _draw_figure(
+    svg: str, block_id: str | None = None, after_block_id: str | None = None,
     label: str = "", title: str = "", source: str = "", caption: str = "", full_width: bool = False,
     figure_box: bool = True, note: str = "", comment_id: str | None = None,
-) -> str:
-    """Draw a diagram yourself as SVG (crisp vector text: use it for labelled diagrams,
-    layered architectures, maps, flowcharts, timelines; use generate_image for photos and
-    illustrations). Give a complete <svg viewBox=...> with explicit fills; keep fonts
-    generic (Arial, Helvetica, sans-serif). It lands in `block_id` (an image block) or as
-    a new image block after `after_block_id` (end of document if neither). label (for
-    example "FIGURE 1"), title, source and caption fill the figure's frame; figure_box
-    gives it the grey figure panel. `block_id` may be a pending insert of yours (sug_…),
-    which redraws it. You cannot see the SVG as you write it: call view_pages afterwards
-    and fix labels that are cut off or overlap. comment_id: the comment this addresses."""
+    config: RunnableConfig = None,
+) -> tuple[str, Any]:
     try:
         store = get_store()
         doc_id = _doc_id(config)
+        st = turn_state(doc_id)
+        if block_id and st["n"].get(f"draw:{block_id}", 0) >= _MAX_DRAWS:
+            return (f"ERROR: {block_id} has been drawn {_MAX_DRAWS} times this turn; it was not redrawn again. "
+                    "More passes are not converging. Leave the last version, or simplify it in your next turn "
+                    "(fewer labels, numbered parts explained in the caption), and tell the author plainly what "
+                    "is still wrong with the figure.", None)
         clean = sanitize_svg(svg)
         up = store.add_upload(doc_id, f"figure-{len(clean)}.svg", clean.encode("utf-8"), purpose="asset",
                               mime="image/svg+xml")
@@ -1163,25 +1443,65 @@ def draw_figure(
         pend = _pending_insert(store, doc_id, block_id) if block_id else None
         if pend is not None:
             if pend["payload"].get("type") != "image":
-                return f"ERROR: {block_id} is a pending {pend['payload'].get('type', 'text')} insert, not an image"
+                return (f"ERROR: {block_id} is a pending {pend['payload'].get('type', 'text')} insert, not an image",
+                        None)
             sg = store.revise_suggestion(pend["id"], content=content, layout=variant or None,
                                          note=note or f"Figure: {title or label}")
-            return (f"Redrew your pending figure {sg['id']}; it is still waiting for the author's approval. "
-                    "Check it with view_pages.")
-        if block_id:
-            b = _block(store, doc_id, block_id)
-            if b["type"] != "image":
-                return f"ERROR: {block_id} is a {b['type']} block; draw into an image block or insert a new one"
-            s = store.propose(doc_id, "edit", {"content": content, "layout": variant}, block_id=block_id,
-                              comment_id=comment_id, note=note or f"Figure: {title or label}")
+            head = f"Redrew your pending figure {sg['id']}; it is still waiting for the author's approval."
+            ref, preview = sg["id"], True
         else:
-            s = store.propose(doc_id, "insert", {
-                "type": "image", "content": content, "after": after_block_id or "__end__",
-                "layout": {"span": "full" if full_width else "column", **variant}},
-                comment_id=comment_id, note=note or f"Figure: {title or label}")
-        return _sugg_result(s) + " Check the figure with view_pages."
+            if block_id:
+                b = _block(store, doc_id, block_id)
+                if b["type"] != "image":
+                    return (f"ERROR: {block_id} is a {b['type']} block; draw into an image block or insert a "
+                            "new one", None)
+                s = store.propose(doc_id, "edit", {"content": content, "layout": variant}, block_id=block_id,
+                                  comment_id=comment_id, note=note or f"Figure: {title or label}")
+            else:
+                s = store.propose(doc_id, "insert", {
+                    "type": "image", "content": content, "after": after_block_id or "__end__",
+                    "layout": {"span": "full" if full_width else "column", **variant}},
+                    comment_id=comment_id, note=note or f"Figure: {title or label}")
+            head = _sugg_result(s)
+            applied = s["status"] == "applied"
+            ref = ((s["payload"].get("result") or {}).get("block_id") or block_id) if applied else (
+                s["id"] if s["kind"] == "insert" else block_id)
+            preview = not applied
+        n = _bump(st, f"draw:{ref}")
+        feedback, path = _figure_feedback(doc_id, ref, preview, clean)
+        if n >= 3:
+            feedback += (f"\nThis is version {n} of this figure in this turn ({_MAX_DRAWS} at most). If it still "
+                         "has problems, do not keep nudging coordinates: simplify it (fewer labels, numbered parts "
+                         "explained in the caption, a legend under the drawing).")
+        return (head + f" The figure's id is {ref}." + feedback, {"images": [path]} if path else None)
     except Exception as exc:  # noqa: BLE001
-        return _err(exc)
+        return (_err(exc), None)
+
+
+draw_figure = StructuredTool.from_function(
+    func=_draw_figure,
+    name="draw_figure",
+    description=(
+        "Draw a diagram yourself as SVG (crisp vector text: use it for labelled diagrams, layered "
+        "architectures, maps, flowcharts, timelines; use generate_image for photos and illustrations). "
+        "Give a complete <svg viewBox=...> with explicit fills; keep fonts generic (Arial, Helvetica, "
+        "sans-serif). It lands in `block_id` (an image block) or as a new image block after "
+        "`after_block_id` (end of document if neither). label (for example \"FIGURE 1\"), title, source "
+        "and caption fill the figure's frame; figure_box gives it the grey figure panel. `block_id` may "
+        "be a pending insert of yours (sug_…), which redraws it. The result comes with a PREVIEW of "
+        "the figure as it sits on the page and a LABEL CHECK that lists labels that are cut off, too "
+        "small, overlapping, wider than their box or crossed by a line or an arrowhead, and arrows "
+        "drawn on top of each other: fix what it "
+        "lists in one redraw. Keep diagrams simple: a few boxes in a row or a grid, short labels (one "
+        "to three words) inside boxes with room to spare, arrows between boxes with their labels beside "
+        "or above the arrow and never on it, font-size at least 1/40 of the viewBox width (a figure in "
+        "one column of a two-column page prints about 330 px wide; full_width=True gives it the page "
+        "width). Put explanation in the caption, not in the drawing. Arrowhead markers are kept in "
+        "proportion to their lines for you. At most 5 versions of one figure per turn. comment_id: the "
+        "comment this addresses."
+    ),
+    response_format="content_and_artifact",
+)
 
 
 @tool
@@ -1210,7 +1530,22 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
         doc_id = _doc_id(config)
         after = after_block_id or "__end__"
         out = []
-        for i, item in enumerate(blocks or []):
+        items: list[dict] = []
+        split = 0
+        for item in blocks or []:
+            parts = None
+            if isinstance(item, dict) and item.get("type", "text") == "text" and not item.get("keep_together"):
+                try:
+                    parts = _should_split("text", parse_content("text", item.get("content", "")), item.get("layout"))
+                except (Invalid, ValueError):
+                    parts = None
+            if parts:
+                split += 1
+                items += [{**item, "content": {"markdown": part}, **({} if j == 0 else {"references": None})}
+                          for j, part in enumerate(parts)]
+            else:
+                items.append(item)
+        for i, item in enumerate(items):
             t = item.get("type", "text")
             if t not in BLOCK_TYPES:
                 out.append(f"{i}: ERROR unknown type {t!r}")
@@ -1244,6 +1579,9 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
                 out.append(f"{i}: {t} -> {new_id}")
             else:
                 out.append(f"{i}: {t} suggested ({sg['id']}, waiting for approval)")
+        if split:
+            out.append(f"{split} long text item(s) were split into one block per paragraph, so the author can "
+                       "approve and comment on each paragraph separately.")
         if any("waiting for approval" in line for line in out):
             out.append("They will land in this order. Do not insert them again; to revise one, propose_edit "
                        "its sug_ id.")

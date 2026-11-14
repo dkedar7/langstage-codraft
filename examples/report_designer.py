@@ -76,7 +76,8 @@ def make(tools, middleware):
     """Codraft calls this with CODRAFT_TOOLS and its middleware."""
     graph = create_agent(
         _model(),
-        tools=[*tools, *research_tools()],  # + generate_image, fetch_url (+ web_search with [search])
+        # + fetch_url, web_search and, because this agent runs on OpenRouter, generate_image
+        tools=[*tools, *research_tools("openrouter:report-designer")],
         middleware=[CodraftMiddleware(tools=[], extra_prompt=DESIGNER_PROMPT)],
         name="report_designer",
     )

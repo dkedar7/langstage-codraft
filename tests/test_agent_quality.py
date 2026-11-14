@@ -241,7 +241,7 @@ def test_read_blocks_shows_the_accepted_text_and_the_pending_edit(store, cfg_for
     d, (a, b, c), cfg = _mixed(store, cfg_for)
     ins = [s["id"] for s in store.list_suggestions(d["id"]) if s["kind"] == "insert"]
     out = call(read_blocks, cfg, block_ids=[b["id"], ins[1], c["id"]])
-    assert "ACCEPTED (what the author's document has now):\nSecond." in out
+    assert "ACCEPTED (what the author's document has now, 1 words):\nSecond." in out
     assert "YOUR PENDING EDIT sug_" in out and "Second, rewritten." in out
     assert f"[{ins[1]}] text · PENDING INSERT" in out and "New paragraph." in out
     assert "PENDING DELETE" in out
@@ -433,13 +433,14 @@ def test_heading_levels_can_be_set_the_markdown_way_or_by_argument(store, cfg_fo
 
 def test_the_prompt_and_tools_state_the_house_rules():
     for needle in ("calculate", "<sup>2</sup>", "one text block per paragraph", "PENDING",
-                   "Never delete or shorten the author's content to solve a layout problem",
+                   "Never delete or shorten content to solve a layout problem",
                    "throughout", "Never write about\n  the editing in it", "[Codraft note"):
         assert needle in CODRAFT_PROMPT, needle
     assert "<sup>2</sup>" in propose_edit.description and "LaTeX" in propose_edit.description
     assert "one text block per paragraph" in insert_blocks.description
-    assert "never delete or cut the author's content" in propose_delete.description
-    assert "not needed for routine edits" in get_block_history.description
+    # a docstring keeps its indentation before Python 3.13: compare with the whitespace folded
+    assert "Never delete or cut content, yours or the author's" in " ".join(propose_delete.description.split())
+    assert "Not for routine edits" in get_block_history.description
     assert "At most 4" in view_pages.description and "PREVIEW" in view_pages.description
 
 

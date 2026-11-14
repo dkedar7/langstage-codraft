@@ -82,7 +82,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
   const [tab, setTab] = useState<PanelTab>(cfg.ui?.features?.chat === false ? "comments" : "chat");
   const [commentFilter, setCommentFilter] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
-  const [toasts, setToasts] = useState<{ id: number; msg: string; kind: string }[]>([]);
+  const [toasts, setToasts] = useState<{ id: number; msg: string; kind: string; action?: { label: string; run: () => void } }[]>([]);
   const [zoom, setZoom] = useState(1);
   const [addOpen, setAddOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -156,10 +156,10 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
     setZoom((z) => Math.max(0.4, Math.min(2, +(z + d).toFixed(2))));
   };
 
-  const toast = useCallback((msg: string, kind = "info") => {
+  const toast = useCallback((msg: string, kind = "info", action?: { label: string; run: () => void }) => {
     const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, msg, kind }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === "error" ? 6000 : 3500);
+    setToasts((t) => [...t, { id, msg, kind, action }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), action ? 9000 : kind === "error" ? 6000 : 3500);
   }, []);
 
   const run = useCallback(async <T,>(p: Promise<T>, okMsg?: string) => {
@@ -178,6 +178,18 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
       return undefined;
     }
   }, [refresh, toast, onChanged]);
+
+  // Deleting a block can be undone: from the toast right away, or later from Document, under
+  // Recently deleted. The block comes back where it was, with its history.
+  const restoreBlock = useCallback(async (id: string) => {
+    const b = await run(api.restoreBlock(id), "Block restored.");
+    if (b) select(b.id);
+  }, [run]);
+  const removeBlock = useCallback(async (id: string) => {
+    select(null);
+    const done = await run(api.deleteBlock(id));
+    if (done) toast("Block deleted.", "info", { label: "Undo", run: () => { restoreBlock(id); } });
+  }, [run, toast, restoreBlock]);
 
   const ask = useCallback((message: string) => {
     setPanelOpen(true);
@@ -198,9 +210,9 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
   const apiValue: EditorApi | null = useMemo(() => (doc ? {
     doc, cfg, refresh, selected, select: (id) => { select(id); if (id && tab !== "chat" && tab !== "comments") setTab("block"); },
     editing, setEditing, tab, setTab: (t) => { setPanelOpen(true); setTab(t); }, commentFilter, setCommentFilter, ask, run, toast,
-    reloadConfig,
+    removeBlock, restoreBlock, reloadConfig,
     agentRunning: agentRunning || serverRunning, setAgentRunning, zoom, peers, me,
-  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, agentRunning, serverRunning, zoom, peers, me, reloadConfig]);
+  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, removeBlock, restoreBlock, agentRunning, serverRunning, zoom, peers, me, reloadConfig]);
 
   if (err) return <div className="p-8 text-[var(--color-error)]">Could not open the document: {err}</div>;
   if (!doc || !apiValue) return <div className="p-8 text-[var(--color-text-muted)]">Loading…</div>;
@@ -347,9 +359,15 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
       )}
       <div className="fixed bottom-4 right-4 z-[60] space-y-2">
         {toasts.map((t) => (
-          <div key={t.id} className={`px-3 py-2 rounded-lg shadow-[var(--shadow-md)] text-[12.5px] max-w-sm border ${
+          <div key={t.id} data-testid="toast" className={`flex items-center gap-3 px-3 py-2 rounded-lg shadow-[var(--shadow-md)] text-[12.5px] max-w-sm border ${
             t.kind === "error" ? "bg-[var(--color-error)] border-transparent text-white"
-              : "bg-[var(--color-card)] border-[var(--color-border)] text-[var(--color-text)]"}`}>{t.msg}</div>
+              : "bg-[var(--color-card)] border-[var(--color-border)] text-[var(--color-text)]"}`}>
+            <span>{t.msg}</span>
+            {t.action && (
+              <button className="font-semibold text-[var(--ui-accent)] hover:underline" data-testid="toast-action"
+                onClick={() => { setToasts((all) => all.filter((x) => x.id !== t.id)); t.action!.run(); }}>{t.action.label}</button>
+            )}
+          </div>
         ))}
       </div>
     </EditorContext.Provider>

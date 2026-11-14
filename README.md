@@ -34,7 +34,9 @@ you ask it to.
 - **Comments tag the agent.** Queue comments for later or ask now. "Address all comments"
   handles them strictly top to bottom.
 - **Nothing is overwritten.** Each block keeps a version tree. Step back, step forward, and
-  edit an old version to start a new branch.
+  edit an old version to start a new branch. A deleted block can be restored, with its
+  history: **Undo** on the toast, or **Document → Recently deleted** later (this also covers a
+  deletion the agent suggested and you accepted).
 - **Sources stay with each block.** The agent cites as it writes, and a `references` block
   compiles them.
 - **The agent sees the page.** `view_pages` gives a vision model screenshots of the rendered
@@ -207,11 +209,17 @@ the fonts, colours, header and footer too).
   the page adds to it, and so does anything inserted right after a cover block, by you or the
   agent. Back pages work the same way.
 - **Fonts and colours.** Override the theme for this document: body, heading, title and label
-  fonts; size, line spacing, heading scale, weight and case; alignment; and the text, heading,
-  accent, rule, tint and paper colours. 17 families are bundled (Inter, Source Serif 4, Raleway,
+  fonts; size, line spacing, heading scale, weight and case; alignment and hyphenation; and the
+  text, heading, accent, rule, tint and paper colours. 17 families are bundled (Inter, Source Serif 4, Raleway,
   Lato, Open Sans, Montserrat, Roboto, Merriweather, Lora, Playfair Display, EB Garamond, Libre
   Baskerville, Carlito, Arimo, Tinos and more), and any other Google Fonts family loads on demand.
   **Save as theme** keeps the look (cover included) for every other document.
+- **Heading styles follow your choices.** A heading block can wear a style: `display` (a
+  title), `label` (a small label), `section` and `rule` (compact section headings: by default
+  small bold capitals in the label font). The heading case, weight, scale or font you set for
+  the document replaces that default look of `section` and `rule`, so "sentence case, please"
+  changes every section heading. `display` and `label` keep their own size and case. The Block
+  panel shows what each style does, and `GET /api/config` lists them (`block_variants`).
 - **Header and footer.** Left, centre and right text in the page margins, with `{page}`,
   `{pages}`, `{title}` and `{year}`, an optional rule, and the first page left out if you like.
   They skip the cover and back pages; unnumbered pages drop the `{page}` slot.
@@ -458,6 +466,32 @@ with Standalone(".codraft") as codraft:       # one browser for many exports
 PNG and JPG come back as the image for a one-page document and as a zip of page images
 otherwise; HTML is always a zip. A failed export raises `ExportError` (`.status` 404 for an
 unknown document, 503 when Chromium isn't installed).
+
+## Text, tables and figures on the page
+
+- **Markdown dialect.** Text and callout blocks are GitHub-flavoured Markdown, plus superscript
+  and subscript in Pandoc's form: `m^2^`, `H~2~O` (attached to the text before them, no spaces
+  inside); `<sup>` and `<sub>` work too. `~~text~~` strikes text out; a single `~` is just a
+  tilde. There is no maths syntax: write symbols as characters (°C, ±, ×, µ). The rich-text
+  editor keeps all of this. A block with something it can't hold (a table, a picture, raw HTML)
+  opens as Markdown instead, so nothing is lost by opening it.
+- **Tables keep words whole.** A column is at least as wide as its longest word. When a table
+  can't fit its column that way, long words break at a syllable with a hyphen, then the table
+  is set smaller, and only then does a word break wherever it must. A Markdown table inside a
+  text block looks like a table block, and its alignment row (`:--`, `:-:`, `--:`) is honoured.
+  A table block takes `"align": ["left", "right", ...]`, one entry per column. Word export
+  writes both as real tables.
+- **Captions wrap.** A figure's caption, title and source line take the lines they need. A
+  figure with a fixed height keeps that height: the picture or chart gives up the room.
+- **Hyphenation.** Justified text is hyphenated by default, which evens out the word gaps
+  (Design → Hyphenation turns it on or off for any document; `"hyphens": "auto" | "manual"` in
+  `style`). Codraft finds the break points itself instead of leaving it to the browser, because
+  the headless Chromium that renders exports has no hyphenation dictionaries: the editor and the
+  PDF now break the same words. English ships with the app; German, Spanish, French, Italian,
+  Dutch and Portuguese load when a document's language asks for them. Words that start with a
+  capital are left whole. In the PDF each break point is tagged as a soft hyphen, which PDF
+  viewers skip when you search or copy; a text extractor that ignores the tag (pypdf is one)
+  shows a space there.
 
 ## How the layout works
 

@@ -473,7 +473,7 @@ def _scan(lines: list[str]) -> tuple[list[tuple], dict[str, tuple[str, str]], di
             j = i + 2
             while j < n and lines[j].strip() and "|" in lines[j]:
                 j += 1
-            items.append(("table", [lines[i], *lines[i + 2:j]]))
+            items.append(("table", [lines[i], *lines[i + 2:j]], lines[i + 1]))
             i = j
             continue
         if _QUOTE.match(line):
@@ -714,7 +714,14 @@ def from_markdown(text: str, *, resolve: Resolver | None = None, split: str = "p
             rows = [_split_row(ln) for ln in item[1]]
             width = len(rows[0])
             rows = [(r + [""] * width)[:width] for r in rows]
-            b.add("table", {"rows": rows, "header": True})
+            # The alignment row (:--, :--:, --:) is kept: a column of figures stays right-aligned.
+            marks = [c.strip() for c in item[2].strip().strip("|").split("|")]
+            align = ["center" if c.startswith(":") and c.endswith(":") else "right" if c.endswith(":") else "left"
+                     for c in (marks + [""] * width)[:width]]
+            content = {"rows": rows, "header": True}
+            if any(a != "left" for a in align):
+                content["align"] = align
+            b.add("table", content)
         elif kind == "hr":
             flush()
             b.add("divider")

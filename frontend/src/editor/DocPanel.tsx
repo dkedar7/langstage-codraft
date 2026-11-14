@@ -1,6 +1,6 @@
-import { Check, Copy, FileText, Trash2, Upload } from "lucide-react";
-import { useRef, useState } from "react";
-import { api } from "../api";
+import { Check, Copy, FileText, RotateCcw, Trash2, Upload } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { api, type DeletedBlock } from "../api";
 import { PAGE_SIZE_LABELS } from "../layout/units";
 import type { Settings } from "../types";
 import { NumberInput, TextInput } from "./BlockPanel";
@@ -162,6 +162,8 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
         </div>
       </div>
 
+      <RecentlyDeleted />
+
       <div className="panel-section">
         <div className="font-semibold">You</div>
         <div className="text-[11.5px] text-[var(--color-text-muted)] mb-1">How collaborators see you on the page.</div>
@@ -196,6 +198,45 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
           window.location.replace(withBase("/") + window.location.search);
         }}><Trash2 size={14} /> Delete document</button>
       </div>
+    </div>
+  );
+}
+
+/** Blocks deleted from this document (by anyone, the agent's accepted deletions included),
+ *  newest first. Restore puts one back where it was, with its history. */
+function RecentlyDeleted() {
+  const ed = useEditorApi();
+  const { doc } = ed;
+  const [items, setItems] = useState<DeletedBlock[]>([]);
+  const [all, setAll] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.deletedBlocks(doc.id).then((d) => { if (alive) setItems(d); }).catch(() => {});
+    return () => { alive = false; };
+  }, [doc.id, doc.rev]);
+  if (!items.length) return null;
+  const when = (t: number | null) => (t
+    ? new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
+  return (
+    <div className="panel-section" data-testid="deleted-blocks">
+      <div className="font-semibold">Recently deleted</div>
+      <div className="text-[11.5px] text-[var(--color-text-muted)] mb-1">
+        A deleted block keeps its text and history. Restore puts it back where it was.
+      </div>
+      {(all ? items : items.slice(0, 5)).map((b) => (
+        <div key={b.id} className="flex items-center gap-2 py-1.5 border-t border-[var(--color-border)]" data-testid="deleted-block">
+          <div className="min-w-0 flex-1">
+            <div className="text-[12.5px] truncate" title={b.preview}>
+              {b.preview || <span className="text-[var(--color-text-muted)]">(no text)</span>}</div>
+            <div className="text-[11px] text-[var(--color-text-muted)]">{b.type}{b.deleted_at ? ` · deleted ${when(b.deleted_at)}` : ""}</div>
+          </div>
+          <button className="btn" data-testid="restore-block" title="Put this block back where it was"
+            onClick={() => ed.restoreBlock(b.id)}><RotateCcw size={13} /> Restore</button>
+        </div>
+      ))}
+      {items.length > 5 && !all && (
+        <button className="btn btn-ghost text-[11.5px] mt-1" onClick={() => setAll(true)}>Show all {items.length}</button>
+      )}
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { api } from "../api";
 import { pageMm } from "../layout/units";
 import { BlockView } from "../render/BlockView";
 import { pendingCharts } from "../render/Chart";
+import { pendingHyphenation } from "../render/hyphenate";
 import { pendingFonts, useDocFonts } from "../fonts";
 import { Fragment, Page, PageFurniture } from "../render/Page";
 import { effectiveTheme, pageDesign, themeVars } from "../render/theme";
@@ -58,7 +59,7 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
       const imgs = Array.from(document.images);
       const imagesDone = imgs.every((i) => i.complete);
       const fontsDone = pendingFonts.count === 0 && (document.fonts?.status ?? "loaded") === "loaded";
-      if (pendingCharts.count === 0 && imagesDone && fontsDone) {
+      if (pendingCharts.count === 0 && pendingHyphenation.count === 0 && imagesDone && fontsDone) {
         requestAnimationFrame(() => requestAnimationFrame(() => {
           if (!alive) return;
           window.__codraftReady = true;

@@ -3,6 +3,7 @@ import { blockWidth, paginate, type LayoutResult, type MeasuredBlock, type Split
 import { geometry } from "../layout/units";
 import type { Block, Settings, Theme } from "../types";
 import { BlockView, compileReferences, type RenderCtx } from "./BlockView";
+import { useHyphenation } from "./hyphenate";
 import { themeVars } from "./theme";
 
 /** A BCP-47 code for hyphenation, from the brief's language. */
@@ -105,8 +106,12 @@ export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>): 
  */
 export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme | undefined, editing: boolean, print = false) {
   const geo = useMemo(() => geometry(settings, theme), [settings, theme]);
-  const ctx: RenderCtx = useMemo(() => ({ references: compileReferences(blocks), editing, print, pageCount: 0 }),
-    [blocks, editing, print]);
+  const lang = langCode(settings);
+  const canHyphenate = useHyphenation(lang);   // re-renders when a language's patterns arrive
+  const hyphenate = canHyphenate && theme?.hyphens === "auto";
+  const ctx: RenderCtx = useMemo(() => ({ references: compileReferences(blocks), editing, print, pageCount: 0,
+    lang: canHyphenate ? lang : null, hyphenate }),
+    [blocks, editing, print, lang, canHyphenate, hyphenate]);
   const boxRef = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState<Record<string, Measured>>({});
   const [tick, setTick] = useState(0);

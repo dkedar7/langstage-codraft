@@ -99,6 +99,13 @@ export function DesignPanel() {
                 <option value="left">Left</option><option value="justify">Justified</option>
               </select>
             </Field>
+            <Field label="Hyphenation" k="hyphens">
+              <select className="select" value={theme.hyphens === "auto" ? "auto" : "manual"} data-testid="hyphens-select"
+                title="Break long words at line ends. On by default for justified text, where it keeps the word gaps even."
+                onChange={(e) => set({ style: { hyphens: e.target.value } })}>
+                <option value="auto">On</option><option value="manual">Off</option>
+              </select>
+            </Field>
           </div>
           <div className="grid grid-cols-2 gap-x-2 mt-1">
             <ColorStyle label="Text" k="color_text" theme={theme} />

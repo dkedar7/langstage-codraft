@@ -1,6 +1,9 @@
 import type { AppConfig, Block, Comment, Doc, DocSummary, Suggestion, Theme, Upload, VersionTree } from "./types";
 import { notifyHost, withBase } from "./base";
 
+/** A deleted block: enough to recognise it in the "Recently deleted" list. */
+export interface DeletedBlock { id: string; type: string; deleted_at: number | null; preview: string; n_versions: number; author: string }
+
 /** What an import mapped, and notes on anything that needs a look. */
 export interface ImportReport { blocks: number; images: number; notes: string[] }
 
@@ -72,6 +75,9 @@ export const api = {
   patchBlock: (id: string, body: { content?: any; refs?: any; layout?: any; note?: string; base?: string; author?: string }) =>
     req<Block & { conflict?: boolean }>("PATCH", `/api/blocks/${id}`, body),
   deleteBlock: (id: string) => req("DELETE", `/api/blocks/${id}`),
+  /** Blocks deleted from a document, newest first; each can be restored. */
+  deletedBlocks: (docId: string) => req<DeletedBlock[]>("GET", `/api/docs/${docId}/deleted-blocks`),
+  restoreBlock: (id: string) => req<Block>("POST", `/api/blocks/${id}/restore`),
   moveBlock: (id: string, after: string | null) => req<Block>("POST", `/api/blocks/${id}/move`, { after }),
   duplicateBlock: (id: string) => req<Block>("POST", `/api/blocks/${id}/duplicate`),
   versions: (id: string) => req<VersionTree>("GET", `/api/blocks/${id}/versions`),

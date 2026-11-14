@@ -25,12 +25,25 @@ export function baseThemeName(themes: Record<string, Theme>, s: Settings, fallba
   return [s.theme, fallback, "classic"].find((n) => n && themes[n]) ?? Object.keys(themes)[0];
 }
 
-/** The document's theme with its own overrides (settings.style) on top. */
+/** Hyphenation for a document: its own choice, else on when the body is justified (wide word
+ *  gaps otherwise), else the theme's. A theme that says "none" keeps it off. */
+export function hyphenation(base: Partial<Theme>, own: Partial<Theme>): string {
+  if (own.hyphens) return own.hyphens;
+  const align = own.text_align || base.text_align || "left";
+  if (align === "justify" && base.hyphens !== "none") return "auto";
+  return base.hyphens || "manual";
+}
+
+/** The document's theme with its own overrides (settings.style) on top. `explicit` lists the
+ *  style keys the author chose (in this document, or in the look a saved theme was made from):
+ *  the font, case, weight and size of the section and rule heading variants are defaults that
+ *  those choices beat. */
 export function effectiveTheme(themes: Record<string, Theme>, s: Settings, fallback?: string): Theme {
   const name = baseThemeName(themes, s, fallback);
   const base = (name && themes[name]) || FALLBACK_THEME;
-  const own = Object.fromEntries(Object.entries(s.style || {}).filter(([, v]) => v != null && v !== ""));
-  return { ...FALLBACK_THEME, ...base, ...own } as Theme;
+  const own = Object.fromEntries(Object.entries(s.style || {}).filter(([, v]) => v != null && v !== "")) as Partial<Theme>;
+  const explicit = Array.from(new Set([...(base.explicit || []), ...Object.keys(own)]));
+  return { ...FALLBACK_THEME, ...base, ...own, hyphens: hyphenation(base, own), explicit } as Theme;
 }
 
 function hexLuminance(c: string): number | null {
@@ -60,15 +73,24 @@ export function pageDesign(kind: "cover" | "back", s: Settings, t: Theme): Requi
 export function themeVars(t: Theme | undefined): CSSProperties {
   const th = { ...FALLBACK_THEME, ...(t || {}) };
   const s = th.heading_scale;
+  const chose = new Set(th.explicit || []);
+  const sizes = [th.font_size * s * s * s, th.font_size * s * s, th.font_size * s].map((v) => `${v.toFixed(2)}px`);
+  // What the author chose for headings beats the look of the section and rule heading variants
+  // (styles.css reads these with the variant's own value as the fallback).
+  const chosen: Record<string, string> = {};
+  if (chose.has("heading_case")) chosen["--cd-own-hcase"] = th.heading_case;
+  if (chose.has("font_heading")) chosen["--cd-own-hfont"] = th.font_heading;
+  if (chose.has("heading_weight")) chosen["--cd-own-hw"] = String(th.heading_weight);
+  if (chose.has("heading_scale")) sizes.forEach((v, i) => { chosen[`--cd-own-h${i + 1}`] = v; });
   return {
     "--cd-font-body": th.font_body,
     "--cd-font-heading": th.font_heading,
     "--cd-font-mono": th.font_mono,
     "--cd-size": `${th.font_size}px`,
     "--cd-lh": String(th.line_height),
-    "--cd-h1": `${(th.font_size * s * s * s).toFixed(2)}px`,
-    "--cd-h2": `${(th.font_size * s * s).toFixed(2)}px`,
-    "--cd-h3": `${(th.font_size * s).toFixed(2)}px`,
+    "--cd-h1": sizes[0],
+    "--cd-h2": sizes[1],
+    "--cd-h3": sizes[2],
     "--cd-text": th.color_text,
     "--cd-muted": th.color_muted,
     "--cd-accent": th.color_accent,
@@ -81,10 +103,13 @@ export function themeVars(t: Theme | undefined): CSSProperties {
     "--cd-display-weight": String(th.display_weight ?? 300),
     "--cd-font-label": th.font_label || "'Roboto Condensed', 'Arial Narrow', sans-serif",
     "--cd-align": th.text_align || "left",
-    "--cd-hyphens": th.hyphens || "manual",
+    // "auto" breaks words at the soft hyphens Codraft puts in itself (render/hyphenate.ts), so
+    // the editor and the export break the same words whatever dictionaries a browser has.
+    "--cd-hyphens": th.hyphens === "none" ? "none" : "manual",
     "--cd-figure": th.color_figure || th.color_callout,
     "--cd-par-gap": th.paragraph_gap != null ? th.paragraph_gap + "em" : ".7em",
     "--cd-par-indent": th.paragraph_indent ? th.paragraph_indent + "em" : "0",
     ...(th.color_heading ? { "--cd-heading": th.color_heading } : {}),
+    ...chosen,
   } as CSSProperties;
 }

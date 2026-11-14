@@ -190,8 +190,7 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .cd-md h1, .cd-md h2, .cd-md h3, .cd-md h4 { font-family: var(--cd-font-heading); font-weight: var(--cd-hw); line-height: 1.25; margin: .9em 0 .4em; }
 .cd-md h1 { font-size: var(--cd-h2); } .cd-md h2 { font-size: var(--cd-h3); } .cd-md h3, .cd-md h4 { font-size: 1.05em; }
 .cd-md hr { border: 0; border-top: 1px solid var(--cd-rule); margin: 1em 0; }
-.cd-md table { border-collapse: collapse; width: 100%; margin: 0 0 .7em; font-size: .92em; }
-.cd-md th, .cd-md td { border: 1px solid var(--cd-rule); padding: .3em .5em; text-align: left; }
+.cd-md table { margin: 0 0 .7em; }
 .cd-md img { max-width: 100%; }
 
 .cd-h { font-family: var(--cd-font-heading); font-weight: var(--cd-hw); text-transform: var(--cd-hcase); line-height: 1.2; margin: 0; color: var(--cd-heading, var(--cd-text)); }
@@ -209,13 +208,24 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 
 .cd-figure { margin: 0; }
 .cd-figure img { display: block; }
-.cd-figure figcaption, .cd-caption { font-size: .82em; color: var(--cd-muted); margin-top: 6px; line-height: 1.35; height: 22px; overflow: hidden; }
+/* Captions wrap: a long one takes the lines it needs (it used to be cut off after the first). */
+.cd-figure figcaption, .cd-caption { font-size: .82em; color: var(--cd-muted); margin-top: 6px; line-height: 1.35; min-height: 22px; flex: none; }
 .cd-image-empty { display: flex; align-items: center; justify-content: center; text-align: center; padding: 8px; background: repeating-linear-gradient(45deg, #f6f6f8, #f6f6f8 8px, #efeff3 8px, #efeff3 16px); color: #8b8b95; font-family: Inter, sans-serif; font-size: 12px; border-radius: 4px; }
 .cd-chart-error { font-family: Inter, sans-serif; font-size: 12px; color: #b91c1c; padding: 8px; background: #fef2f2; border-radius: 4px; height: 100%; box-sizing: border-box; }
 
-.cd-table { border-collapse: collapse; width: 100%; font-size: .9em; }
-.cd-table th { text-align: left; font-weight: 650; border-bottom: 2px solid var(--cd-text); padding: .35em .5em; }
-.cd-table td { border-bottom: 1px solid var(--cd-rule); padding: .35em .5em; vertical-align: top; }
+/* Tables: a table block and a Markdown table inside a text block look the same. Words stay
+   whole (a column is at least as wide as its longest word). When the columns can't all fit,
+   BlockView steps the table through data-fit: 1 breaks long words at syllables, 2 also sets it
+   smaller, 3 lets a word break anywhere. */
+.cd-table, .cd-md table { border-collapse: collapse; width: 100%; font-size: .9em; overflow-wrap: break-word; hyphens: none; -webkit-hyphens: none; }
+.cd-table th, .cd-md th { font-weight: 650; border-bottom: 2px solid var(--cd-text); padding: .35em .5em; vertical-align: bottom; }
+.cd-table td, .cd-md td { border-bottom: 1px solid var(--cd-rule); padding: .35em .5em; vertical-align: top; }
+.cd-table th:not([align]), .cd-md th:not([align]), .cd-table td:not([align]), .cd-md td:not([align]) { text-align: left; }
+.cd-table[data-fit], .cd-md table[data-fit] { hyphens: manual; -webkit-hyphens: manual; }
+.cd-table[data-fit="2"], .cd-md table[data-fit="2"], .cd-table[data-fit="3"], .cd-md table[data-fit="3"] { font-size: .78em; }
+.cd-table[data-fit="2"] :is(th, td), .cd-md table[data-fit="2"] :is(th, td),
+.cd-table[data-fit="3"] :is(th, td), .cd-md table[data-fit="3"] :is(th, td) { padding: .3em .35em; }
+.cd-table[data-fit="3"], .cd-md table[data-fit="3"] { overflow-wrap: anywhere; }
 
 .cd-divider { border: 0; border-top: 1px solid var(--cd-rule); margin: .4em 0; }
 .cd-refs ol { margin: .5em 0 0; padding-left: 1.6em; font-size: .9em; list-style: decimal; }
@@ -300,6 +310,7 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 /* ------------------------------------------------- typography: theme-driven paragraphs */
 .cd-md p { text-align: var(--cd-align, left); hyphens: var(--cd-hyphens, manual); -webkit-hyphens: var(--cd-hyphens, manual);
   margin: 0 0 var(--cd-par-gap, .7em); }
+.cd-md sup, .cd-md sub, .cd-h sup, .cd-h sub, .cd-table sup, .cd-table sub { font-size: .72em; line-height: 0; }
 .cd-md p + p { text-indent: var(--cd-par-indent, 0); }
 .cd-print .cd-page { overflow: hidden; }
 
@@ -320,19 +331,32 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .cd-dropcap .cd-md > p:first-child::first-letter { float: left; font-family: var(--cd-font-body); font-size: 4.6em; line-height: .8;
   padding: .04em .07em 0 0; color: var(--cd-accent); font-weight: 400; }
 
+/* Heading variants. display is a title (the Titles font and weight) and label is a small label
+   (the Labels font); each keeps its size and case. section and rule are section headings in a
+   compact look: small, bold capitals in the Labels font. That look is a default. Where the
+   author chose a heading case, weight, scale or font for the document (the --cd-own-*
+   variables, set in render/theme.ts), the choice wins. */
 .cd-v-display .cd-h { font-family: var(--cd-font-display); font-weight: var(--cd-display-weight); text-transform: none;
   font-size: 3.1em; line-height: 1.04; letter-spacing: -.015em; color: var(--cd-heading, var(--cd-text)) !important; }
-.cd-v-section .cd-h, .cd-v-rule .cd-h { font-family: var(--cd-font-label); font-weight: 700; text-transform: uppercase;
+.cd-v-section .cd-h, .cd-v-rule .cd-h { font-family: var(--cd-own-hfont, var(--cd-font-label)); font-weight: var(--cd-own-hw, 700);
+  text-transform: var(--cd-own-hcase, uppercase);
   font-size: 1.02em; line-height: 1.2; letter-spacing: .005em; color: var(--cd-heading, var(--cd-text)) !important; }
+.cd-v-section .cd-h1, .cd-v-rule .cd-h1 { font-size: var(--cd-own-h1, 1.02em); }
+.cd-v-section .cd-h2, .cd-v-rule .cd-h2 { font-size: var(--cd-own-h2, 1.02em); }
+.cd-v-section .cd-h3, .cd-v-rule .cd-h3 { font-size: var(--cd-own-h3, 1.02em); }
 .cd-v-rule .cd-h { border-top: 1px solid var(--cd-rule); padding-top: .55em; }
 .cd-v-label .cd-h { font-family: var(--cd-font-label); font-size: .8em; text-transform: uppercase; letter-spacing: .1em; color: var(--cd-muted) !important; }
 
 .cd-v-figure-box .cd-figure, .cd-v-figure-box .cd-table-wrap, .cd-v-figure-box.cd-type-callout .cd-callout {
   background: var(--cd-figure); padding: 12px; border-radius: 0; border-left: 0; }
-.cd-fig-head { display: flex; gap: 14px; align-items: baseline; font-family: var(--cd-font-label); margin-bottom: 8px; height: 18px; overflow: hidden; }
-.cd-fig-label { font-weight: 700; font-size: 1em; letter-spacing: .02em; text-transform: uppercase; }
-.cd-fig-title { font-size: .85em; }
-.cd-fig-source { font-family: var(--cd-font-label); font-weight: 700; font-size: .72em; margin-top: 8px; height: 14px; overflow: hidden; }
+/* A figure's label and title, and its source line: one line is the usual case (and keeps its
+   old height); longer text wraps. */
+.cd-fig-head { display: flex; gap: 14px; align-items: baseline; font-family: var(--cd-font-label); margin-bottom: 8px; min-height: 18px;
+  line-height: 1.2; flex: none; }
+.cd-fig-label { font-weight: 700; font-size: 1em; letter-spacing: .02em; text-transform: uppercase; flex: none; }
+.cd-fig-title { font-size: .85em; min-width: 0; }
+.cd-fig-source { font-family: var(--cd-font-label); font-weight: 700; font-size: .72em; margin-top: 8px; min-height: 14px; line-height: 1.25;
+  flex: none; }
 
 .cd-refs-hanging { list-style: none; padding: 0; margin: .4em 0 0; font-family: var(--cd-font-label); font-size: .78em; line-height: 1.32; }
 .cd-refs-hanging li { padding-left: 1.4em; text-indent: -1.4em; margin: 0 0 .55em; }

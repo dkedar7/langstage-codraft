@@ -7,6 +7,7 @@ import { api, streamChat, type Frame } from "../api";
 import { agentNamed } from "../branding";
 import { mdToHtml } from "../render/markdown";
 import { useEditorApi } from "./context";
+import { describeCall, FOLD_AFTER, summarizeCalls, toolLabel, type Lookup } from "./toolSummary";
 
 interface ToolCall { id: string; name: string; args: any; status: "running" | "success" | "error"; result?: string; durationMs?: number }
 interface Msg { id: string; role: "user" | "assistant" | "error"; content: string; tools: ToolCall[]; startedAt?: number; durationMs?: number }
@@ -33,54 +34,34 @@ function fromHistory(hist: any[]): Msg[] {
   return out;
 }
 
-const TOOL_META: Record<string, { label: string; icon: typeof Wrench }> = {
-  get_document: { label: "Read the outline", icon: FileSearch },
-  read_blocks: { label: "Read blocks", icon: FileSearch },
-  search_document: { label: "Searched the document", icon: Search },
-  read_upload: { label: "Read an upload", icon: FileSearch },
-  list_comments: { label: "Listed comments", icon: MessageSquareReply },
-  get_block_history: { label: "Checked history", icon: FileSearch },
-  propose_edit: { label: "Suggested an edit", icon: GitPullRequestArrow },
-  propose_insert: { label: "Suggested a new block", icon: GitPullRequestArrow },
-  propose_delete: { label: "Suggested a deletion", icon: GitPullRequestArrow },
-  propose_move: { label: "Suggested a move", icon: GitPullRequestArrow },
-  reply_to_comment: { label: "Replied to a comment", icon: MessageSquareReply },
-  set_block_layout: { label: "Changed block layout", icon: Palette },
-  set_document_style: { label: "Changed document style", icon: Palette },
-  compile_references: { label: "Compiled references", icon: FileSearch },
-  view_pages: { label: "Looked at the pages", icon: Eye },
-  view_sketch: { label: "Looked at the sketch", icon: Eye },
-  generate_image: { label: "Generated an image", icon: ImagePlus },
-  web_search: { label: "Searched the web", icon: Globe },
-  fetch_url: { label: "Read a web page", icon: Globe },
+const TOOL_ICONS: Record<string, typeof Wrench> = {
+  get_document: FileSearch, read_blocks: FileSearch, search_document: Search, read_upload: FileSearch,
+  list_comments: MessageSquareReply, get_block_history: FileSearch, compile_references: FileSearch,
+  propose_edit: GitPullRequestArrow, propose_insert: GitPullRequestArrow, propose_delete: GitPullRequestArrow,
+  propose_move: GitPullRequestArrow, insert_blocks: GitPullRequestArrow, draw_figure: ImagePlus,
+  reply_to_comment: MessageSquareReply, set_block_layout: Palette, set_document_style: Palette,
+  set_typography: Palette, set_cover: Palette, set_header_footer: Palette, reserve_area: Palette,
+  match_upload_style: Palette, view_pages: Eye, view_sketch: Eye, view_upload: Eye,
+  generate_image: ImagePlus, web_search: Globe, fetch_url: Globe,
 };
 
-function argPreview(args: Record<string, unknown>): string | null {
-  const keys = Object.keys(args || {});
-  if (!keys.length) return null;
-  const v = args[keys[0]];
-  if (v == null) return null;
-  const s = typeof v === "string" ? v : JSON.stringify(v);
-  return s.length > 60 ? s.slice(0, 60) + "…" : s;
-}
-
-/** langstage-web's ToolCallCard, with Codraft's plain-language labels. */
-function ToolCallCard({ tc }: { tc: ToolCall }) {
+/** langstage-web's ToolCallCard, with Codraft's plain-language labels: what the agent did and
+ *  to which block, in the block's own words (the raw arguments are one click away). */
+function ToolCallCard({ tc, look }: { tc: ToolCall; look: Lookup }) {
   const [open, setOpen] = useState(false);
-  const meta = TOOL_META[tc.name] || { label: tc.name, icon: Wrench };
-  const Icon = meta.icon;
+  const Icon = TOOL_ICONS[tc.name] || Wrench;
   const status = tc.status === "running" ? <Loader2 size={12} className="animate-spin text-[var(--color-text-muted)]" />
     : tc.status === "success" ? <CheckCircle2 size={12} className="text-[var(--color-success)]" />
       : <XCircle size={12} className="text-[var(--color-error)]" />;
-  const prev = argPreview(tc.args);
+  const about = describeCall(tc.name, tc.args, look);
   return (
     <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] overflow-hidden" data-testid="tool-card">
       <button onClick={() => setOpen(!open)}
         className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs hover:bg-[var(--color-surface-3)] transition-colors">
         <ChevronRight size={12} className={`text-[var(--color-text-muted)] transition-transform ${open ? "rotate-90" : ""}`} />
         <Icon size={12} className="text-[var(--color-text-muted)]" />
-        <span className="font-medium text-[var(--color-text-secondary)]">{meta.label}</span>
-        {prev && <code className="text-[11px] text-[var(--color-text-muted)] truncate max-w-[160px]">({prev})</code>}
+        <span className="font-medium text-[var(--color-text-secondary)] flex-shrink-0">{toolLabel(tc.name)}</span>
+        {about && <span className="text-[11px] text-[var(--color-text-muted)] truncate min-w-0" data-testid="tool-about">{about}</span>}
         <span className="flex-1" />
         {tc.durationMs != null && (
           <span className="text-[11px] tabular-nums text-[var(--color-text-muted)]">
@@ -107,6 +88,40 @@ function ToolCallCard({ tc }: { tc: ToolCall }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** A turn's tool calls. A few are listed; a long run (a restyle can take a hundred) folds into
+ *  one line that says what was done and how often, with the full list a click away. While
+ *  the agent works, the step it is on shows under the summary. */
+function ToolCalls({ tools, look, live }: { tools: ToolCall[]; look: Lookup; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (tools.length <= FOLD_AFTER) {
+    return <>{tools.map((t) => <ToolCallCard key={t.id} tc={t} look={look} />)}</>;
+  }
+  const failed = tools.filter((t) => t.status === "error").length;
+  const current = live ? tools[tools.length - 1] : null;
+  return (
+    <>
+      <div className="rounded border border-[var(--color-border)] bg-[var(--color-surface-2)] overflow-hidden" data-testid="tool-summary">
+        <button onClick={() => setOpen(!open)} title={open ? "Hide the steps" : "Show every step"}
+          className="flex items-center gap-2 w-full px-3 py-1.5 text-left text-xs hover:bg-[var(--color-surface-3)] transition-colors">
+          <ChevronRight size={12} className={`flex-shrink-0 text-[var(--color-text-muted)] transition-transform ${open ? "rotate-90" : ""}`} />
+          <Wrench size={12} className="flex-shrink-0 text-[var(--color-text-muted)]" />
+          <span className="text-[var(--color-text-secondary)] min-w-0">{summarizeCalls(tools)}</span>
+          <span className="flex-1" />
+          {failed > 0 ? <XCircle size={12} className="flex-shrink-0 text-[var(--color-error)]" />
+            : live ? <Loader2 size={12} className="flex-shrink-0 animate-spin text-[var(--color-text-muted)]" />
+              : <CheckCircle2 size={12} className="flex-shrink-0 text-[var(--color-success)]" />}
+        </button>
+        {open && (
+          <div className="border-t border-[var(--color-border)] p-1.5 space-y-1.5 max-h-[420px] overflow-y-auto scroll-thin">
+            {tools.map((t) => <ToolCallCard key={t.id} tc={t} look={look} />)}
+          </div>
+        )}
+      </div>
+      {!open && current && <ToolCallCard key={current.id} tc={current} look={look} />}
+    </>
   );
 }
 
@@ -222,6 +237,7 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streaming, queued]);
 
+  const look: Lookup = { blocks: doc.blocks, uploads: doc.uploads };
   const openComments = doc.comments.filter((c) => c.status === "open").length;
   const starters = [
     openComments ? `Address all comments (${openComments})` : null,
@@ -273,7 +289,7 @@ export const ChatPanel = forwardRef<ChatHandle>(function ChatPanel(_, ref) {
                   )}
                   {m.tools.length > 0 && (
                     <div className={`space-y-1.5 ${m.content ? "mb-2" : ""}`}>
-                      {m.tools.map((t) => <ToolCallCard key={t.id} tc={t} />)}
+                      <ToolCalls tools={m.tools} look={look} live={live} />
                     </div>
                   )}
                   {m.content && (

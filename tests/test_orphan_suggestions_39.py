@@ -47,7 +47,7 @@ def test_accepting_the_agents_delete_closes_its_other_suggestions_on_that_block(
 def test_an_insert_or_move_anchored_after_a_deleted_block_follows_the_block_before_it(store):
     d, a, b, c = _doc(store)
     ins = store.propose(d["id"], "insert", {"type": "text", "content": {"markdown": "New."}, "after": b["id"]})
-    mv = store.propose(d["id"], "move", {"after": b["id"]}, block_id=c["id"])
+    mv = store.propose(d["id"], "move", {"after": b["id"]}, block_id=a["id"])  # a real move: a is first
     store.delete_block(b["id"])
     assert store.get_suggestion(ins["id"])["payload"]["after"] == a["id"]
     assert store.get_suggestion(mv["id"])["payload"]["after"] == a["id"]
@@ -129,7 +129,7 @@ def test_rest_issue_repro_delete_then_review(client):
     assert client.delete(f"/api/blocks/{blk['id']}").status_code == 200
     assert client.get(f"/api/docs/{D}").json()["suggestions"] == []
     r = client.post(f"/api/docs/{D}/suggestions/accept-all")
-    assert r.json() == {"ok": True, "count": 0, "skipped": [], "skipped_gone": []}
+    assert r.json() == {"ok": True, "count": 0, "skipped": [], "skipped_gone": [], "failed": []}
 
 
 def test_rest_accept_all_reports_stored_orphans_and_accept_is_a_400(client):

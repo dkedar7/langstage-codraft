@@ -33,7 +33,9 @@ function withVirtual(blocks: Block[], suggestions: Suggestion[]): Block[] {
       const first = out.findIndex((b) => b.layout.role === role);
       out.splice(first < 0 ? out.length : first, 0, vb);
     } else {
-      const idx = out.findIndex((b) => b.id === p.after);
+      // A batch stays in order: an insert that follows a pending insert sits after its ghost.
+      const follows = p.after_suggestion ? out.findIndex((b) => b.id === `virtual-${p.after_suggestion}`) : -1;
+      const idx = follows >= 0 ? follows : out.findIndex((b) => b.id === p.after);
       const last = out.map((b) => b.layout.role).lastIndexOf(role);
       out.splice(idx >= 0 ? idx + 1 : last + 1, 0, vb);
     }

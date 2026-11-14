@@ -11,7 +11,11 @@ page setup) is the agent's to drive and applies directly.
 """
 from __future__ import annotations
 
+import ast
+import difflib
 import json
+import math
+import operator
 import re
 from pathlib import Path
 from typing import Any
@@ -26,12 +30,14 @@ from .store import (
     BLOCK_VARIANTS,
     DEFAULT_CONTENT,
     Invalid,
+    NoChange,
     NotFound,
     get_store,
     plain_text,
 )
 
 _MAX_READ = 6000
+_MAX_PAGES = 4  # page images per view_pages call
 
 
 def _doc_id(config: RunnableConfig | None) -> str:
@@ -44,7 +50,70 @@ def _doc_id(config: RunnableConfig | None) -> str:
 
 
 def _err(exc: Exception) -> str:
+    if isinstance(exc, NoChange):  # not a failure: nothing needed recording
+        return str(exc.args[0] if exc.args else exc)
+    if isinstance(exc, KeyError) and exc.args:  # NotFound: str() would add quotes
+        return f"ERROR: {exc.args[0]}"
     return f"ERROR: {exc}"
+
+
+_ID_KINDS = {"blk": "block", "sug": "suggestion", "cmt": "comment", "upl": "upload", "ver": "version",
+             "doc": "document"}
+
+
+def _pending_insert(store: Any, doc_id: str, ref: str) -> dict | None:
+    """The pending insert suggestion ``ref`` names, or None. Raises a NotFound that says
+    what the id is when it is a suggestion that can't stand in for a block."""
+    if not isinstance(ref, str) or not ref.startswith("sug_"):
+        return None
+    try:
+        sg = store.get_suggestion(ref)
+    except NotFound:
+        sg = None
+    if sg is None or sg["doc_id"] != doc_id:
+        raise NotFound(f"no suggestion {ref} in this document; call get_document for the current outline")
+    p = sg["payload"] if isinstance(sg["payload"], dict) else {}
+    if sg["status"] == "pending" and sg["kind"] == "insert":
+        return sg
+    if sg["status"] == "pending":
+        raise NotFound(f"{ref} is your pending {sg['kind']} of block {sg['block_id']}, not a block: "
+                       f"use {sg['block_id']}")
+    if sg["status"] in ("accepted", "applied"):
+        bid = (p.get("result") or {}).get("block_id") or sg["block_id"]
+        gone = " (the block was deleted since)" if sg["kind"] == "delete" else ""
+        raise NotFound(f"{ref} is a suggestion the author already accepted; its block is {bid}{gone}. "
+                       f"Use the block id")
+    why = p.get("reject_reason") or p.get("obsolete_reason") or ""
+    raise NotFound(f"{ref} is a suggestion that was {sg['status']}{f' ({why})' if why else ''}; there is no "
+                   "such block. Call get_document for the current outline")
+
+
+def _block(store: Any, doc_id: str, block_id: str) -> dict:
+    """The block, or a NotFound whose message helps the agent recover: what kind of id it
+    passed, whether the block was deleted, and the closest ids in this document."""
+    try:
+        return store.block_in(doc_id, block_id)
+    except Invalid:
+        raise
+    except NotFound:
+        pass
+    ref = str(block_id)
+    prefix = ref.split("_", 1)[0]
+    if prefix == "sug":
+        if _pending_insert(store, doc_id, ref):
+            raise NotFound(f"{ref} is a pending insert (still waiting for the author), not a block yet. "
+                           "read_blocks, propose_edit, propose_delete, set_block_layout and after_block_id "
+                           "accept it; this tool needs an accepted block") from None
+    elif prefix in _ID_KINDS and prefix != "blk":
+        raise NotFound(f"{ref} is a {_ID_KINDS[prefix]} id, not a block id (blocks are blk_…)") from None
+    row = store._one("SELECT doc_id, deleted FROM blocks WHERE id = ?", (ref,))
+    if row is not None and row["doc_id"] == doc_id and row["deleted"]:
+        raise NotFound(f"block {ref} was deleted; call get_document for the current outline") from None
+    ids = [b["id"] for b in store.list_blocks(doc_id)]
+    near = difflib.get_close_matches(ref, ids, n=3, cutoff=0.75)
+    hint = f" Closest ids: {', '.join(near)}." if near else ""
+    raise NotFound(f"no block {ref} in this document.{hint} Ids are never guessable: copy them from "
+                   "get_document") from None
 
 
 def _block_word_budget(settings: dict, block: dict) -> int | None:
@@ -76,14 +145,14 @@ def parse_content(block_type: str, content: Any) -> dict:
             data = None
         if isinstance(data, dict) and set(data) & set(DEFAULT_CONTENT[block_type]):
             if block_type == "heading" and isinstance(data.get("text"), str):
-                data["text"] = data["text"].lstrip("#").strip()
+                data = {**_heading(data["text"]), **{k: v for k, v in data.items() if k != "text"}}
             return data
     if block_type in ("text",):
         return {"markdown": s}
     if block_type == "callout":
         return {"markdown": s}
     if block_type == "heading":
-        return {"text": s.lstrip("#").strip()}
+        return _heading(s)
     if block_type == "table":
         st = s.strip()
         if st.startswith("|"):
@@ -110,6 +179,15 @@ def parse_content(block_type: str, content: Any) -> dict:
     if block_type == "references":
         return {"title": s or "References"}
     return {}
+
+
+def _heading(text: str) -> dict:
+    """Heading content from what the agent typed: "## Method" is a level-2 heading, so the
+    level can be set by writing it the Markdown way."""
+    m = re.match(r"\s*(#{1,6})\s+(.*)", text, re.S)
+    if m:
+        return {"text": m.group(2).strip(), "level": min(len(m.group(1)), 3)}
+    return {"text": text.lstrip("#").strip()}
 
 
 def _content_for_agent(block: dict) -> str:
@@ -147,8 +225,9 @@ def get_document(config: RunnableConfig) -> str:
     """Get the current document's settings, the author's brief (style, objective,
     platform, audience, language, output format) and an outline of every block:
     id, type, page(s), word count, an excerpt, open comments and pending suggestions.
-    Call this first. It is cheap and does not return full block text; use
-    read_blocks for that."""
+    Your pending suggestions appear where they will land, marked PENDING (a pending insert
+    is listed under its suggestion id). Call this first. It is cheap and does not return
+    full block text; use read_blocks for that."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -159,7 +238,7 @@ def get_document(config: RunnableConfig) -> str:
         for c in doc["comments"]:
             if c["status"] == "open":
                 open_c[c["block_id"] or "_doc"] = open_c.get(c["block_id"] or "_doc", 0) + 1
-        pend = {sg["block_id"] for sg in doc["suggestions"] if sg["block_id"]}
+        pv = store.preview(doc_id)
         lines = [
             f"Document {doc_id}: {doc['title']!r}",
             f"Layout: {s['mode']}, {_size_label(s)} {s['orientation']}, {s['columns']} column(s), "
@@ -182,8 +261,17 @@ def get_document(config: RunnableConfig) -> str:
             lines.append(f"Rendered pages: {place['_pages']}")
         if open_c.get("_doc"):
             lines.append(f"Document-level open comments: {open_c['_doc']}")
-        lines.append("Blocks (reading order):")
-        for i, b in enumerate(doc["blocks"], 1):
+        npend = len(doc["suggestions"])
+        if npend:
+            lines.append(
+                f"Blocks (reading order). {npend} suggestion(s) of yours are waiting for the author: they are "
+                "shown where they will land, marked PENDING. The author's document does not have them yet. "
+                "Do not propose them again.")
+        else:
+            lines.append("Blocks (reading order):")
+        for i, e in enumerate(pv["entries"], 1):
+            b = e["block"]
+            kinds = {sg["kind"]: sg["id"] for sg in e["pending"]}
             text = plain_text(b["type"], b["content"])
             lay = b["layout"]
             bits = [f"{i}. [{b['id']}] {b['type']}"]
@@ -208,13 +296,23 @@ def get_document(config: RunnableConfig) -> str:
             bits.append(f"{textutil.word_count(text)}w")
             if open_c.get(b["id"]):
                 bits.append(f"{open_c[b['id']]} open comment(s)")
-            if b["id"] in pend:
-                bits.append("pending suggestion")
             if b["refs"]:
                 bits.append(f"{len(b['refs'])} ref(s)")
+            if "insert" in kinds:
+                bits.append("PENDING INSERT (not in the author's document yet)")
+            if "edit" in kinds:
+                bits.append(f"PENDING EDIT {kinds['edit']} (the excerpt is your proposed text)")
+            if "move" in kinds:
+                bits.append(f"PENDING MOVE {kinds['move']} (shown at its new place)")
+            if "delete" in kinds:
+                bits.append(f"PENDING DELETE {kinds['delete']}")
             lines.append(" ".join(bits) + (f" — {textutil.excerpt(text, 90)}" if text else ""))
-        if not doc["blocks"]:
+        if not pv["entries"]:
             lines.append("(no blocks yet)")
+        for lo in pv["left_out"]:
+            lines.append(f"Pending but it will not apply: {lo['id']} ({lo['kind']}"
+                         + (f" of {lo['block_id']}" if lo["block_id"] else "") + f"): {lo['reason']}. "
+                         "Re-read the block and propose again only if it is still needed.")
         if doc["uploads"]:
             lines.append("Uploads: " + ", ".join(
                 f"[{u['id']}] {u['filename']} ({u['purpose']}, {u['chars']} chars)" for u in doc["uploads"]))
@@ -226,32 +324,56 @@ def get_document(config: RunnableConfig) -> str:
 @tool
 def read_blocks(block_ids: list[str], config: RunnableConfig) -> str:
     """Read the full content, references and layout of specific blocks by id.
-    Text is Markdown; tables are Markdown tables; charts are Vega-Lite JSON."""
+    Text is Markdown; tables are Markdown tables; charts are Vega-Lite JSON. A block with
+    a pending edit of yours shows both the accepted text and your proposed text; a pending
+    insert is read by its suggestion id (sug_…)."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
         s = store.get_document(doc_id)["settings"]
+        entries = {e["block"]["id"]: e for e in store.preview(doc_id)["entries"]}
         out, total = [], 0
+
+        def refs_of(b: dict) -> str:
+            return "".join(f"\n  ref: {r['title']} {r['url']} {r['note']}".rstrip() for r in b["refs"])
+
         for bid in block_ids:
-            try:
-                b = store.block_in(doc_id, bid)
-            except NotFound as e:
-                out.append(f"[{bid}] not found ({e})")
+            e = entries.get(bid)
+            if e is None:
+                try:
+                    _block(store, doc_id, bid)
+                    out.append(f"[{bid}] not found")
+                except NotFound as exc:
+                    out.append(f"[{bid}] not found ({exc.args[0] if exc.args else exc})")
+                except Invalid as exc:
+                    out.append(f"[{bid}] ERROR: {exc}")
                 continue
-            except Invalid as e:
-                out.append(f"[{bid}] ERROR: {e}")
-                continue
+            b = e["block"]
+            kinds = {sg["kind"]: sg["id"] for sg in e["pending"]}
             body = _content_for_agent(b)
-            total += len(body)
+            was = e["accepted"]
+            total += len(body) + (len(_content_for_agent(was)) if was else 0)
             if total > _MAX_READ * 3:
                 out.append(f"[{bid}] (skipped: read fewer blocks at once)")
                 continue
-            head = f"[{bid}] {b['type']} · {b['n_versions']} version(s) · layout {json.dumps(b['layout'])}"
+            if "insert" in kinds:
+                head = (f"[{bid}] {b['type']} · PENDING INSERT: your suggestion, not in the author's document yet "
+                        f"(propose_edit with this id revises it) · layout {json.dumps(b['layout'])}")
+            else:
+                head = f"[{bid}] {b['type']} · {b['n_versions']} version(s) · layout {json.dumps(b['layout'])}"
             budget = _block_word_budget(s, b)
             if budget:
                 head += f" · fits ~{budget} words"
-            refs = "".join(f"\n  ref: {r['title']} {r['url']} {r['note']}".rstrip() for r in b["refs"])
-            out.append(f"{head}\n{body}{refs}")
+            if "move" in kinds:
+                head += f" · PENDING MOVE {kinds['move']}"
+            if "delete" in kinds:
+                head += f" · PENDING DELETE {kinds['delete']}"
+            if was is not None:
+                out.append(f"{head}\nACCEPTED (what the author's document has now):\n{_content_for_agent(was)}"
+                           f"{refs_of(was)}\nYOUR PENDING EDIT {kinds.get('edit', '')} (waiting for the author; "
+                           f"a new propose_edit replaces it):\n{body}{refs_of(b)}")
+            else:
+                out.append(f"{head}\n{body}{refs_of(b)}")
         return "\n\n".join(out) or "(no block ids given)"
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -329,10 +451,12 @@ def list_comments(config: RunnableConfig, include_resolved: bool = False) -> str
 @tool
 def get_block_history(block_id: str, config: RunnableConfig) -> str:
     """A block's version history (who changed what, with notes) and its resolved
-    comments, so you can respect preferences the author expressed earlier."""
+    comments. Call it only before rewriting a block the author has revised or commented
+    on, to respect preferences they expressed earlier. It is not needed for routine edits,
+    and never for blocks you created this turn."""
     try:
         store = get_store()
-        store.block_in(_doc_id(config), block_id)
+        _block(store, _doc_id(config), block_id)
         tree = store.versions(block_id)
         lines = [f"Block {block_id}: {len(tree['versions'])} version(s), "
                  f"{len(tree['branches'])} branch tip(s); head = {tree['head']}"]
@@ -354,26 +478,49 @@ def _sugg_result(s: dict) -> str:
     if s["status"] == "applied":
         res = s["payload"].get("result", {})
         return f"Applied ({s['kind']}{' -> ' + res['block_id'] if res.get('block_id') else ''}); suggestion {s['id']}."
+    more = ""
+    if s["kind"] == "insert":
+        more = (f" Until then the new block is {s['id']}: pass that id as after_block_id to put something "
+                "right after it, or to propose_edit to revise it.")
     return (f"Suggestion {s['id']} ({s['kind']}) is waiting for the author's approval. "
-            "Do not repeat it; move on.")
+            f"Do not repeat it; move on.{more}")
 
 
 @tool
 def propose_edit(
     block_id: str, content: str, config: RunnableConfig, note: str = "",
     references: list[dict] | None = None, comment_id: str | None = None,
+    heading_level: int | None = None,
 ) -> str:
     """Propose new content for an existing block. `content` is the COMPLETE new
     content: Markdown for text and callout blocks, plain text for headings, a Markdown
     table (or JSON {rows, header, caption}) for tables, Vega-Lite JSON for charts,
-    JSON {src, alt, caption} for images. `references`: list of {title, url, note} that
-    replaces the block's sources. `note`: one line saying why, shown to the author.
-    `comment_id`: the comment this addresses. Returns the suggestion id."""
+    JSON {src, alt, caption} for images. Markdown is GitHub-flavoured; for superscripts
+    and subscripts write <sup>2</sup> / <sub>2</sub> or the Unicode character (m², °C,
+    CO₂): ^2^, ~2~ and LaTeX ($x^2$) print literally. `references`: list of {title, url,
+    note} that replaces the block's sources. `note`: one line saying why, shown to the
+    author. `comment_id`: the comment this addresses. heading_level (1-3) changes a
+    heading's level; do not type section numbers the document doesn't already use.
+    `block_id` may be one of your own pending inserts (sug_…): that revises the pending
+    block in place. Sending content identical to what the block has, or to an edit already
+    pending, records nothing. Returns the suggestion id."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
-        b = store.get_block(block_id)
-        payload: dict[str, Any] = {"content": parse_content(b["type"], content)}
+        pend = _pending_insert(store, doc_id, block_id)
+        if pend is not None:
+            t = pend["payload"].get("type", "text")
+            c = parse_content(t, content)
+            if t == "heading" and heading_level:
+                c["level"] = max(1, min(int(heading_level), 3))
+            sg = store.revise_suggestion(pend["id"], content=c, refs=references, note=note or None)
+            return (f"Revised your pending insert {sg['id']}; it is still waiting for the author's approval. "
+                    "Do not repeat it; move on.")
+        b = _block(store, doc_id, block_id)
+        c = parse_content(b["type"], content)
+        if b["type"] == "heading" and heading_level:
+            c["level"] = max(1, min(int(heading_level), 3))
+        payload: dict[str, Any] = {"content": c}
         if references is not None:
             payload["refs"] = references
         return _sugg_result(store.propose(doc_id, "edit", payload, block_id=block_id,
@@ -395,7 +542,10 @@ def propose_insert(
     or at the start if at_start=True, or at the end otherwise. `content` uses the
     same formats as propose_edit. full_width=True makes it span all columns.
     role: "cover" or "back" puts it on the cover or back page; a block inserted right
-    after a cover block stays on the cover without it."""
+    after a cover block stays on the cover without it. `after_block_id` may be a pending
+    insert of yours (sug_…), which keeps a run of new blocks in order. For several blocks
+    at once use insert_blocks. heading_level applies to headings ("## Title" in content
+    sets it too)."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -403,7 +553,7 @@ def propose_insert(
             return f"ERROR: unknown block type {block_type!r}; use one of {', '.join(BLOCK_TYPES)}"
         c = parse_content(block_type, content)
         if block_type == "heading":
-            c["level"] = max(1, min(int(heading_level), 3))
+            c.setdefault("level", max(1, min(int(heading_level), 3)))
         payload: dict[str, Any] = {
             "type": block_type, "content": c,
             "after": None if at_start else (after_block_id or "__end__"),
@@ -420,10 +570,19 @@ def propose_insert(
 @tool
 def propose_delete(block_id: str, config: RunnableConfig, note: str = "",
                    comment_id: str | None = None) -> str:
-    """Propose removing a block (the author approves)."""
+    """Propose removing a block (the author approves). Only for content the author asked
+    you to remove or that is clearly redundant: never delete or cut the author's content
+    to make a layout fit. `block_id` may be one of your own pending inserts (sug_…),
+    which withdraws it."""
     try:
         store = get_store()
-        return _sugg_result(store.propose(_doc_id(config), "delete", {}, block_id=block_id,
+        doc_id = _doc_id(config)
+        pend = _pending_insert(store, doc_id, block_id)
+        if pend is not None:
+            store.withdraw_suggestion(pend["id"])
+            return f"Withdrew your pending insert {pend['id']}; the author will not see it."
+        _block(store, doc_id, block_id)
+        return _sugg_result(store.propose(doc_id, "delete", {}, block_id=block_id,
                                           comment_id=comment_id, note=note))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -432,10 +591,15 @@ def propose_delete(block_id: str, config: RunnableConfig, note: str = "",
 @tool
 def propose_move(block_id: str, config: RunnableConfig, after_block_id: str | None = None,
                  note: str = "", comment_id: str | None = None) -> str:
-    """Propose moving a block to just after `after_block_id` (None = to the start)."""
+    """Propose moving a block to just after `after_block_id` (None = to the start).
+    `after_block_id` may be a pending insert of yours (sug_…). To reorder several blocks,
+    move each one after the block that should precede it; Accept all applies a chain of
+    moves in the right order. Never delete and re-insert a block to move it."""
     try:
         store = get_store()
-        return _sugg_result(store.propose(_doc_id(config), "move", {"after": after_block_id},
+        doc_id = _doc_id(config)
+        _block(store, doc_id, block_id)
+        return _sugg_result(store.propose(doc_id, "move", {"after": after_block_id},
                                           block_id=block_id, comment_id=comment_id, note=note))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -483,10 +647,13 @@ def set_block_layout(
     variant sets the typographic style (get_document lists them per block type), e.g.
     text: lead, pullquote, kicker, byline, small, caption, footer, bio; heading: display,
     section, rule, label; image/chart/table: figure-box. dropcap=True gives a text block a
-    large initial letter. variant='none' clears it."""
+    large initial letter. variant='none' clears it. `block_id` may be a pending insert of
+    yours (sug_…): its layout is then part of the suggestion."""
     try:
         store = get_store()
-        store.block_in(_doc_id(config), block_id)
+        doc_id = _doc_id(config)
+        pend = _pending_insert(store, doc_id, block_id)
+        cur_layout = (pend["payload"].get("layout") or {}) if pend else _block(store, doc_id, block_id)["layout"]
         lay: dict[str, Any] = {}
         if full_width is not None:
             lay["span"] = "full" if full_width else "column"
@@ -503,7 +670,7 @@ def set_block_layout(
         if unpin:
             lay["pin"] = None
         elif page_x_px is not None or page_y_px is not None or page_w_px is not None:
-            cur = store.get_block(block_id)["layout"].get("pin") or {}
+            cur = cur_layout.get("pin") or {}
             cur = cur if cur.get("anchor") == "page" else {}
             lay["pin"] = {"anchor": "page", "page": pin_page or cur.get("page", 1),
                           "x": page_x_px if page_x_px is not None else cur.get("x", 0),
@@ -511,7 +678,7 @@ def set_block_layout(
                           "w": page_w_px if page_w_px is not None else cur.get("w", 300),
                           "h": page_h_px if page_h_px is not None else cur.get("h", 200)}
         elif pin_page is not None or pin_top_px is not None:
-            cur = store.get_block(block_id)["layout"].get("pin") or {}
+            cur = cur_layout.get("pin") or {}
             lay["pin"] = {**cur, "page": pin_page or cur.get("page", 1),
                           "top": pin_top_px if pin_top_px is not None else cur.get("top", 0),
                           "column": pin_column, "span": pin_span}
@@ -519,6 +686,11 @@ def set_block_layout(
             r = repeat.strip().lower()
             lay["repeat"] = None if r in ("", "none") else (
                 r if r in ("all", "odd", "even") else [int(x) for x in re.findall(r"\d+", r)])
+        if pend is not None:
+            if lay.get("pin") is None and "pin" in lay:
+                lay["repeat"] = None
+            sg = store.revise_suggestion(pend["id"], layout=lay)
+            return f"Layout of your pending insert {block_id} is now {json.dumps(sg['payload'].get('layout'))}"
         b = store.set_layout(block_id, lay)
         return f"Layout of {block_id} is now {json.dumps(b['layout'])}"
     except (Invalid, NotFound, ValueError) as exc:
@@ -626,7 +798,54 @@ def compile_references(config: RunnableConfig) -> str:
 
 
 # -------------------------------------------------------------------------- vision
-def _view_pages(pages: list[int] | None = None, config: RunnableConfig = None) -> tuple[str, Any]:
+def page_shots(renderer: Any, doc_id: str, pages: list[int] | None = None, from_page: int = 1,
+               pending: bool = True) -> tuple[str, list[dict]]:
+    """Screenshots for view_pages (the agent tool and the MCP tool): the text that goes
+    with them and the shots. At most ``_MAX_PAGES`` pages per call; the text says which
+    pages were left out and how to ask for them. With ``pending`` and suggestions waiting,
+    the render is the preview with those suggestions applied, and the text says so."""
+    store = get_store()
+    pv = store.preview(doc_id) if pending else None
+    preview = bool(pv and pv["pending"])
+    wanted = [int(p) for p in pages] if pages else None
+    start = max(1, int(from_page or 1))
+    if wanted is None and start > 1:
+        wanted = list(range(start, start + _MAX_PAGES))
+    # preview only when needed: a renderer stand-in without the argument keeps working
+    shots = renderer.call(renderer.screenshot_pages(doc_id, pages=wanted, max_pages=_MAX_PAGES,
+                                                    **({"preview": True} if preview else {})))
+    if not shots:
+        if wanted and start > 1:
+            return (f"No page {start}: the document is shorter than that. Call view_pages() for the first pages.", [])
+        return ("Nothing to show: the document has no pages yet.", [])
+    total = shots[0]["total"]
+    seen = [s["page"] for s in shots]
+    text = f"Rendered page{'s' if len(seen) > 1 else ''} {', '.join(map(str, seen))} of {total}."
+    rest = shots[0].get("more") or ([p for p in range(seen[-1] + 1, total + 1)] if not pages else [])
+    if rest:
+        text += (f" NOT shown: page{'s' if len(rest) > 1 else ''} {rest[0]}"
+                 + (f"-{rest[-1]}" if len(rest) > 1 else "")
+                 + f" (at most {_MAX_PAGES} per call): call view_pages(from_page={rest[0]}) to see them.")
+    if preview:
+        marks = {e["block"]["id"]: "+".join(sg["kind"] for sg in e["pending"])
+                 for e in pv["entries"] if e["pending"] and not e["deleted"]}
+        per_page = []
+        for sh in shots:
+            here = [f"{b} ({marks[b]})" for b in sh.get("blocks", []) if b in marks]
+            if here:
+                per_page.append(f"page {sh['page']}: {', '.join(here)}")
+        text += (f" This is a PREVIEW: it shows the document as it will look once your {pv['pending']} pending "
+                 "suggestion(s) are accepted. The author's document does not have them yet"
+                 + (f". Pending on these pages: {'; '.join(per_page)}" if per_page else "")
+                 + ". Pass pending=False to see only what the author has accepted.")
+        gone = [e["block"]["id"] for e in pv["entries"] if e["deleted"]]
+        if gone:
+            text += f" Left out of the preview by a pending delete: {', '.join(gone)}."
+    return (text, shots)
+
+
+def _view_pages(pages: list[int] | None = None, from_page: int = 1, pending: bool = True,
+                config: RunnableConfig = None) -> tuple[str, Any]:
     try:
         doc_id = _doc_id(config)
         from .render import get_renderer
@@ -634,12 +853,11 @@ def _view_pages(pages: list[int] | None = None, config: RunnableConfig = None) -
         r = get_renderer()
         if r is None:
             return ("view_pages is unavailable: no renderer is running (the server starts one).", None)
-        shots = r.call(r.screenshot_pages(doc_id, pages=pages, max_pages=4))
+        text, shots = page_shots(r, doc_id, pages, from_page, pending)
         if not shots:
-            return ("Nothing to show: the document has no pages yet.", None)
-        desc = ", ".join(f"page {s['page']}" for s in shots)
-        text = (f"Rendered {desc} of {shots[0]['total']}. The images are attached to this turn. "
-                "Look for overflow, orphaned headings, awkward gaps and crowded columns.")
+            return (text, None)
+        text += (" The images are attached to this turn. Look for overflow, orphaned headings, awkward gaps, "
+                 "crowded columns, clipped text and labels that overlap.")
         return (text, {"images": [s["path"] for s in shots]})
     except Exception as exc:  # noqa: BLE001
         return (_err(exc), None)
@@ -649,10 +867,14 @@ view_pages = StructuredTool.from_function(
     func=_view_pages,
     name="view_pages",
     description=(
-        "See the document as the author sees it: screenshots of the rendered pages "
-        "(default: the first 4; pass page numbers to choose). Use it to judge layout, "
-        "for example overflowing blocks, unbalanced columns or a heading stranded at the "
-        "bottom of a page. Requires a vision-capable model; images arrive with the result."
+        "See the document as the author sees it: screenshots of the rendered pages. At most 4 "
+        "pages per call: by default the first 4; pass `pages` (page numbers) or `from_page` to "
+        "see others, and the result says which pages were not shown. While suggestions of yours "
+        "are waiting for approval the render is a PREVIEW with them applied (so you can check "
+        "your own drafts, figures and moves before the author decides); pending=False shows only "
+        "the accepted document. Use it to judge layout, for example overflowing blocks, "
+        "unbalanced columns or a heading stranded at the bottom of a page, and after draw_figure "
+        "to check a diagram's labels. Requires a vision-capable model; images arrive with the result."
     ),
     response_format="content_and_artifact",
 )
@@ -661,9 +883,7 @@ view_pages = StructuredTool.from_function(
 def _sketch_path(doc_id: str, block_id: str) -> str | None:
     """Filesystem path of an image block's sketch (an uploaded PNG), or None."""
     store = get_store()
-    b = store.get_block(block_id)
-    if b["doc_id"] != doc_id:
-        raise ValueError(f"block {block_id} is not in this document")
+    b = _block(store, doc_id, block_id)
     if b["type"] != "image":
         raise ValueError(f"block {block_id} is a {b['type']} block; sketches live on image blocks")
     sk = b["content"].get("sketch")
@@ -766,7 +986,7 @@ def sanitize_svg(svg: str) -> str:
 def draw_figure(
     svg: str, config: RunnableConfig, block_id: str | None = None, after_block_id: str | None = None,
     label: str = "", title: str = "", source: str = "", caption: str = "", full_width: bool = False,
-    figure_box: bool = True, note: str = "",
+    figure_box: bool = True, note: str = "", comment_id: str | None = None,
 ) -> str:
     """Draw a diagram yourself as SVG (crisp vector text: use it for labelled diagrams,
     layered architectures, maps, flowcharts, timelines; use generate_image for photos and
@@ -774,7 +994,9 @@ def draw_figure(
     generic (Arial, Helvetica, sans-serif). It lands in `block_id` (an image block) or as
     a new image block after `after_block_id` (end of document if neither). label (for
     example "FIGURE 1"), title, source and caption fill the figure's frame; figure_box
-    gives it the grey figure panel."""
+    gives it the grey figure panel. `block_id` may be a pending insert of yours (sug_…),
+    which redraws it. You cannot see the SVG as you write it: call view_pages afterwards
+    and fix labels that are cut off or overlap. comment_id: the comment this addresses."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -784,17 +1006,26 @@ def draw_figure(
         content = {"src": up["id"], "alt": title or label or "figure", "label": label, "title": title,
                    "source": source, "caption": caption}
         variant = {"variant": "figure-box"} if figure_box else {}
+        pend = _pending_insert(store, doc_id, block_id) if block_id else None
+        if pend is not None:
+            if pend["payload"].get("type") != "image":
+                return f"ERROR: {block_id} is a pending {pend['payload'].get('type', 'text')} insert, not an image"
+            sg = store.revise_suggestion(pend["id"], content=content, layout=variant or None,
+                                         note=note or f"Figure: {title or label}")
+            return (f"Redrew your pending figure {sg['id']}; it is still waiting for the author's approval. "
+                    "Check it with view_pages.")
         if block_id:
-            b = store.get_block(block_id)
+            b = _block(store, doc_id, block_id)
             if b["type"] != "image":
                 return f"ERROR: {block_id} is a {b['type']} block; draw into an image block or insert a new one"
             s = store.propose(doc_id, "edit", {"content": content, "layout": variant}, block_id=block_id,
-                              note=note or f"Figure: {title or label}")
+                              comment_id=comment_id, note=note or f"Figure: {title or label}")
         else:
             s = store.propose(doc_id, "insert", {
                 "type": "image", "content": content, "after": after_block_id or "__end__",
-                "layout": {"span": "full" if full_width else "column", **variant}}, note=note or f"Figure: {title or label}")
-        return _sugg_result(s)
+                "layout": {"span": "full" if full_width else "column", **variant}},
+                comment_id=comment_id, note=note or f"Figure: {title or label}")
+        return _sugg_result(s) + " Check the figure with view_pages."
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -806,8 +1037,14 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
     Each item: {"type": "text"|"heading"|..., "content": <same formats as propose_edit, or a
     content dict>, "level": 1-3 for headings, "layout": {"span": "full"|"column",
     "variant": "...", "dropcap": true, "pin": {...}, "repeat": "odd", "role": "cover"}, "references":
-    [{title, url, note}]}. They go in order after `after_block_id` (or at the end). Each is
-    a suggestion; with approval "auto" they apply immediately and the new ids come back."""
+    [{title, url, note}]}. They go in order after `after_block_id` (a block, or a pending
+    insert of yours) or at the end, and they stay in that order however the author accepts
+    them. Write one text block per paragraph (a heading, then each paragraph as its own
+    block): the author approves, comments on and versions each block separately, so a whole
+    section in one block is all-or-nothing for them. Each is a suggestion; with approval
+    "auto" they apply immediately and the new ids come back. While they wait, each new
+    block is known by its suggestion id (sug_…), which read_blocks, propose_edit and
+    after_block_id accept."""
     try:
         store = get_store()
         doc_id = _doc_id(config)
@@ -826,15 +1063,23 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
                 payload["refs"] = item["references"]
             try:
                 sg = store.propose(doc_id, "insert", payload, note=note or f"Insert {t}")
+            except NoChange as exc:
+                out.append(f"{i}: not inserted. {exc.args[0] if exc.args else exc}")
+                continue
             except (Invalid, NotFound, ValueError) as exc:
-                out.append(f"{i}: ERROR {exc}")
+                out.append(f"{i}: ERROR {exc.args[0] if exc.args else exc}")
                 continue
             new_id = sg["payload"].get("result", {}).get("block_id")
+            # Keep the batch in order: each block follows the one before it, whether that
+            # one is applied already or still a pending suggestion.
+            after = new_id or sg["id"]
             if new_id:
-                after = new_id  # keep the batch in order
                 out.append(f"{i}: {t} -> {new_id}")
             else:
                 out.append(f"{i}: {t} suggested ({sg['id']}, waiting for approval)")
+        if any("waiting for approval" in line for line in out):
+            out.append("They will land in this order. Do not insert them again; to revise one, propose_edit "
+                       "its sug_ id.")
         return "\n".join(out) or "Nothing to insert."
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -1026,6 +1271,156 @@ def match_upload_style(upload_id: str, config: RunnableConfig) -> str:
         return _err(exc)
 
 
+# ---------------------------------------------------------------------- arithmetic
+_CALC_OPS = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+             ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: operator.pow,
+             ast.USub: operator.neg, ast.UAdd: operator.pos}
+_CALC_FUNCS: dict[str, Any] = {
+    "sum": lambda *a: math.fsum(_flat(a)), "min": lambda *a: min(_flat(a)), "max": lambda *a: max(_flat(a)),
+    "mean": lambda *a: math.fsum(_flat(a)) / len(_flat(a)), "avg": lambda *a: math.fsum(_flat(a)) / len(_flat(a)),
+    "round": round, "abs": abs, "sqrt": math.sqrt, "pow": pow, "log": math.log, "log10": math.log10,
+    "exp": math.exp, "floor": math.floor, "ceil": math.ceil,
+}
+_CALC_NAMES = {"pi": math.pi, "e": math.e}
+
+
+def _flat(args: tuple) -> list:
+    out: list = []
+    for a in args:
+        out.extend(a) if isinstance(a, (list, tuple)) else out.append(a)
+    if not out:
+        raise ValueError("needs at least one number")
+    return out
+
+
+def _calc(node: ast.AST, names: dict[str, Any]) -> Any:
+    """Evaluate an arithmetic expression tree: numbers, + - * / // % **, parentheses, lists
+    and a fixed set of functions. Nothing else (no attributes, no indexing, no strings)."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _CALC_OPS:
+        left, right = _calc(node.left, names), _calc(node.right, names)
+        if isinstance(node.op, ast.Pow) and (abs(right) > 200 or abs(left) > 1e12):
+            raise ValueError("exponent too large")
+        return _CALC_OPS[type(node.op)](left, right)
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _CALC_OPS:
+        return _CALC_OPS[type(node.op)](_calc(node.operand, names))
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return [_calc(x, names) for x in node.elts]
+    if isinstance(node, ast.Name):
+        if node.id in names:
+            return names[node.id]
+        raise ValueError(f"unknown name {node.id!r}")
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and not node.keywords:
+        f = _CALC_FUNCS.get(node.func.id)
+        if f is None:
+            raise ValueError(f"unknown function {node.func.id!r} (available: {', '.join(sorted(_CALC_FUNCS))})")
+        return f(*[_calc(a, names) for a in node.args])
+    raise ValueError("only numbers, + - * / // % **, parentheses and "
+                     f"{', '.join(sorted(_CALC_FUNCS))} are allowed")
+
+
+def _strip_thousands(expr: str) -> str:
+    """1,250,000 -> 1250000, but only outside a function call or list, where a comma
+    separates arguments."""
+    out, stack = [], []
+    for i, ch in enumerate(expr):
+        if ch in "([":
+            prev = expr[:i].rstrip()[-1:]
+            stack.append(ch == "[" or prev.isalpha() or prev == "_")
+        elif ch in ")]" and stack:
+            stack.pop()
+        elif ch == "," and not any(stack) and expr[i - 1:i].isdigit() and re.match(r"\d{3}(?!\d)", expr[i + 1:]):
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+def _calc_number(v: Any) -> str:
+    if isinstance(v, list):
+        return "[" + ", ".join(_calc_number(x) for x in v) + "]"
+    if isinstance(v, float):
+        if not math.isfinite(v):
+            raise ValueError("result is not a finite number")
+        v = float(f"{v:.12g}")  # hide binary noise (0.1 + 0.2)
+        return str(int(v)) if v == int(v) and abs(v) < 1e15 else repr(v)
+    return str(v)
+
+
+@tool
+def calculate(expressions: list[str]) -> str:
+    """Do arithmetic exactly instead of in your head. Use it for EVERY number you compute
+    for the document: totals, sums of a column, percentages, growth, averages, unit
+    conversions, each derived cell of a table. Pass all the expressions of one table in
+    one call. Each expression is plain arithmetic: + - * / // % ** (or ^) and parentheses,
+    with sum, min, max, mean, round, abs, sqrt, pow, log, log10, exp, floor, ceil.
+    "name = expression" stores a result for later expressions in the same call, e.g.
+    ["y1 = 5.2 * 1.04", "y2 = y1 * 1.04", "total = sum(5.2, y1, y2)", "round(total, 2)"].
+    Thousands separators and currency signs are ignored (1,250,000 and $4.5 are numbers)."""
+    names: dict[str, Any] = dict(_CALC_NAMES)
+    out = []
+    for raw in (expressions or [])[:60]:
+        src = str(raw).strip()
+        try:
+            if len(src) > 600:
+                raise ValueError("expression too long")
+            name, expr = None, src
+            m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)\s*(.+)$", src, re.S)
+            if m:
+                name, expr = m.group(1), m.group(2)
+                if name in _CALC_FUNCS:
+                    raise ValueError(f"{name!r} is a function name; pick another name")
+            clean = _strip_thousands(expr)  # 1,250,000 -> 1250000
+            clean = clean.replace("$", "").replace("€", "").replace("£", "").replace("×", "*").replace("÷", "/")
+            clean = clean.replace("−", "-").replace("^", "**")
+            clean = re.sub(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%(?!\s*[\d(A-Za-z_])", r"(\1/100)", clean)  # 15% -> 0.15
+            value = _calc(ast.parse(clean.strip(), mode="eval").body, names)
+            if name:
+                names[name] = value
+            out.append(f"{src} = {_calc_number(value)}" if not name else f"{name} = {_calc_number(value)}")
+        except ZeroDivisionError:
+            out.append(f"{src} -> ERROR: division by zero")
+        except (ValueError, TypeError, SyntaxError, OverflowError, RecursionError) as exc:
+            msg = "not a valid arithmetic expression" if isinstance(exc, SyntaxError) else str(exc)
+            out.append(f"{src} -> ERROR: {msg}")
+    return "\n".join(out) or "Nothing to calculate: pass a list of expressions."
+
+
+def changes_note(doc_id: str, since: float) -> str:
+    """What the author did since the agent's last turn, as one short note for the agent
+    (accepted and rejected suggestions, their own edits, new and deleted blocks, new
+    comments). Empty when nothing happened."""
+    ch = get_store().changes_since(doc_id, since)
+    lines = []
+    if ch["accepted"]:
+        bits = [f"{a['id']} ({a['kind']}" + (f" -> {a['block_id']}" if a["kind"] == "insert" and a["block_id"]
+                                              else f" of {a['block_id']}" if a["block_id"] else "") + ")"
+                for a in ch["accepted"]]
+        lines.append("- accepted: " + ", ".join(bits)
+                     + ". Accepted inserts are real blocks now: use their blk_ ids, not the sug_ ids.")
+    if ch["rejected"]:
+        bits = [f"{r['id']} ({r['kind']}" + (f" of {r['block_id']}" if r["block_id"] else "")
+                + (f"; reason: {r['reason']}" if r["reason"] else "") + ")" for r in ch["rejected"]]
+        lines.append("- REJECTED by the author: " + ", ".join(bits)
+                     + ". Do not propose the same thing again unless asked.")
+    if ch["obsolete"]:
+        lines.append("- no longer applicable: " + ", ".join(
+            f"{o['id']} ({o['kind']}" + (f" of {o['block_id']}" if o["block_id"] else "") + ")" for o in ch["obsolete"]))
+    if ch["edited"]:
+        lines.append("- edited by the author (re-read before changing them): " + ", ".join(ch["edited"]))
+    if ch["added"]:
+        lines.append("- added by the author: " + ", ".join(ch["added"]))
+    if ch["deleted"]:
+        lines.append("- deleted by the author (these ids no longer exist): " + ", ".join(ch["deleted"]))
+    if ch["comments"]:
+        lines.append("- new open comments: " + ", ".join(
+            c["id"] + (f" on {c['block_id']}" if c["block_id"] else " (document)") for c in ch["comments"]))
+    if not lines:
+        return ""
+    return ("[Codraft note, not written by the author] Since your last turn:\n" + "\n".join(lines)
+            + "\nBlock ids you remember from earlier turns may be stale: call get_document before using them.")
+
+
 CODRAFT_TOOLS = [
     get_document,
     read_blocks,
@@ -1051,6 +1446,7 @@ CODRAFT_TOOLS = [
     draw_figure,
     insert_blocks,
     reserve_area,
+    calculate,
 ]
 
 TOOL_NAMES = frozenset(t.name for t in CODRAFT_TOOLS)

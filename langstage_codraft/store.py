@@ -152,6 +152,14 @@ class Invalid(ValueError):
     """A request the store refuses (bad type, bad layout, wrong state)."""
 
 
+class NoChange(Invalid):
+    """A suggestion that would change nothing, or that repeats one still waiting for the
+    author. Nothing is recorded; the message says which, so an agent stops re-proposing."""
+
+
+# The reject reason of a suggestion its own author took back (not a decision by the human).
+WITHDRAWN = "withdrawn by the agent"
+
 # page_size values a document can store: the named sizes every renderer knows, or custom.
 PAGE_SIZES = (*PAGE_SIZES_MM, "custom")
 
@@ -391,6 +399,9 @@ class Store:
         cols = {r["name"] for r in self._db.execute("PRAGMA table_info(uploads)").fetchall()}
         if "meta" not in cols:  # 0.5: rendered pages and the extracted style of an upload
             self._db.execute("ALTER TABLE uploads ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
+        cols = {r["name"] for r in self._db.execute("PRAGMA table_info(blocks)").fetchall()}
+        if "deleted_at" not in cols:  # when a block was deleted, for the agent's "what changed" note
+            self._db.execute("ALTER TABLE blocks ADD COLUMN deleted_at REAL")
         # Before 0.5.16, deleting a block left its pending suggestions pending forever (gh #39).
         self._db.execute(
             "UPDATE suggestions SET status = 'obsolete', decided_at = ? WHERE status = 'pending'"
@@ -399,6 +410,9 @@ class Store:
         # Last client-computed layout per document (block -> pages), reported by the UI
         # after it paginates, so the agent's outline can say which page a block is on.
         self._layout_reports: dict[str, dict] = {}
+        # Per document: where the agent's last turn ended, so its next turn can be told what
+        # the author did in between (middleware). In memory: a restart just skips one note.
+        self._agent_turns: dict[str, dict] = {}
 
     # ---------------------------------------------------------------- helpers
     def _q(self, sql: str, args: tuple = ()) -> list[sqlite3.Row]:
@@ -817,8 +831,8 @@ class Store:
             ids = [r["id"] for r in self._q(
                 "SELECT id FROM blocks WHERE doc_id = ? AND deleted = 0 ORDER BY ord", (b["doc_id"],))]
             prev = ids[ids.index(block_id) - 1] if ids.index(block_id) > 0 else None
-            self._db.execute("UPDATE blocks SET deleted = 1 WHERE id = ?", (block_id,))
             now = time.time()
+            self._db.execute("UPDATE blocks SET deleted = 1, deleted_at = ? WHERE id = ?", (now, block_id))
             for r in self._q("SELECT id, block_id, kind, payload FROM suggestions"
                              " WHERE doc_id = ? AND status = 'pending' AND id IS NOT ?", (b["doc_id"], keep)):
                 p = json.loads(r["payload"])
@@ -1033,6 +1047,8 @@ class Store:
                 self.block_in(doc_id, block_id)
             if comment_id is not None and self.get_comment(comment_id)["doc_id"] != doc_id:
                 raise Invalid(f"comment {comment_id} belongs to another document")
+            if kind in ("insert", "move"):
+                payload = self._anchor(doc_id, kind, payload)
             after = payload.get("after")
             if kind in ("insert", "move") and after not in (None, "__end__"):
                 self.block_in(doc_id, after)
@@ -1055,6 +1071,7 @@ class Store:
                 lay = self._inherit_role(payload.get("after", "__end__"), payload.get("layout"))
                 if lay is not None:
                     payload = {**payload, "layout": lay}
+            self._refuse_repeat(doc_id, kind, payload, block_id)
             # Supersede an older pending suggestion of the same kind on the same block.
             if block_id is not None and kind in ("edit", "delete", "move"):
                 self._db.execute(
@@ -1073,6 +1090,419 @@ class Store:
             if doc["settings"].get("approval") == "auto":
                 return self.accept_suggestion(sid, decided_by="auto")
             return self.get_suggestion(sid)
+
+    # -- anchors: where a pending insert or move will land ------------------------
+    #
+    # ``payload.after`` is always a block id, None (the start) or "__end__", so every
+    # reader of a suggestion can place it. A suggestion that must directly follow a
+    # *pending insert* also carries ``payload.after_suggestion`` (that insert's id) and
+    # copies its ``after``. That keeps a batch in order: accepted in sequence, each lands
+    # after the one before it; accepted out of sequence, it lands after the shared anchor
+    # and the earlier ones still land in front of it when they are accepted later.
+    def _pending_rows(self, doc_id: str) -> list[sqlite3.Row]:
+        return self._q("SELECT * FROM suggestions WHERE doc_id = ? AND status = 'pending'"
+                       " ORDER BY created_at, rowid", (doc_id,))
+
+    def _anchor(self, doc_id: str, kind: str, payload: dict) -> dict:
+        """Resolve the ``after`` of a new insert or move (see above)."""
+        after = payload.get("after", "__end__" if kind == "insert" else None)
+        follow = payload.get("after_suggestion")
+        if isinstance(after, str) and after.startswith("sug_"):
+            follow, after = after, None
+        if follow:
+            r = self._one("SELECT * FROM suggestions WHERE id = ? AND doc_id = ?", (follow, doc_id))
+            if r is None:
+                raise NotFound(f"suggestion {follow} not found in document {doc_id}")
+            fp = json.loads(r["payload"])
+            if r["kind"] != "insert":
+                raise Invalid(f"{follow} is a {r['kind']} suggestion; only a block or a pending insert "
+                              "can be followed")
+            if r["status"] in ("accepted", "applied"):
+                bid = (fp.get("result") or {}).get("block_id")
+                row = self._one("SELECT deleted FROM blocks WHERE id = ?", (bid,)) if bid else None
+                if row is None or row["deleted"]:
+                    raise Invalid(f"suggestion {follow} was accepted but its block no longer exists; "
+                                  "call get_document")
+                return {**{k: v for k, v in payload.items() if k != "after_suggestion"}, "after": bid}
+            if r["status"] != "pending":
+                raise Invalid(f"suggestion {follow} was {r['status']}, so nothing can be placed after it; "
+                              "call get_document to see the current outline")
+            return {**payload, "after": fp.get("after", "__end__"), "after_suggestion": follow}
+        payload = {k: v for k, v in payload.items() if k != "after_suggestion"}
+        if kind == "insert" and after == "__end__":
+            # "At the end" means after everything already proposed for the end, in order.
+            role = (payload.get("layout") or {}).get("role") or "flow"
+            followed, tails = set(), []
+            for r in self._pending_rows(doc_id):
+                rp = json.loads(r["payload"])
+                if rp.get("after_suggestion"):
+                    followed.add(rp["after_suggestion"])
+                if r["kind"] == "insert" and rp.get("after", "__end__") == "__end__" and (
+                        (rp.get("layout") or {}).get("role") or "flow") == role:
+                    tails.append(r["id"])
+            tails = [t for t in tails if t not in followed]
+            if tails:
+                return {**payload, "after": "__end__", "after_suggestion": tails[-1]}
+        return {**payload, "after": after}
+
+    def _placed(self, s: dict, block_id: str) -> None:
+        """A pending insert or move was just applied and put ``block_id`` in place."""
+        doc_id, p = s["doc_id"], s["payload"]
+        rows = [(r, json.loads(r["payload"])) for r in self._pending_rows(doc_id) if r["id"] != s["id"]]
+        if s["kind"] == "insert":
+            # What waited to follow it now follows the real block, and so does everything
+            # queued behind those (each copies the anchor of the run it belongs to).
+            behind, grew = {s["id"]}, True
+            while grew:
+                grew = False
+                for r, rp in rows:
+                    if r["id"] not in behind and rp.get("after_suggestion") in behind:
+                        behind.add(r["id"])
+                        grew = True
+            for i, (r, rp) in enumerate(rows):
+                if r["id"] in behind:
+                    if rp.get("after_suggestion") == s["id"]:
+                        rp = {k: v for k, v in rp.items() if k != "after_suggestion"}
+                    rp = {**rp, "after": block_id}
+                    rows[i] = (r, rp)
+                    self._db.execute("UPDATE suggestions SET payload = ? WHERE id = ?", (json.dumps(rp), r["id"]))
+        if p.get("after_suggestion") and p.get("after", "__end__") == "__end__":
+            # Applied ahead of the pending inserts it was to follow, at the end. Pin those to
+            # the block that now precedes it, or they would land behind it later.
+            by_id = {r["id"]: (r, rp) for r, rp in rows}
+            chain, cur = [], p["after_suggestion"]
+            while cur in by_id and cur not in chain:
+                chain.append(cur)
+                cur = by_id[cur][1].get("after_suggestion")
+            if chain:
+                role = self.get_block(block_id)["layout"].get("role", "flow")
+                prev = None
+                for b in self.list_blocks(doc_id):
+                    if b["id"] == block_id:
+                        break
+                    if b["layout"].get("role", "flow") == role:
+                        prev = b["id"]
+                for cid in chain:
+                    _, rp = by_id[cid]
+                    if rp.get("after", "__end__") == "__end__":
+                        new = {**rp, "after": prev}
+                        if prev is None:  # the start of the document: say which page it belongs to
+                            new["layout"] = {**(rp.get("layout") or {}), "role": role}
+                        self._db.execute("UPDATE suggestions SET payload = ? WHERE id = ?", (json.dumps(new), cid))
+
+    def _unchain(self, s: dict) -> None:
+        """A pending insert was rejected or withdrawn: what was to follow it now follows
+        whatever it was to follow."""
+        if s["kind"] != "insert":
+            return
+        p = s["payload"]
+        for r in self._pending_rows(s["doc_id"]):
+            rp = json.loads(r["payload"])
+            if rp.get("after_suggestion") == s["id"]:
+                rp = {k: v for k, v in rp.items() if k != "after_suggestion"}
+                if p.get("after_suggestion"):
+                    rp["after_suggestion"] = p["after_suggestion"]
+                self._db.execute("UPDATE suggestions SET payload = ? WHERE id = ?",
+                                 (json.dumps({**rp, "after": p.get("after", "__end__")}), r["id"]))
+
+    def _refuse_repeat(self, doc_id: str, kind: str, payload: dict, block_id: str | None) -> None:
+        """Raise :class:`NoChange` for a suggestion that changes nothing or that repeats one
+        still pending. An agent that can't tell its change is waiting tends to send it again."""
+        def same(a: Any, b: Any) -> bool:
+            return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+        pending = [(r, json.loads(r["payload"])) for r in self._pending_rows(doc_id)]
+        if kind == "edit":
+            b = self.get_block(block_id)
+            c = payload.get("content")
+            new_content = _merge(b["content"], c) if c is not None else b["content"]
+            for k in ("rows", "spec"):
+                if c and k in c:
+                    new_content[k] = c[k]
+            new_refs = _clean_refs(payload["refs"]) if payload.get("refs") is not None else b["refs"]
+            lay = payload.get("layout") or {}
+            new_layout = _merge(b["layout"], lay) if lay else b["layout"]
+            for r, rp in pending:
+                if r["kind"] == "edit" and r["block_id"] == block_id and all(
+                        same(rp.get(k), payload.get(k)) for k in ("content", "refs", "layout")):
+                    raise NoChange(
+                        f"Already proposed: suggestion {r['id']} makes exactly this edit to {block_id} and is "
+                        "still waiting for the author. Nothing new was recorded; do not send it again.")
+            if same(new_content, b["content"]) and same(new_refs, b["refs"]) and same(new_layout, b["layout"]):
+                raise NoChange(
+                    f"No change: {block_id} already has exactly this content, so no suggestion was recorded. "
+                    "Read the block (read_blocks) if you expected something else.")
+        elif kind == "delete":
+            for r, _ in pending:
+                if r["kind"] == "delete" and r["block_id"] == block_id:
+                    raise NoChange(f"Already proposed: suggestion {r['id']} deletes {block_id} and is still "
+                                   "waiting for the author. Nothing new was recorded.")
+        elif kind == "move":
+            for r, rp in pending:
+                if (r["kind"] == "move" and r["block_id"] == block_id and rp.get("after") == payload.get("after")
+                        and rp.get("after_suggestion") == payload.get("after_suggestion")):
+                    raise NoChange(f"Already proposed: suggestion {r['id']} moves {block_id} to the same place "
+                                   "and is still waiting for the author. Nothing new was recorded.")
+            if not payload.get("after_suggestion"):
+                ids = [b["id"] for b in self.list_blocks(doc_id)]
+                i = ids.index(block_id)
+                if (ids[i - 1] if i else None) == payload.get("after"):
+                    where = f"after {payload['after']}" if payload.get("after") else "at the start"
+                    raise NoChange(f"No change: {block_id} is already right {where}.")
+        elif kind == "insert":
+            t = payload.get("type", "text")
+            c = payload.get("content") if isinstance(payload.get("content"), dict) else {}
+            # Two dividers or page breaks in a row are deliberate; two identical paragraphs
+            # at the same anchor are the same draft sent twice.
+            if t in ("divider", "page-break", "spacer") or not (plain_text(t, c) or c.get("src") or c.get("spec")):
+                return
+            for r, rp in pending:
+                if r["kind"] == "insert" and all(
+                        same(rp.get(k), payload.get(k)) for k in ("type", "content", "refs", "after")):
+                    raise NoChange(
+                        f"Already proposed: suggestion {r['id']} inserts this same {payload.get('type', 'text')} "
+                        "block and is still waiting for the author. Nothing new was recorded; to change it, "
+                        f"edit {r['id']} instead of inserting again.")
+
+    def revise_suggestion(self, sid: str, *, content: dict | None = None, refs: list | None = None,
+                          layout: dict | None = None, note: str | None = None) -> dict:
+        """Change a pending insert before the author decides on it (the agent fixing its own
+        draft). The suggestion keeps its id and its place."""
+        with self._lock:
+            s = self.get_suggestion(sid)
+            if s["status"] != "pending" or s["kind"] != "insert":
+                what = f"a pending {s['kind']}" if s["status"] == "pending" else s["status"]
+                raise Invalid(f"suggestion {sid} is {what}; only a pending insert can be revised")
+            p = dict(s["payload"])
+            t = p.get("type", "text")
+            if content is not None:
+                _check_content(content)
+                merged = _merge(p.get("content") or {}, _check_fields(t, content) or {})
+                for k in ("rows", "spec"):
+                    if k in content:
+                        merged[k] = content[k]
+                p["content"] = merged
+            if refs is not None:
+                p["refs"] = refs
+            if layout:
+                cols = self.get_document(s["doc_id"])["settings"]["columns"]
+                lay = _merge(p.get("layout") or {}, layout)
+                check_variant(t, validate_layout(lay, cols))
+                p["layout"] = lay
+            if json.dumps(p, sort_keys=True) == json.dumps(s["payload"], sort_keys=True) and note in (None, s["note"]):
+                raise NoChange(f"No change: pending insert {sid} already has exactly this content.")
+            self._db.execute("UPDATE suggestions SET payload = ?, note = ? WHERE id = ?",
+                             (json.dumps(p), s["note"] if note is None else note, sid))
+            self._bump(s["doc_id"])
+            self._db.commit()
+            return self.get_suggestion(sid)
+
+    def withdraw_suggestion(self, sid: str) -> dict:
+        """The agent takes back one of its own pending suggestions."""
+        return self.reject_suggestion(sid, WITHDRAWN)
+
+    @staticmethod
+    def accept_order(suggestions: list[dict]) -> list[dict]:
+        """Pending suggestions in an order that is safe to apply one after another: an insert
+        or move comes after the pending insert it follows, and after any pending move of the
+        block it is anchored to. Otherwise oldest first."""
+        by_id = {s["id"]: s for s in suggestions}
+        moves = {s["block_id"]: s["id"] for s in suggestions if s["kind"] == "move"}
+        out: list[dict] = []
+        state: dict[str, int] = {}
+
+        def visit(s: dict) -> None:
+            if state.get(s["id"]):
+                return  # done, or a cycle (two moves after each other): keep creation order
+            state[s["id"]] = 1
+            p = s["payload"] if isinstance(s["payload"], dict) else {}
+            if s["kind"] in ("insert", "move"):
+                for dep in (p.get("after_suggestion"), moves.get(p.get("after"))):
+                    if dep and dep != s["id"] and dep in by_id:
+                        visit(by_id[dep])
+            state[s["id"]] = 2
+            out.append(s)
+
+        for s in suggestions:
+            visit(s)
+        return out
+
+    def accept_all(self, doc_id: str) -> dict:
+        """Accept every pending suggestion that can be applied, in a safe order. Nothing is
+        dropped silently: each one left behind is listed with the reason."""
+        with self._lock:
+            self.get_document(doc_id)
+            n, stale, gone, failed = 0, [], [], []
+            for s in self.accept_order(self.list_suggestions(doc_id)):
+                cur = self.get_suggestion(s["id"])  # earlier accepts in this loop may have changed it
+                if cur["status"] != "pending":
+                    p = cur["payload"] if isinstance(cur["payload"], dict) else {}
+                    why = p.get("obsolete_reason") or cur["status"]
+                    failed.append({"id": s["id"], "kind": s["kind"], "block_id": s["block_id"],
+                                   "reason": f"closed while the others were accepted ({why})"})
+                    continue
+                if cur.get("gone"):
+                    gone.append(s["id"])  # its block was deleted: only Reject can clear it (gh #39)
+                    continue
+                if cur["outdated"]:
+                    stale.append(s["id"])  # never apply a stale edit unseen (gh #37)
+                    continue
+                try:
+                    self.accept_suggestion(s["id"])
+                    n += 1
+                except (Invalid, NotFound) as exc:
+                    failed.append({"id": s["id"], "kind": s["kind"], "block_id": s["block_id"],
+                                   "reason": str(exc.args[0] if exc.args else exc)})
+            return {"ok": True, "count": n, "skipped": stale + gone + [f["id"] for f in failed],
+                    "skipped_gone": gone, "failed": failed}
+
+    def preview(self, doc_id: str) -> dict:
+        """The document as it would read if every pending suggestion that can be applied
+        were accepted now. Nothing is written.
+
+        ``entries`` are the blocks in reading order, each ``{"block", "pending": [suggestions],
+        "deleted": bool, "accepted": block | None}``: a pending insert's block id is its
+        suggestion id, ``accepted`` is the block as the author has it when an edit is
+        pending, and a block with a pending delete stays in the list, flagged. ``left_out``
+        lists the pending suggestions that would not apply, with the reason."""
+        with self._lock:
+            doc = self.get_document(doc_id)
+            cols = doc["settings"]["columns"]
+            seq = [{"block": b, "pending": [], "deleted": False, "accepted": None}
+                   for b in sorted(self.list_blocks(doc_id), key=lambda b: b["ord"])]
+            left_out: list[dict] = []
+
+            def find(bid: str | None) -> int:
+                return next((i for i, e in enumerate(seq) if e["block"]["id"] == bid), -1)
+
+            def place(entry: dict, p: dict, inherit: bool) -> bool:
+                follow = find(p.get("after_suggestion")) if p.get("after_suggestion") else -1
+                after = p.get("after", "__end__")
+                if follow >= 0:
+                    i = follow + 1
+                elif after is None:
+                    i = 0
+                elif after == "__end__":
+                    i = len(seq)
+                else:
+                    i = find(after) + 1
+                    if i == 0:
+                        return False
+                if inherit and i > 0 and (follow >= 0 or after not in (None, "__end__")):
+                    role = seq[i - 1]["block"]["layout"].get("role")  # the rule of _inherit_role
+                    if role in ("cover", "back"):
+                        entry["block"]["layout"]["role"] = role
+                seq.insert(i, entry)
+                return True
+
+            for s in self.accept_order(self.list_suggestions(doc_id)):
+                p = s["payload"] if isinstance(s["payload"], dict) else {}
+                if s.get("gone") or s["outdated"]:
+                    left_out.append({"id": s["id"], "kind": s["kind"], "block_id": s["block_id"],
+                                     "reason": s.get("gone") or "the block was edited after this was proposed"})
+                    continue
+                try:
+                    if s["kind"] == "insert":
+                        t = p.get("type", "text")
+                        content, lay = check_block(t, p.get("content"), p.get("layout"), cols)
+                        blk = {"id": s["id"], "doc_id": doc_id, "type": t, "ord": 0.0, "layout": lay,
+                               "content": repair_content(t, _merge(DEFAULT_CONTENT[t], content or {})),
+                               "refs": _clean_refs(p.get("refs")), "head": "", "n_versions": 0,
+                               "author": s["author"], "updated_at": s["created_at"]}
+                        entry = {"block": blk, "pending": [s], "deleted": False, "accepted": None}
+                        if not place(entry, p, inherit=not (p.get("layout") or {}).get("role")):
+                            raise Invalid(f"block {p.get('after')}, which it was to follow, is gone")
+                        continue
+                    i = find(s["block_id"])
+                    if i < 0 or seq[i]["deleted"]:
+                        raise Invalid(f"block {s['block_id']} is deleted by an earlier pending suggestion")
+                    e = seq[i]
+                    if s["kind"] == "edit":
+                        b = e["block"]
+                        c = _check_fields(b["type"], p.get("content"))
+                        new = _merge(b["content"], c) if c is not None else b["content"]
+                        for k in ("rows", "spec"):
+                            if c and k in c:
+                                new[k] = c[k]
+                        lay = b["layout"]
+                        if p.get("layout"):
+                            lay = validate_layout(_merge(b["layout"], p["layout"]), cols)
+                            check_variant(b["type"], lay)
+                        e["accepted"] = e["accepted"] or b
+                        e["block"] = {**b, "content": new, "layout": lay,
+                                      "refs": _clean_refs(p["refs"]) if p.get("refs") is not None else b["refs"]}
+                    elif s["kind"] == "delete":
+                        e["deleted"] = True
+                    elif s["kind"] == "move":
+                        seq.pop(i)
+                        if not place(e, p, inherit=False):
+                            seq.insert(i, e)
+                            raise Invalid(f"block {p.get('after')}, which it was to follow, is gone")
+                    e["pending"].append(s)
+                except (Invalid, NotFound, TypeError, ValueError) as exc:
+                    left_out.append({"id": s["id"], "kind": s["kind"], "block_id": s["block_id"],
+                                     "reason": str(exc.args[0] if exc.args else exc)})
+            rank = {"cover": 0, "flow": 1, "back": 2}
+            pos = {id(e): i for i, e in enumerate(seq)}
+            seq.sort(key=lambda e: (rank.get(e["block"]["layout"].get("role", "flow"), 1), pos[id(e)]))
+            return {"doc": doc, "entries": seq, "left_out": left_out,
+                    "pending": sum(len(e["pending"]) for e in seq)}
+
+    def preview_full(self, doc_id: str) -> dict:
+        """:meth:`full` for the preview: what the print view renders for ``?preview=pending``."""
+        with self._lock:
+            pv = self.preview(doc_id)
+            doc = self.full(doc_id)
+            doc["blocks"] = [{**e["block"], "ord": float(i + 1)}
+                             for i, e in enumerate(pv["entries"]) if not e["deleted"]]
+            doc["suggestions"] = []
+            doc["preview"] = {
+                "pending": pv["pending"],
+                "blocks": {e["block"]["id"]: [s["kind"] for s in e["pending"]]
+                           for e in pv["entries"] if e["pending"] and not e["deleted"]},
+            }
+            return doc
+
+    def changes_since(self, doc_id: str, since: float) -> dict:
+        """What happened to the document after ``since`` that the agent did not do itself:
+        its suggestions the author decided, blocks the author edited, added or deleted, and
+        new open comments."""
+        with self._lock:
+            out: dict[str, list] = {"accepted": [], "rejected": [], "obsolete": [], "edited": [], "added": [],
+                                    "deleted": [], "comments": []}
+            agent_deleted = set()
+            for r in self._q("SELECT * FROM suggestions WHERE doc_id = ? AND decided_at > ? ORDER BY decided_at",
+                             (doc_id, since)):
+                p = json.loads(r["payload"])
+                item = {"id": r["id"], "kind": r["kind"],
+                        "block_id": r["block_id"] or (p.get("result") or {}).get("block_id")}
+                if r["status"] == "accepted":
+                    out["accepted"].append(item)
+                    if r["kind"] == "delete":
+                        agent_deleted.add(r["block_id"])
+                elif r["status"] == "rejected" and p.get("reject_reason") != WITHDRAWN:
+                    out["rejected"].append({**item, "reason": p.get("reject_reason", "")})
+                elif r["status"] == "obsolete":
+                    out["obsolete"].append({**item, "reason": p.get("obsolete_reason", "")})
+            touched = {i["block_id"] for i in out["accepted"]}
+            for r in self._q(
+                    "SELECT b.id, b.created_at, b.deleted, b.deleted_at,"
+                    " (SELECT author FROM versions v WHERE v.block_id = b.id ORDER BY v.created_at, v.rowid LIMIT 1)"
+                    " AS first_author,"
+                    " (SELECT COUNT(*) FROM versions v WHERE v.block_id = b.id AND v.created_at > ?"
+                    " AND v.author != 'agent') AS human_versions"
+                    " FROM blocks b WHERE b.doc_id = ? ORDER BY b.ord", (since, doc_id)):
+                if r["deleted"] == 1:
+                    if (r["deleted_at"] or 0) > since and r["id"] not in agent_deleted:
+                        out["deleted"].append(r["id"])
+                elif r["created_at"] > since and r["first_author"] != "agent":
+                    out["added"].append(r["id"])
+                elif r["human_versions"] and r["id"] not in touched:
+                    out["edited"].append(r["id"])
+            for r in self._q("SELECT id, block_id FROM comments WHERE doc_id = ? AND created_at > ?"
+                             " AND status = 'open' ORDER BY created_at", (doc_id, since)):
+                out["comments"].append({"id": r["id"], "block_id": r["block_id"]})
+            return out
 
     def get_suggestion(self, sid: str) -> dict:
         with self._lock:
@@ -1129,10 +1559,12 @@ class Store:
                     author=s["author"], note=note,
                 )
                 result = {"block_id": blk["id"]}
+                self._placed(s, blk["id"])
             elif s["kind"] == "delete":
                 self.delete_block(s["block_id"], keep=sid)
             elif s["kind"] == "move":
                 self.move_block(s["block_id"], p.get("after"))
+                self._placed(s, s["block_id"])
             self._db.execute(
                 "UPDATE suggestions SET status = ?, decided_at = ?, payload = ? WHERE id = ?",
                 ("accepted" if decided_by != "auto" else "applied", time.time(),
@@ -1160,6 +1592,7 @@ class Store:
                 "UPDATE suggestions SET status = 'rejected', decided_at = ?, payload = ? WHERE id = ?",
                 (time.time(), json.dumps(p), sid),
             )
+            self._unchain(s)
             self._bump(s["doc_id"])
             self._db.commit()
             return self.get_suggestion(sid)

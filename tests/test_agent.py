@@ -93,9 +93,10 @@ def test_default_agent_tools_build_with_openrouter_key(monkeypatch):
     from langstage_codraft.agent import build_default_agent, research_tools
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-dummy")
-    names = {t.name for t in research_tools()}
+    spec = "openrouter:anthropic/claude-haiku-5.5"
+    names = {t.name for t in research_tools(spec)}
     assert {"fetch_url", "generate_image"} <= names
-    gen = next(t for t in research_tools() if t.name == "generate_image")
+    gen = next(t for t in research_tools(spec) if t.name == "generate_image")
     assert "config" not in gen.tool_call_schema.model_json_schema()["properties"]
     g = build_default_agent("openrouter:anthropic/claude-haiku-5.5")
     assert "generate_image" in graph_tool_names(g) and "view_sketch" in graph_tool_names(g)

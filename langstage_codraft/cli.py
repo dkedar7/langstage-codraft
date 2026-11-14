@@ -127,6 +127,16 @@ def check(agent_spec, model, demo, data_dir, live, as_json) -> None:
                 else f"missing {', '.join(missing)} (add CodraftMiddleware() or use a factory)")
             add("checkpointer", True, "compiled-in" if getattr(graph, "checkpointer", None)
                 else "none compiled in; the server attaches a durable SQLite one")
+            if info["kind"] == "default":  # the built-in co-author's research tools
+                if info.get("web_search"):
+                    add("search", True, "web_search available (ddgs)")
+                else:
+                    add("search", None, "no web search: the ddgs package is not installed, so the agent has no "
+                        'web_search tool and is told not to guess URLs (pip install "langstage-codraft[search]")')
+                add("images", True if info.get("image_generation") else None,
+                    "generate_image available (OpenRouter image model)" if info.get("image_generation")
+                    else "generate_image is off: it needs OPENROUTER_API_KEY and either an openrouter: model or "
+                         "LANGSTAGE_CODRAFT_IMAGE_MODEL; the agent draws SVG figures instead")
     except Exception as exc:  # noqa: BLE001
         add("agent", False, f"{type(exc).__name__}: {exc}")
 

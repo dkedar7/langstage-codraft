@@ -1261,9 +1261,10 @@ class Store:
 
     def propose(
         self, doc_id: str, kind: str, payload: dict, *, block_id: str | None = None,
-        comment_id: str | None = None, note: str = "", author: str = "agent",
+        comment_id: str | None = None, note: str = "", author: str = "agent", hold: bool = False,
     ) -> dict:
-        """Record an agent change. With approval 'auto' it is applied immediately."""
+        """Record an agent change. With approval 'auto' it is applied immediately, unless
+        ``hold``: then it waits for the author like any suggestion (removing sources)."""
         if kind not in ("edit", "insert", "delete", "move"):
             raise Invalid("kind must be edit, insert, delete or move")
         with self._lock:
@@ -1322,7 +1323,7 @@ class Store:
             )
             self._bump(doc_id)
             self._db.commit()
-            if doc["settings"].get("approval") == "auto":
+            if doc["settings"].get("approval") == "auto" and not hold:
                 return self.accept_suggestion(sid, decided_by="auto")
             return self.get_suggestion(sid)
 

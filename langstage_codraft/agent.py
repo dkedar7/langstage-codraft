@@ -205,60 +205,145 @@ class ReasoningFallback(AgentMiddleware):
             return await handler(request.override(model=self.plain))
 
 
-def research_tools() -> list:
-    """Keyless research helpers for the default agent: fetch a URL, and web search
-    when the optional ``ddgs`` package (``[search]`` extra) is installed."""
+MAX_FAILED_FETCHES = 6  # in one turn, before fetch_url stops opening URLs no search returned
+MAX_FETCHES = 24  # in one turn, whatever the outcome
+NO_SEARCH_PROMPT = (
+    "You have NO web search tool on this server. Do not guess URLs: `fetch_url` only pages the author gave "
+    "you, pages named in the document or its uploads, and well-known home pages you are sure exist. If you "
+    "can't open a source for a claim, say which claims are unsourced; never cite a page you did not open.")
+
+
+def search_available() -> bool:
+    """Whether the web search backend (the ``ddgs`` package) can be imported."""
+    import importlib.util
+
+    try:
+        return importlib.util.find_spec("ddgs") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def image_tool_available(model_spec: str | None = None) -> bool:
+    """Whether ``generate_image`` can work here: it calls OpenRouter's image models, so it
+    needs ``OPENROUTER_API_KEY``, and that key has to be one the deployer means to use:
+    either the chat model runs on OpenRouter too, or ``LANGSTAGE_CODRAFT_IMAGE_MODEL`` is
+    set. A key that merely sits in the environment next to another provider's model is not
+    offered: with no credit on it the tool fails on every call."""
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        return False
+    return bool(os.environ.get("LANGSTAGE_CODRAFT_IMAGE_MODEL")) or str(model_spec or "").startswith("openrouter:")
+
+
+def _http_reason(exc: BaseException) -> str:
+    """One line for a failed HTTP call: what the status means, not a traceback."""
+    code = getattr(getattr(exc, "response", None), "status_code", None)
+    if code == 401:
+        return "the service rejected the API key (401)"
+    if code == 402:
+        return "the account behind the API key has no credit (402)"
+    if code == 403:
+        return "the server refused access (403)"
+    if code == 404:
+        return "there is no such page (404)"
+    if code == 429:
+        return "the service is rate-limiting requests (429)"
+    if code:
+        return f"the server answered {code}"
+    return f"{type(exc).__name__}: {str(exc).splitlines()[0][:140] if str(exc) else 'no response'}"
+
+
+def research_tools(model_spec: str | None = None) -> list:
+    """Research helpers for the default agent: fetch a URL, web search (the ``ddgs``
+    package, a default dependency), and image generation when it can work with this
+    model and key (see :func:`image_tool_available`)."""
     from langchain_core.tools import tool
 
+    from .tools import _bump, _thread_id, turn_state
+
     @tool
-    def fetch_url(url: str, max_chars: int = 6000, offset: int = 0) -> str:
+    def fetch_url(url: str, config: RunnableConfig, max_chars: int = 4000, offset: int = 0) -> str:
         """Fetch a web page or a PDF and return its readable text. Long documents are cut
-        at max_chars; the result says how much is left, and `offset` continues from there."""
+        at max_chars; the result says how much is left, and `offset` continues from there.
+        Open pages you found with web_search, or that the author or the document names.
+        Do not guess URLs: after a few failed guesses in a turn this tool stops opening
+        URLs that no search returned."""
         import httpx
 
+        st = turn_state(_thread_id(config))
+        known = url.rstrip("/.,;)") in st["urls"]  # from web_search, or written by the author this turn
+        if st["n"].get("fetch", 0) >= MAX_FETCHES:
+            return (f"ERROR: {MAX_FETCHES} pages fetched this turn, which is the limit. Work with what you have "
+                    "read, and tell the author which claims you could not source.")
+        if not known and st["n"].get("fetch_failed", 0) >= MAX_FAILED_FETCHES:
+            return (f"ERROR: not fetched. {MAX_FAILED_FETCHES} fetches have already failed this turn, so guessed "
+                    "URLs are no longer opened. Use web_search to find real URLs (results from it are still "
+                    "fetched), use the uploaded reference material (search_document), or tell the author which "
+                    "claims you could not source. Never cite a page you have not opened.")
+        _bump(st, "fetch")
         try:
             r = httpx.get(url, timeout=20, follow_redirects=True,
                           headers={"User-Agent": "Mozilla/5.0 (langstage-codraft)"})
             r.raise_for_status()
         except Exception as exc:  # noqa: BLE001
-            return (f"ERROR fetching {url}: {exc}. Do not cite this source unless you can open it another "
-                    "way; say so if it matters.")
+            n = _bump(st, "fetch_failed")
+            return (f"ERROR fetching {url}: {_http_reason(exc)}. Do not cite this source unless you can open it "
+                    f"another way; say so if it matters. ({n} failed fetch(es) this turn; after "
+                    f"{MAX_FAILED_FETCHES}, only URLs from web_search are opened.)")
         return readable_text(url, r.headers.get("content-type", ""), r.content, max_chars=max_chars, offset=offset)
 
     tools = [fetch_url]
-    if os.environ.get("OPENROUTER_API_KEY"):
+    if image_tool_available(model_spec):
         tools.append(generate_image_tool())
     try:
         from ddgs import DDGS
 
         @tool
-        def web_search(query: str, max_results: int = 5) -> str:
+        def web_search(query: str, config: RunnableConfig, max_results: int = 5) -> str:
             """Search the web. Returns titles, urls and snippets to cite as references."""
 
             import time
 
+            st = turn_state(_thread_id(config))
             n = max(1, min(max_results, 10))
             err: Exception | None = None
+            hits: list = []
             for attempt in (0, 1):  # the search service rate-limits in bursts: one retry clears most
                 try:
                     hits = list(DDGS().text(query, max_results=n))
+                    err = None
                     break
                 except Exception as exc:  # noqa: BLE001
                     err = exc
+                    if _no_results(exc):  # the service answered: there is nothing to retry
+                        err, hits = None, []
+                        break
                     if attempt == 0:
                         time.sleep(1.5)
-            else:
-                return (f"ERROR: web search failed twice ({type(err).__name__}: {str(err)[:160]}). The search "
-                        "service is rate-limited or unreachable right now. Do not keep retrying: use fetch_url on "
-                        "a URL you already know, use the uploaded reference material (search_document), or tell "
-                        "the author which claims you could not source. Never cite a page you have not opened.")
+            if err is not None:
+                kind = ("is rate-limiting requests" if type(err).__name__ == "RatelimitException"
+                        else "timed out" if type(err).__name__ == "TimeoutException" else "could not be reached")
+                return (f"ERROR: web search failed twice: the search service {kind} "
+                        f"({type(err).__name__}: {str(err)[:160]}). This is not \"no results\": the query was "
+                        "never answered. Do not keep retrying: use fetch_url on a URL you already know, use the "
+                        "uploaded reference material (search_document), or tell the author which claims you "
+                        "could not source. Never cite a page you have not opened.")
+            for h in hits:
+                if h.get("href"):
+                    st["urls"].add(str(h["href"]).rstrip("/"))
             return ("\n".join(f"- {h.get('title')} — {h.get('href')}\n  {h.get('body')}" for h in hits)
-                    or f"No results for {query!r}. Try fewer or different keywords.")
+                    or f"No results for {query!r}: the search worked and found nothing. Try fewer or more general "
+                       "keywords (two to four words, no quotes, no site: filters).")
 
         tools.append(web_search)
     except ImportError:
         pass
     return tools
+
+
+def _no_results(exc: BaseException) -> bool:
+    """ddgs raises its base exception with "No results found" when the query matched
+    nothing: an answer, not an outage."""
+    return type(exc).__name__ == "DDGSException" and "no results" in str(exc).lower()
 
 
 def readable_text(url: str, content_type: str, data: bytes, *, max_chars: int = 6000, offset: int = 0) -> str:
@@ -338,6 +423,11 @@ def generate_image_tool():
                 json={"model": os.environ.get("LANGSTAGE_CODRAFT_IMAGE_MODEL", DEFAULT_IMAGE_MODEL),
                       "modalities": ["image", "text"], "image_config": {"aspect_ratio": ratio},
                       "messages": [{"role": "user", "content": parts}]})
+            if r.status_code in (401, 402):
+                why = ("rejected the API key" if r.status_code == 401
+                       else "has no credit left on this API key")
+                return (f"ERROR: image generation is unavailable: the image service {why} ({r.status_code}). "
+                        "Do not retry. Use draw_figure for a diagram, or tell the author no image could be made.")
             r.raise_for_status()
             msg = r.json()["choices"][0]["message"]
             urls = [i.get("image_url", {}).get("url", "") for i in (msg.get("images") or [])]
@@ -362,8 +452,11 @@ def generate_image_tool():
                     "type": "image", "content": content, "after": after_block_id or "__end__",
                     "layout": {"span": "full" if full_width else "column", **variant}}, note=note)
             return f"Generated image {up['id']} ({ratio}). " + _sugg_result(s)
+        except httpx.HTTPError as exc:
+            return (f"ERROR generating image: {_http_reason(exc)}. Use draw_figure for a diagram, or tell the "
+                    "author no image could be made.")
         except Exception as exc:  # noqa: BLE001
-            return f"ERROR generating image: {type(exc).__name__}: {exc}"
+            return f"ERROR generating image: {type(exc).__name__}: {str(exc).splitlines()[0][:200] if str(exc) else ''}"
 
     return generate_image
 
@@ -380,12 +473,12 @@ def build_default_agent(model_spec: str, *, extra_tools: list | None = None,
         notes.extend(found)
     for n in found:
         _log.warning("codraft: %s", n)
-    middleware: list = [CodraftMiddleware()]
+    middleware: list = [CodraftMiddleware(extra_prompt="" if search_available() else NO_SEARCH_PROMPT)]
     if plain is not None:
         middleware.append(ReasoningFallback(plain, model_spec))
     return create_agent(
         model,
-        tools=research_tools() + list(extra_tools or []),
+        tools=research_tools(model_spec) + list(extra_tools or []),
         middleware=middleware,
         name="codraft",
     )
@@ -589,7 +682,8 @@ def resolve(cfg: Any, *, model: str | None = None) -> tuple[Any, dict]:
     graph = build_default_agent(spec, max_tokens=cap, reasoning=reasoning, notes=notes)
     on = reasoning_kwargs(spec, reasoning, int(cap or 0))
     info = {"kind": "default", "label": spec, "missing_tools": [], "max_output_tokens": cap or None,
-            "reasoning": (_AUTO_EFFORT if reasoning == "auto" else reasoning) if on else "off"}
+            "reasoning": (_AUTO_EFFORT if reasoning == "auto" else reasoning) if on else "off",
+            "web_search": search_available(), "image_generation": image_tool_available(spec)}
     if notes:
         info["notes"] = notes
     return graph, info

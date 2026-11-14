@@ -91,14 +91,21 @@ BUILTIN_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "one-pager": {
         "name": "Marketing one-pager",
-        "description": "Bold headline, value props in columns, call to action.",
-        "settings": {"theme": "bold", "columns": 2},
+        "description": "Bold headline, value props side by side, a row of numbers, call to action.",
+        "settings": {"theme": "bold", "columns": 1},
         "blocks": [
             _h("Headline that names the outcome", 1, span="full"),
-            _t("One sentence on who it is for and why it matters.", span="full"),
-            _h("Benefit one", 3), _t("Proof point."),
-            _h("Benefit two", 3), _t("Proof point."),
-            {"type": "callout", "content": {"markdown": "**Get started:** the call to action.", "tone": "success"}, "layout": {"span": "full"}},
+            _t("One sentence on who it is for and why it matters.", span="full", variant="lead"),
+            {"type": "row", "content": {"cells": [
+                {"markdown": "### Benefit one\n\nProof point."},
+                {"markdown": "### Benefit two\n\nProof point."},
+                {"markdown": "### Benefit three\n\nProof point."}]}, "layout": {"span": "full"}},
+            {"type": "stat", "content": {"items": [
+                {"value": "00%", "label": "What this number measures"},
+                {"value": "0x", "label": "What this number measures"},
+                {"value": "000", "label": "What this number measures"}]}, "layout": {"span": "full"}},
+            {"type": "callout", "content": {"markdown": "**Get started:** the call to action.", "tone": "info"},
+             "layout": {"span": "full", "variant": "band"}},
         ],
     },
     "newsletter": {

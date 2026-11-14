@@ -109,9 +109,17 @@ export function useDocLayout(blocks: Block[], settings: Settings, theme: Theme |
   const lang = langCode(settings);
   const canHyphenate = useHyphenation(lang);   // re-renders when a language's patterns arrive
   const hyphenate = canHyphenate && theme?.hyphens === "auto";
+  // The theme's colours, for blocks with a fill. Keyed on the values so a theme object that is
+  // rebuilt on every render (the print route) doesn't re-render every block.
+  const colorKey = JSON.stringify([theme?.color_accent, theme?.color_text, theme?.color_muted, theme?.color_heading,
+    theme?.color_callout, theme?.color_figure, theme?.color_rule]);
+  const colors = useMemo(() => {
+    const [color_accent, color_text, color_muted, color_heading, color_callout, color_figure, color_rule] = JSON.parse(colorKey);
+    return { color_accent, color_text, color_muted, color_heading, color_callout, color_figure, color_rule } as Partial<Theme>;
+  }, [colorKey]);
   const ctx: RenderCtx = useMemo(() => ({ references: compileReferences(blocks), editing, print, pageCount: 0,
-    lang: canHyphenate ? lang : null, hyphenate }),
-    [blocks, editing, print, lang, canHyphenate, hyphenate]);
+    lang: canHyphenate ? lang : null, hyphenate, colors, colGap: geo.colGap }),
+    [blocks, editing, print, lang, canHyphenate, hyphenate, colors, geo.colGap]);
   const boxRef = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState<Record<string, Measured>>({});
   const [tick, setTick] = useState(0);

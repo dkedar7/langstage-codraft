@@ -1,5 +1,6 @@
 export type BlockType =
-  | "text" | "heading" | "image" | "video" | "table" | "chart" | "callout" | "divider" | "references" | "page-break" | "spacer";
+  | "text" | "heading" | "image" | "video" | "table" | "chart" | "callout" | "divider" | "references" | "page-break" | "spacer"
+  | "row" | "stat";
 
 export interface Pin {
   page: number;
@@ -23,6 +24,8 @@ export interface BlockLayout {
   repeat: "all" | "odd" | "even" | number[] | null;
   variant?: string | null;
   dropcap?: boolean;
+  /** a background colour: a theme colour name (accent, text, muted, …) or a hex colour */
+  fill?: string | null;
 }
 
 export interface Ref { title: string; url: string; note: string }

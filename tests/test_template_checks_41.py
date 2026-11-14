@@ -58,7 +58,7 @@ def test_unknown_type_names_the_block_types(tdir):
     tpl.configure(tdir)
     why = tpl.skipped_templates()["status"][1]
     assert why == ("blocks[0].type 'quote' is not a block type (text, heading, image, video, table, "
-                   "chart, callout, divider, references, page-break, spacer)")
+                   "chart, callout, divider, references, page-break, spacer, row, stat)")
 
 
 def test_a_valid_template_still_creates_its_document(tdir, tmp_path):

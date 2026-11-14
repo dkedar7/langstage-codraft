@@ -1,8 +1,9 @@
 import type React from "react";
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Block, Ref } from "../types";
+import type { Block, Ref, Theme } from "../types";
 import { Chart, DEFAULT_CHART_HEIGHT } from "./Chart";
 import { hyphenateText } from "./hyphenate";
+import { MIN_CELL_PX, blockFill, rowCells, rowColumns, rowGap, statColumns, statItems } from "./layoutBlocks";
 import { mdToHtml } from "./markdown";
 import { Boundary } from "./Boundary";
 import { withBase } from "../base";
@@ -23,6 +24,10 @@ export interface RenderCtx {
   lang?: string | null;
   /** hyphenate paragraphs (the document's hyphens setting is "auto") */
   hyphenate?: boolean;
+  /** the theme's colours, to resolve a block's fill and pick light or dark text on it */
+  colors?: Partial<Theme>;
+  /** the document's column gap in px: the default gap between a row's cells */
+  colGap?: number;
 }
 
 /** Fill {page}, {pages} and {title} (running headers/footers). Measurement uses "00". */
@@ -160,8 +165,16 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
       ? mdToHtml(fillTokens(c.markdown || "", ctx, pageNo), { lang: ctx.lang, hyphenate: ctx.hyphenate }) : ""),
     [block.type, c.markdown, ctx, pageNo],
   );
+  // A row's cells, each rendered like a text block.
+  const cellsKey = block.type === "row" ? JSON.stringify(rowCells(c)) : "";
+  const cellHtml = useMemo(
+    () => (cellsKey ? (JSON.parse(cellsKey) as string[]).map((md) => (md.trim()
+      ? mdToHtml(fillTokens(md, ctx, pageNo), { lang: ctx.lang, hyphenate: ctx.hyphenate }) : "")) : []),
+    [cellsKey, ctx, pageNo],
+  );
+  const fill = blockFill(block, ctx.colors);
   const rootRef = useRef<HTMLDivElement>(null);
-  useFitTables(rootRef, [html, block.type === "table" ? c.rows : null, width, variant, ctx.lang]);
+  useFitTables(rootRef, [html, cellsKey, block.type === "table" ? c.rows : null, width, variant, ctx.lang]);
   const empty = (s: string) => ctx.editing && !s.trim();
   // Editor-only hint text in a box that flows: print renders the same text invisibly, so the
   // editor and the export measure the same height and paginate alike (gh #13).
@@ -273,6 +286,39 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
       );
       break;
     }
+    case "row": {
+      // Cells side by side on a grid. One atomic block: the paginator measures it whole.
+      const gap = rowGap(c, ctx.colGap);
+      const stacked = (width - gap * (cellHtml.length - 1)) / cellHtml.length < MIN_CELL_PX;
+      inner = (
+        <div className={`cd-row${stacked ? " cd-row-stacked" : ""}`}
+          style={{ gridTemplateColumns: stacked ? "minmax(0, 1fr)" : rowColumns(c.widths, cellHtml.length), columnGap: gap }}>
+          {cellHtml.map((h, i) => (
+            <div className="cd-row-cell" key={i}>
+              {h ? <div className="cd-md" dangerouslySetInnerHTML={{ __html: h }} />
+                : <div className={`cd-md${ctx.editing ? " cd-placeholder" : ""}`}><p>{hint(`Column ${i + 1}…`)}</p></div>}
+            </div>
+          ))}
+        </div>
+      );
+      break;
+    }
+    case "stat": {
+      // Number tiles: a large value with a small label under it.
+      const items = statItems(c);
+      const gap = Math.min(rowGap(undefined, ctx.colGap), 18);
+      inner = (
+        <div className="cd-stat" style={{ gridTemplateColumns: `repeat(${statColumns(items.length, width, gap)}, minmax(0, 1fr))`, gap }}>
+          {items.map((it, i) => (
+            <div className="cd-stat-tile" key={i}>
+              <div className={`cd-stat-value${empty(it.value) ? " cd-placeholder" : ""}`}>{it.value.trim() ? it.value : hint("0")}</div>
+              <div className={`cd-stat-label${empty(it.label) ? " cd-placeholder" : ""}`}>{it.label.trim() ? it.label : hint("Label")}</div>
+            </div>
+          ))}
+        </div>
+      );
+      break;
+    }
     case "divider":
       inner = <hr className="cd-divider" />;
       break;
@@ -313,8 +359,9 @@ function BlockBody({ block, width, ctx, fixedHeight, pageNo }: {
       inner = <div className="cd-muted">Unsupported block type: {block.type}</div>;
   }
   return (
-    <div className={`cd-block cd-type-${block.type}${variant ? ` cd-v-${variant}` : ""}${block.layout?.dropcap ? " cd-dropcap" : ""}`}
-      data-block={block.id} style={{ width }} ref={rootRef}>
+    <div className={`cd-block cd-type-${block.type}${variant ? ` cd-v-${variant}` : ""}${block.layout?.dropcap ? " cd-dropcap" : ""}${
+      fill ? ` cd-filled cd-fill-${fill.dark ? "dark" : "light"}` : ""}`}
+      data-block={block.id} style={fill ? ({ width, "--cd-fill": fill.color } as React.CSSProperties) : { width }} ref={rootRef}>
       {inner}
     </div>
   );

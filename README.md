@@ -23,8 +23,8 @@ Tag your agent in comments, approve every change it suggests, and export exactly
 You own the thinking. Your agent owns the styling, and helps with drafting and research when
 you ask it to.
 
-- **Blocks on pages.** Text, headings, images, tables, Vega-Lite charts, callouts and an
-  automatic references list. Pages come in Letter, A4, Legal, A5 or 16:9 slide, with 1–3
+- **Blocks on pages.** Text, headings, images, tables, Vega-Lite charts, callouts, columns of
+  cells side by side, number tiles and an automatic references list. Pages come in Letter, A4, Legal, A5 or 16:9 slide, with 1–3
   columns. You can also pin blocks so other blocks flow around them, repeat headers and logos
   on every page, and add cover and back pages. Pageless mode is available too.
 - **Start from the draft you have.** Import a Markdown or Word file and it becomes blocks:
@@ -216,10 +216,66 @@ langstage-codraft run --agent examples/report_designer.py:make --approval auto
 
 Every layout feature is available to people too (Block and Document panels) and to any agent:
 block styles (`lead`, `pullquote`, `kicker`, `byline`, `footer`, `bio`; headings `display`,
-`section`, `rule`; `figure-box`; `hanging` references; `dark` callouts), drop caps, custom page
+`section`, `rule`, `band`; `figure-box`; `hanging` references; `dark` and `band` callouts; `cards`
+rows; `plain` number tiles), drop caps, custom page
 sizes, page-anchored pins, and reserved areas (`reserve_area`) that keep part of a page empty.
 Page numbers: put `{page}` (and `{pages}`) in a repeating footer; cover and closing pages are
 skipped unless you turn on "Number cover and closing pages", and any page can be left unnumbered.
+
+## Side by side: columns, number tiles and bands
+
+A one-pager needs things next to each other: three value props, a row of big numbers, a header
+band, a call-to-action box. These are blocks, so they flow with the document, export exactly as
+they look, and need no pinning.
+
+![A one-page sales sheet: an orange header band, three value props side by side, a row of three number tiles and a call-to-action band](https://raw.githubusercontent.com/dkedar7/langstage-codraft/main/docs/assets/one-pager.png)
+
+- **Columns** (`row`): 2 to 4 cells side by side, each one Markdown. Cells are equal unless you
+  give relative widths, and the gap is the document's column gap unless you set one. The
+  `cards` style puts each cell in a tinted box.
+- **Number tiles** (`stat`): a large value with a small label under it, up to six in a block.
+  The `plain` style drops the tinted boxes.
+- **Band**: a style for headings and callouts. A band heading is a solid header strip; a band
+  callout is a call-to-action box with centred text.
+- **Fill**: the colour behind a band, a row's cards or the tiles. It is one of the document's
+  theme colours by name (`accent`, `text`, `muted`, `heading`, `callout`, `figure`, `rule`), so
+  it follows the theme, or a hex colour. The text on it turns white or dark, whichever reads.
+
+The page above was laid out by the built-in agent (GPT-5.4) in three turns, from the one-pager
+template and a short brief.
+
+In the editor: **Add block → Columns** or **Number tiles**, then edit the cells or tiles in the
+Block panel; **Style → band** and **Fill** are in the same panel. The marketing one-pager
+template starts with all of them.
+
+```json
+{"type": "heading", "content": {"text": "Acme Relay", "level": 1},
+ "layout": {"span": "full", "variant": "band"}}
+{"type": "row", "layout": {"span": "full", "variant": "cards"},
+ "content": {"cells": [{"markdown": "### Reliable\n\nRetries for 72 hours."},
+                       {"markdown": "### Observable\n\nA searchable delivery log."},
+                       {"markdown": "### Fair\n\nPer-customer rate limits."}],
+             "widths": [1, 1, 1], "gap": 6}}
+{"type": "stat", "layout": {"span": "full"},
+ "content": {"items": [{"value": "99.99%", "label": "delivered within 60 seconds"},
+                       {"value": "38 ms", "label": "median added latency"}]}}
+{"type": "callout", "content": {"markdown": "**Start a 14-day pilot.**"},
+ "layout": {"span": "full", "variant": "band", "fill": "#ff5a1f"}}
+```
+
+The agent makes them with the tools it already has (`insert_blocks`, `propose_insert`,
+`propose_edit`, and `fill` on `set_block_layout`), over MCP too, and its instructions say to use
+these and never pins, raw HTML or drawn SVG for columns, tiles, bands and boxes. In a real-model
+evaluation of 0.5.17, a one-pager like the one above took 266 tool calls, 190 of them pinning
+blocks to pixel positions, and still came out wrong.
+
+- A row or a set of tiles is one block. It moves to the next column or page as a whole and
+  never splits; one taller than a page is flagged as overflow, like an oversized table.
+- Cells that would be narrower than an inch stack instead (a four-cell row put in one column of
+  a three-column page), and six tiles that don't fit one line take two.
+- Word export writes a row and the tiles as borderless tables and shades a band. PowerPoint
+  shows a row, the tiles and a band as pictures, where the paginator placed them.
+- Import never produces these blocks: a Markdown or Word file becomes text, tables and figures.
 
 ## Design the whole document
 
@@ -540,6 +596,8 @@ them (see `frontend/src/layout/paginate.ts`, which has its own unit tests):
 - A pinned block reserves a rectangle on the page instead of wrapping text around it.
 - Text splits only at paragraph or line boundaries, keeping at least two lines on each side.
 - A block taller than a page is flagged rather than looping forever.
+- A row of cells and a set of number tiles are each one block, measured at their width like a
+  table. They need no logic of their own in the paginator.
 
 The preview, the export and the agent's screenshots all print that same layout in headless
 Chromium. Chromium never paginates anything again, so the editor and the PDF can't disagree.

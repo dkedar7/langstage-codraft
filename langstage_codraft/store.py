@@ -26,8 +26,11 @@ from .pages import PAGE_SIZES_MM
 
 BLOCK_TYPES = (
     "text", "heading", "image", "video", "table", "chart", "callout", "divider",
-    "references", "page-break", "spacer",
+    "references", "page-break", "spacer", "row", "stat",
 )
+# A row holds this many cells side by side, and a stat block this many number tiles.
+ROW_CELLS = (2, 4)
+STAT_ITEMS = (1, 6)
 ROLES = ("flow", "cover", "back")
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -82,6 +85,11 @@ DEFAULT_CONTENT: dict[str, dict[str, Any]] = {
     "references": {"title": "References", "style": "numbered"},
     "page-break": {},
     "spacer": {"label": ""},   # an empty reserved area (pin it so text flows around it)
+    # Cells side by side, each one Markdown. widths: relative widths, one per cell (None =
+    # equal). gap: the space between cells in mm (None = the document's column gap).
+    "row": {"cells": [{"markdown": ""}, {"markdown": ""}], "widths": None, "gap": None},
+    # Number tiles: a large value with a small label under it.
+    "stat": {"items": [{"value": "", "label": ""}, {"value": "", "label": ""}, {"value": "", "label": ""}]},
 }
 
 DEFAULT_LAYOUT: dict[str, Any] = {
@@ -92,17 +100,22 @@ DEFAULT_LAYOUT: dict[str, Any] = {
     "repeat": None,      # None | "all" | "odd" | "even" | [page numbers]
     "variant": None,     # a typographic style, see BLOCK_VARIANTS
     "dropcap": False,    # text blocks: a large initial letter
+    "fill": None,        # a background colour: a theme colour name (themes.FILL_NAMES) or a hex colour
 }
+# The block types a fill applies to: a band heading, a filled callout, row cards, number tiles.
+FILL_TYPES = ("heading", "callout", "row", "stat")
 
 # Typographic styles a block can wear (the theme supplies fonts and colours).
 BLOCK_VARIANTS: dict[str, tuple[str, ...]] = {
     "text": ("lead", "pullquote", "kicker", "byline", "small", "caption", "footer", "bio"),
-    "heading": ("display", "section", "rule", "label"),
+    "heading": ("display", "section", "rule", "label", "band"),
     "image": ("figure-box",),
     "chart": ("figure-box",),
     "table": ("figure-box",),
-    "callout": ("figure-box", "dark"),
+    "callout": ("figure-box", "dark", "band"),
     "references": ("hanging",),
+    "row": ("cards",),
+    "stat": ("plain",),
 }
 
 # What each variant looks like, for the Block panel and for an agent choosing one. The heading
@@ -126,6 +139,11 @@ VARIANT_NOTES: dict[str, str] = {
             "settings in the same way",
     "label": "a small spaced-capitals label in the Labels font (font_label); it ignores "
              "heading_case, heading_scale and font_heading",
+    "band": "a solid strip in the accent colour (a fill picks another colour) with the text "
+            "in white or dark, whichever reads. A full-width band heading is a header band; a "
+            "band callout is a call-to-action box with centred text",
+    "cards": "each cell of the row in a tinted box (a fill picks the colour)",
+    "plain": "number tiles without the tinted boxes",
     "figure-box": "a tinted box around the figure, table or callout",
     "dark": "a dark, centred callout",
     "hanging": "an unnumbered list with hanging indents",
@@ -254,7 +272,71 @@ def _check_fields(block_type: str, content: dict | None) -> dict | None:
             raise Invalid("content.rows of a table block must be a list of rows, each a list of cells")
     if block_type == "chart" and out.get("spec") is not None and not isinstance(out["spec"], dict):
         raise Invalid("content.spec of a chart block must be an object (a Vega-Lite spec)")
+    if block_type == "row":
+        _check_row(out)
+    if block_type == "stat":
+        _check_stat(out)
     return out
+
+
+def _check_row(out: dict) -> None:
+    """A row's cells (2 to 4, each Markdown), relative widths and gap. A cell given as plain
+    text is stored as ``{"markdown": text}``."""
+    lo, hi = ROW_CELLS
+    cells = out.get("cells")
+    if cells is not None:
+        if not isinstance(cells, list) or not lo <= len(cells) <= hi:
+            raise Invalid(f"content.cells of a row block must be a list of {lo} to {hi} cells, each "
+                          '{"markdown": "..."}')
+        fixed = []
+        for i, cell in enumerate(cells):
+            if isinstance(cell, str):
+                cell = {"markdown": cell}
+            if isinstance(cell, dict) and isinstance(cell.get("markdown"), list) and all(
+                    isinstance(p, str) for p in cell["markdown"]):
+                cell = {**cell, "markdown": "\n\n".join(cell["markdown"])}
+            if not isinstance(cell, dict) or not isinstance(cell.get("markdown", ""), str):
+                raise Invalid(f'content.cells[{i}] of a row block must be {{"markdown": "..."}} (Markdown text)')
+            fixed.append({"markdown": cell.get("markdown", "")})
+        out["cells"] = fixed
+    widths = out.get("widths")
+    if widths is not None:
+        if not isinstance(widths, list) or not lo <= len(widths) <= hi or not all(
+                isinstance(w, (int, float)) and not isinstance(w, bool) and 0 < w <= 100 for w in widths):
+            raise Invalid("content.widths of a row block must be a list of positive numbers, one per cell "
+                          "(relative widths, e.g. [1, 1, 2]), or null for equal cells")
+        if cells is not None and len(widths) != len(out["cells"]):
+            raise Invalid(f"content.widths has {len(widths)} entries for {len(out['cells'])} cells; give one "
+                          "per cell, or null for equal cells")
+    gap = out.get("gap")
+    if gap is not None and (isinstance(gap, bool) or not isinstance(gap, (int, float)) or not 0 <= gap <= 40):
+        raise Invalid("content.gap of a row block must be a number of mm from 0 to 40, or null for the "
+                      "document's column gap")
+
+
+def _check_stat(out: dict) -> None:
+    """A stat block's tiles (1 to 6), each a value and a label. ``["99.9%", "uptime"]`` and a
+    number for the value are accepted and stored as text."""
+    lo, hi = STAT_ITEMS
+    items = out.get("items")
+    if items is None:
+        return
+    if not isinstance(items, list) or not lo <= len(items) <= hi:
+        raise Invalid(f"content.items of a stat block must be a list of {lo} to {hi} tiles, each "
+                      '{"value": "...", "label": "..."}')
+    fixed = []
+    for i, it in enumerate(items):
+        if isinstance(it, (list, tuple)) and 1 <= len(it) <= 2:
+            it = {"value": it[0], "label": it[1] if len(it) == 2 else ""}
+        if not isinstance(it, dict):
+            raise Invalid(f'content.items[{i}] of a stat block must be {{"value": "...", "label": "..."}}')
+        value, label = it.get("value", ""), it.get("label", "")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            value = f"{value:g}" if isinstance(value, float) else str(value)
+        if not isinstance(value, str) or not isinstance(label if label is not None else "", str):
+            raise Invalid(f"content.items[{i}] of a stat block: value and label must be text")
+        fixed.append({"value": value, "label": label or ""})
+    out["items"] = fixed
 
 
 def _as_text(v: Any) -> str:
@@ -272,6 +354,24 @@ def repair_content(block_type: str, content: Any) -> dict:
     gh #34) is read as text, so one bad block can't blank the editor or hang an export."""
     if not isinstance(content, dict):
         return {}
+    if block_type in ("row", "stat"):
+        key = "cells" if block_type == "row" else "items"
+        try:
+            fixed = dict(content)
+            (_check_row if block_type == "row" else _check_stat)(fixed)
+            if isinstance(fixed.get(key), list):
+                return fixed
+        except Invalid:
+            pass
+        # A stored row or stat block that isn't well formed: keep what text can be read.
+        raw = content.get(key) if isinstance(content.get(key), list) else []
+        if block_type == "row":
+            cells = [{"markdown": _as_text(c.get("markdown") if isinstance(c, dict) else c)} for c in raw][:ROW_CELLS[1]]
+            cells += [{"markdown": ""}] * (ROW_CELLS[0] - len(cells))
+            return {**content, "cells": cells, "widths": None, "gap": None}
+        items = [{"value": _as_text(i.get("value")), "label": _as_text(i.get("label"))}
+                 for i in raw if isinstance(i, dict)][:STAT_ITEMS[1]]
+        return {**content, "items": items or [{"value": "", "label": ""}]}
     bad = [k for k in _TEXT_FIELDS.get(block_type, ()) if content.get(k) is not None
            and not isinstance(content[k], str)]
     if block_type == "heading" and content.get("level") is not None and (
@@ -311,14 +411,25 @@ def plain_text(block_type: str, content: dict) -> str:
         return " ".join(filter(None, [content.get("alt", ""), content.get("caption", "")]))
     if block_type == "references":
         return content.get("title", "")
+    if block_type == "row":
+        cells = content.get("cells") if isinstance(content.get("cells"), list) else []
+        return " ".join(filter(None, (plain_text("text", c) for c in cells if isinstance(c, dict)))).strip()
+    if block_type == "stat":
+        items = content.get("items") if isinstance(content.get("items"), list) else []
+        return "; ".join(" ".join(filter(None, [str(i.get("value") or ""), str(i.get("label") or "")]))
+                         for i in items if isinstance(i, dict)).strip("; ")
     return ""
 
 
 def check_variant(block_type: str, layout: dict) -> None:
+    """A block's style choices fit its type: the variant, and a fill."""
     v = layout.get("variant")
     if v and v not in BLOCK_VARIANTS.get(block_type, ()):
         raise Invalid(f"variant {v!r} doesn't apply to a {block_type} block; "
                       f"options: {', '.join(BLOCK_VARIANTS.get(block_type, ())) or 'none'}")
+    if layout.get("fill") and block_type not in FILL_TYPES:
+        raise Invalid(f"fill doesn't apply to a {block_type} block; it colours a heading or callout "
+                      "(a band), the cells of a row, or number tiles")
 
 
 def check_block(block_type: str, content: Any, layout: Any, columns: int = 3) -> tuple[dict | None, dict]:
@@ -351,6 +462,19 @@ def validate_layout(layout: dict, columns: int = 3) -> dict:
     if v in ("", "none", "default"):
         out["variant"] = None
     out["dropcap"] = bool(out.get("dropcap"))
+    fill = out.get("fill")
+    if fill in ("", "none", "default"):
+        fill = out["fill"] = None
+    if fill is not None:
+        from .themes import FILL_NAMES, is_fill
+
+        if isinstance(fill, str):
+            fill = fill.strip()
+            fill = fill.lower() if fill.lower() in FILL_NAMES else fill
+        if not is_fill(fill):
+            raise Invalid(f"layout.fill must be a theme colour ({', '.join(FILL_NAMES)}) or a hex colour "
+                          "like #ff5a1f")
+        out["fill"] = fill
     pin = out.get("pin")
     if pin and pin.get("anchor") == "page":
         # Page-anchored: px from the page's top-left corner (may bleed past the margins).
@@ -1172,6 +1296,16 @@ class Store:
                 lay = self._inherit_role(payload.get("after", "__end__"), payload.get("layout"))
                 if lay is not None:
                     payload = {**payload, "layout": lay}
+                    # Refuse a layout the block could never take (a variant or a fill of another
+                    # block type) now, where the agent can read why, not when the author accepts.
+                    if not isinstance(lay, dict):
+                        raise Invalid(f"layout must be an object; got {type(lay).__name__}")
+                    try:
+                        check_variant(t, validate_layout(lay, doc["settings"]["columns"]))
+                    except Invalid:
+                        raise
+                    except (TypeError, ValueError, AttributeError) as exc:
+                        raise Invalid(f"invalid layout: {exc}") from None
             self._refuse_repeat(doc_id, kind, payload, block_id)
             # Supersede an older pending suggestion of the same kind on the same block.
             if block_id is not None and kind in ("edit", "delete", "move"):

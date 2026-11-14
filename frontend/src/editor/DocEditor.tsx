@@ -2,7 +2,7 @@ import type React from "react";
 import { Allotment } from "allotment";
 import "allotment/dist/style.css";
 import {
-  BarChart3, ChevronDown, Download, Eye, FileText, Film, GitPullRequestArrow, Heading, Image, Lightbulb,
+  BarChart3, ChevronDown, Columns3, Download, Eye, FileText, Film, GitPullRequestArrow, Hash, Heading, Image, Lightbulb,
   ListOrdered, MessageSquare, MessagesSquare, Minus, Palette, PanelRightClose, PanelRightOpen, Plus,
   SeparatorHorizontal, Settings2, SquareDashed, SquareDashedMousePointer, Table, ZoomIn, ZoomOut,
 } from "lucide-react";
@@ -32,6 +32,10 @@ const ADD_TYPES: { type: string; label: string; icon: React.JSX.Element; content
     data: { values: [{ x: "A", y: 28 }, { x: "B", y: 55 }, { x: "C", y: 43 }] },
     mark: "bar", encoding: { x: { field: "x", type: "nominal" }, y: { field: "y", type: "quantitative" } } } } },
   { type: "callout", label: "Callout", icon: <Lightbulb size={14} /> },
+  { type: "row", label: "Columns (side by side)", icon: <Columns3 size={14} />, layout: { span: "full" },
+    content: { cells: [{ markdown: "" }, { markdown: "" }, { markdown: "" }] } },
+  { type: "stat", label: "Number tiles", icon: <Hash size={14} />, layout: { span: "full" },
+    content: { items: [{ value: "", label: "" }, { value: "", label: "" }, { value: "", label: "" }] } },
   { type: "divider", label: "Divider", icon: <Minus size={14} /> },
   { type: "references", label: "References", icon: <ListOrdered size={14} /> },
   { type: "page-break", label: "Page break", icon: <SeparatorHorizontal size={14} /> },

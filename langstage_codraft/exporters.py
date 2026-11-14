@@ -21,7 +21,7 @@ from typing import Any
 from .fonts import family_of
 from .pages import page_mm
 from .store import Store
-from .themes import effective_theme
+from .themes import effective_theme, resolve_fill
 
 
 def qn(tag: str) -> str:
@@ -253,6 +253,115 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
             else:
                 add_runs(d.add_paragraph(), text)
 
+    def hex6(color: str | None) -> str | None:
+        """A colour as Word wants it (RRGGBB), or None when it isn't a hex colour."""
+        c = (color or "").strip().lstrip("#")
+        if re.fullmatch(r"[0-9a-fA-F]{3}", c):
+            c = "".join(ch * 2 for ch in c)
+        return c.upper() if re.fullmatch(r"[0-9a-fA-F]{6}", c) else None
+
+    def block_fill(b: dict) -> tuple[str, bool] | None:
+        """``(RRGGBB, dark)`` for a block drawn on a fill: its own, or the accent for a band."""
+        lay = b["layout"]
+        got = resolve_fill(lay.get("fill") or ("accent" if lay.get("variant") == "band" else None), theme)
+        return (hex6(got[0]), got[1]) if got and hex6(got[0]) else None
+
+    def shade(pr, color: str):
+        """Background shading on a paragraph's or a table cell's properties element."""
+        shd = pr.makeelement(qn("w:shd"), {qn("w:val"): "clear", qn("w:color"): "auto", qn("w:fill"): color})
+        pr.append(shd)
+
+    def ink(par, dark: bool):
+        for r in par.runs:
+            r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF) if dark else RGBColor(0x1D, 0x1D, 0x1F)
+
+    def shade_new(before: list, fill: tuple[str, bool] | None):
+        """Shade the paragraphs added to the body since ``before`` was taken."""
+        if not fill:
+            return
+        from docx.text.paragraph import Paragraph
+
+        seen = {id(el) for el in before}
+        for el in list(d.element.body):
+            if id(el) in seen or el.tag != qn("w:p"):
+                continue
+            par = Paragraph(el, d)
+            shade(par._p.get_or_add_pPr(), fill[0])
+            ink(par, fill[1])
+
+    def cell_markdown(cell, md: str, dark: bool | None = None):
+        """Markdown into a table cell (a row block's cell): paragraphs, bold headings, bullets."""
+        first = True
+        for kind, text in md_blocks(md):
+            lines = ["  |  ".join(r) for r in md_table(text)[0]] if kind == "table" else [text]
+            for line in lines:
+                par = cell.paragraphs[0] if first else cell.add_paragraph()
+                first = False
+                add_runs(par, ("• " if kind == "ul" else "") + line, {"bold": True} if kind.startswith("h") else None)
+                if dark is not None:
+                    ink(par, dark)
+
+    def side_by_side(n: int, widths: list | None, full: bool):
+        """A borderless one-row table: how Word shows cells that sit side by side."""
+        tbl = d.add_table(rows=1, cols=n)
+        total = content_w_mm if full or columns == 1 else (content_w_mm - (columns - 1) * s.get("column_gap", 8)) / columns
+        ok = isinstance(widths, list) and len(widths) == n and all(
+            isinstance(w, (int, float)) and not isinstance(w, bool) and w > 0 for w in widths)
+        share = [w / sum(widths) for w in widths] if ok else [1 / n] * n
+        tbl.autofit = False
+        for j in range(n):
+            tbl.cell(0, j).width = Mm(total * share[j])
+        return tbl
+
+    def add_row(b: dict):
+        c = b["content"]
+        cells = [x.get("markdown", "") if isinstance(x, dict) else str(x or "") for x in (c.get("cells") or [])]
+        if not cells:
+            return
+        fill = block_fill(b)
+        if not fill and b["layout"].get("variant") == "cards" and hex6(theme.get("color_callout")):
+            fill = (hex6(theme.get("color_callout")), False)
+        tbl = side_by_side(len(cells), c.get("widths"), b["layout"].get("span") == "full")
+        for j, md in enumerate(cells):
+            cell = tbl.cell(0, j)
+            cell_markdown(cell, md, fill[1] if fill else None)
+            if fill:
+                shade(cell._tc.get_or_add_tcPr(), fill[0])
+        d.add_paragraph()
+
+    def add_stat(b: dict):
+        items = [i for i in (b["content"].get("items") or []) if isinstance(i, dict)]
+        if not items:
+            return
+        fill = block_fill(b)
+        if not fill and b["layout"].get("variant") != "plain":
+            tint = hex6(theme.get("color_figure") or theme.get("color_callout"))
+            fill = (tint, False) if tint else None
+        body_pt = float(theme.get("font_size", 15)) * 0.75
+        accent = _rgb(theme.get("color_heading") or theme.get("color_accent"))
+        tbl = side_by_side(len(items), None, b["layout"].get("span") == "full")
+        for j, it in enumerate(items):
+            cell = tbl.cell(0, j)
+            value = cell.paragraphs[0]
+            value.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            r = value.add_run(str(it.get("value") or ""))
+            r.bold = True
+            r.font.size = Pt(round(body_pt * 2.0, 1))
+            if b["layout"].get("fill"):
+                ink(value, fill[1] if fill else False)
+            elif accent is not None:
+                r.font.color.rgb = accent
+            if it.get("label"):
+                label = cell.add_paragraph()
+                label.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                lr = label.add_run(str(it["label"]))
+                lr.font.size = Pt(round(body_pt * 0.82, 1))
+                if b["layout"].get("fill") and fill:
+                    ink(label, fill[1])
+            if fill:
+                shade(cell._tc.get_or_add_tcPr(), fill[0])
+        d.add_paragraph()
+
     def picture(bid: str, caption: str):
         data = pictures.get(bid)
         if data:
@@ -269,11 +378,21 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
     def emit(b: dict):
         c, t = b["content"], b["type"]
         if t == "heading":
-            d.add_heading(c.get("text", ""), level=max(0, min(3, int(c.get("level", 1)))) if b["layout"].get("role") != "cover" else 0)
+            par = d.add_heading(c.get("text", ""), level=max(0, min(3, int(c.get("level", 1)))) if b["layout"].get("role") != "cover" else 0)
+            fill = block_fill(b)
+            if fill:  # a band: the strip behind the heading, and text that reads on it
+                shade(par._p.get_or_add_pPr(), fill[0])
+                ink(par, fill[1])
         elif t == "text":
             add_markdown(c.get("markdown", ""))
         elif t == "callout":
+            before = list(d.element.body)
             add_markdown(c.get("markdown", ""), style_quote=True)
+            shade_new(before, block_fill(b))
+        elif t == "row":
+            add_row(b)
+        elif t == "stat":
+            add_stat(b)
         elif t == "table":
             add_table(c.get("rows") or [], c.get("align"), bool(c.get("header", True)))
             if c.get("caption"):
@@ -449,7 +568,8 @@ def to_pptx(store: Store, doc_id: str, structure: dict) -> bytes:
         for it in page["items"]:
             b = blocks.get(it["id"])
             x, y, w, h = (Emu(int(v * EMU_PER_PX)) for v in (it["x"], it["y"], it["w"], it["h"]))
-            textual = b is not None and b["type"] in ("text", "heading", "callout") and not it["fragment"]
+            textual = (b is not None and b["type"] in ("text", "heading", "callout") and not it["fragment"]
+                       and not it.get("png"))
             if textual:
                 tb = slide.shapes.add_textbox(x, y, w, h)
                 tf = tb.text_frame

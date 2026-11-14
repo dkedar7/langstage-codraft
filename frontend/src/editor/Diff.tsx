@@ -1,5 +1,6 @@
 import { diffWords } from "diff";
 import type { Block } from "../types";
+import { rowCells, statItems } from "../render/layoutBlocks";
 
 export function blockText(type: string, content: Record<string, any>): string {
   if (type === "text" || type === "callout") return content.markdown || "";
@@ -7,6 +8,8 @@ export function blockText(type: string, content: Record<string, any>): string {
   if (type === "table") return (content.rows || []).map((r: string[]) => r.join(" | ")).join("\n");
   if (type === "image") return [content.src, content.caption].filter(Boolean).join("\n");
   if (type === "chart") return JSON.stringify(content.spec || {}, null, 1);
+  if (type === "row") return rowCells(content).join("\n---\n");
+  if (type === "stat") return statItems(content).map((i) => [i.value, i.label].filter(Boolean).join(" | ")).join("\n");
   return JSON.stringify(content);
 }
 

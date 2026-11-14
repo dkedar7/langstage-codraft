@@ -46,7 +46,7 @@ export function effectiveTheme(themes: Record<string, Theme>, s: Settings, fallb
   return { ...FALLBACK_THEME, ...base, ...own, hyphens: hyphenation(base, own), explicit } as Theme;
 }
 
-function hexLuminance(c: string): number | null {
+export function hexLuminance(c: string): number | null {
   const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec((c || "").trim());
   if (!m) return null;
   const h = m[1].length === 3 ? m[1].split("").map((x) => x + x).join("") : m[1];

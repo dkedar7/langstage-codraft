@@ -263,7 +263,7 @@ export function Canvas() {
     const isVirtual = !!b.virtual;
     const meas = measured[b.id];
     const fixed = pinHeight(b) || b.layout.height;
-    const contentOverflow = !!fixed && !!meas && meas.natural > fixed + 1 && ["text", "callout"].includes(b.type);
+    const contentOverflow = !!fixed && !!meas && meas.natural > fixed + 1 && ["text", "callout", "row", "stat"].includes(b.type);
     const cls = ["ed-item", sel && "selected", pend.length && "has-suggestion", isVirtual && "virtual",
       (it.overflow || contentOverflow) && "overflow", it.pinned && "pinned"].filter(Boolean).join(" ");
     const showChrome = !it.continued && !it.repeated;

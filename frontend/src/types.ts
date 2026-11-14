@@ -186,6 +186,9 @@ export interface Theme {
   cover_align?: "top" | "center" | "bottom";
   /** a theme an author saved from a document */
   saved?: boolean;
+  /** style keys the author chose: in the document (settings.style), or in the look a saved
+   *  theme was made from. Heading variants yield to these. */
+  explicit?: string[];
 }
 
 export interface FontInfo { family: string; category: "sans" | "serif" | "mono"; bundled: boolean }
@@ -225,6 +228,8 @@ export interface AppConfig {
   chat_available: boolean;
   ui_theme?: string;
   mcp_url?: string | null;
+  /** typographic styles per block type, each with a line on what it looks like */
+  block_variants?: Record<string, Record<string, string>>;
 }
 
 export interface Version {

@@ -47,3 +47,48 @@ describe("a theme that isn't offered (gh #15)", () => {
     expect(baseThemeName(offered, settings({ theme: "modern" }), "gone")).toBe("acme");
   });
 });
+
+describe("what the author chose beats a heading variant's look", () => {
+  const vars = (s: Partial<Settings>, t = themes) => themeVars(effectiveTheme(t, settings(s))) as Record<string, string>;
+
+  it("exposes only the heading choices the document made itself", () => {
+    expect(Object.keys(vars({})).filter((k) => k.startsWith("--cd-own-"))).toEqual([]);
+    const v = vars({ style: { heading_case: "none", font_heading: "'Montserrat', sans-serif" } as any });
+    expect(v["--cd-own-hcase"]).toBe("none");
+    expect(v["--cd-own-hfont"]).toBe("'Montserrat', sans-serif");
+    expect(v).not.toHaveProperty("--cd-own-hw");
+    expect(v).not.toHaveProperty("--cd-own-h2");
+  });
+
+  it("sizes section headings by level once the document sets a heading scale", () => {
+    const v = vars({ style: { heading_scale: 1.2, font_size: 10 } as any });
+    expect([v["--cd-own-h1"], v["--cd-own-h2"], v["--cd-own-h3"]]).toEqual(["17.28px", "14.40px", "12.00px"]);
+    expect(v["--cd-own-h2"]).toBe(v["--cd-h2"]);
+  });
+
+  it("keeps those choices when the look is saved as a theme", () => {
+    const saved = { ...themes, mine: { label: "Mine", heading_case: "none", saved: true, explicit: ["heading_case"] } } as unknown as Record<string, Theme>;
+    expect(vars({ theme: "mine" }, saved)["--cd-own-hcase"]).toBe("none");
+    expect(effectiveTheme(saved, settings({ theme: "mine", style: { heading_weight: 400 } as any })).explicit)
+      .toEqual(["heading_case", "heading_weight"]);
+  });
+});
+
+describe("hyphenation setting", () => {
+  const hyph = (base: Partial<Theme>, style: Partial<Theme>) =>
+    effectiveTheme({ t: { label: "T", ...base } } as unknown as Record<string, Theme>, settings({ theme: "t", style: style as any })).hyphens;
+
+  it("is on for justified text unless the document or the theme turns it off", () => {
+    expect(hyph({}, {})).toBe("manual");
+    expect(hyph({ hyphens: "manual" }, { text_align: "justify" })).toBe("auto");
+    expect(hyph({ text_align: "justify" }, {})).toBe("auto");
+    expect(hyph({ text_align: "justify" }, { hyphens: "manual" })).toBe("manual");
+    expect(hyph({ text_align: "justify", hyphens: "none" }, {})).toBe("none");
+    expect(hyph({}, { hyphens: "auto" })).toBe("auto");
+  });
+
+  it("always hands the browser manual hyphenation: Codraft places the soft hyphens", () => {
+    expect(themeVars({ ...themes.classic, hyphens: "auto" } as Theme)).toHaveProperty("--cd-hyphens", "manual");
+    expect(themeVars({ ...themes.classic, hyphens: "none" } as Theme)).toHaveProperty("--cd-hyphens", "none");
+  });
+});

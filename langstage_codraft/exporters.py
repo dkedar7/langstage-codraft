@@ -33,11 +33,16 @@ EMU_PER_PX = 9525  # 914400 EMU/inch at 96 px/inch
 
 
 # ------------------------------------------------------------------ inline markdown
-_INLINE = re.compile(r"(\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|`[^`]+`|\[[^\]]+\]\([^)]+\)|~~[^~]+~~)")
+_INLINE = re.compile(
+    r"(\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*|_[^_]+_|`[^`]+`|\[[^\]]+\]\([^)]+\)|~~[^~]+~~"
+    # Superscript and subscript, as the editor reads them: x^2^, H~2~O (attached to the text
+    # before them, no spaces inside) and the <sup> / <sub> tags.
+    r"|(?<=\S)\^[^\s^\[\]]{1,40}\^|(?<=[^\s~])~[^\s~]{1,40}~(?!~)|<su[pb]>[^<]*</su[pb]>)")
 
 
 def md_runs(text: str) -> list[tuple[str, dict]]:
-    """Split one line of Markdown into (text, style) runs: bold, italic, code, link, strike."""
+    """Split one line of Markdown into (text, style) runs: bold, italic, code, link, strike,
+    superscript and subscript."""
     runs: list[tuple[str, dict]] = []
     for part in _INLINE.split(text):
         if not part:
@@ -46,6 +51,12 @@ def md_runs(text: str) -> list[tuple[str, dict]]:
             runs.append((part[2:-2], {"bold": True}))
         elif part.startswith("~~"):
             runs.append((part[2:-2], {"strike": True}))
+        elif part.startswith(("<sup>", "<sub>")):
+            runs.append((part[5:-6], {"sup" if part[3] == "p" else "sub": True}))
+        elif part[0] == "^" and part[-1] == "^" and len(part) > 2:
+            runs.append((part[1:-1], {"sup": True}))
+        elif part[0] == "~" and part[-1] == "~" and len(part) > 2:
+            runs.append((part[1:-1], {"sub": True}))
         elif part.startswith("`"):
             runs.append((part[1:-1], {"code": True}))
         elif part.startswith("["):
@@ -58,18 +69,56 @@ def md_runs(text: str) -> list[tuple[str, dict]]:
     return runs
 
 
+_TABLE_RULE = re.compile(r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$")
+
+
+def _table_cells(line: str) -> list[str]:
+    s = line.strip()
+    s = s[1:] if s.startswith("|") else s
+    s = s[:-1] if s.endswith("|") and not s.endswith("\\|") else s
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", s)]
+
+
+def md_table(text: str) -> tuple[list[list[str]], list[str | None]]:
+    """A Markdown table (the text of a ``table`` item from :func:`md_blocks`) as rows, header
+    first, and each column's alignment: left, center, right or None."""
+    lines = text.splitlines()
+    align: list[str | None] = []
+    for c in _table_cells(lines[1]):
+        left, right = c.startswith(":"), c.endswith(":")
+        align.append("center" if left and right else "right" if right else "left" if left else None)
+    width = len(align)
+    rows = [(_table_cells(ln) + [""] * width)[:width] for ln in [lines[0], *lines[2:]]]
+    return rows, align
+
+
 def md_blocks(md: str) -> list[tuple[str, str]]:
-    """Coarse Markdown block parse -> [(kind, text)], kind in p, h1-h3, ul, ol, quote, code, hr."""
+    """Coarse Markdown block parse -> [(kind, text)], kind in p, h1-h3, ul, ol, quote, code,
+    hr, table (its lines, for :func:`md_table`)."""
     out: list[tuple[str, str]] = []
     para: list[str] = []
     code: list[str] | None = None
+    table: list[str] | None = None
 
     def flush():
         if para:
             out.append(("p", " ".join(s.strip() for s in para)))
             para.clear()
 
-    for line in (md or "").splitlines():
+    lines = (md or "").splitlines()
+    for i, line in enumerate(lines):
+        if table is not None:
+            if line.strip() and "|" in line:
+                table.append(line)
+                continue
+            out.append(("table", "\n".join(table)))
+            table = None
+        if (code is None and "|" in line and i + 1 < len(lines) and "-" in lines[i + 1]
+                and _TABLE_RULE.match(lines[i + 1])
+                and len(_table_cells(line)) == len(_table_cells(lines[i + 1]))):
+            flush()
+            table = [line]
+            continue
         if code is not None:
             if line.strip().startswith("```"):
                 out.append(("code", "\n".join(code)))
@@ -102,6 +151,8 @@ def md_blocks(md: str) -> list[tuple[str, str]]:
         else:
             para.append(s)
     flush()
+    if table is not None:
+        out.append(("table", "\n".join(table)))
     if code is not None:
         out.append(("code", "\n".join(code)))
     return out
@@ -115,7 +166,7 @@ def plain(md: str) -> str:
 def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: list[dict]) -> bytes:
     import docx
     from docx.enum.section import WD_ORIENT
-    from docx.enum.text import WD_BREAK
+    from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
     from docx.oxml.ns import qn
     from docx.shared import Mm, Pt, RGBColor
 
@@ -151,15 +202,40 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
             r.italic = st.get("italic") or None
             if st.get("strike"):
                 r.font.strike = True
+            if st.get("sup"):
+                r.font.superscript = True
+            if st.get("sub"):
+                r.font.subscript = True
             if st.get("code"):
                 r.font.name = "Consolas"
             if st.get("link"):
                 r.font.color.rgb = _rgb(theme.get("color_accent")) or RGBColor(0x1A, 0x4D, 0x8F)
                 r.underline = True
 
+    def add_table(rows: list, align: list | None = None, header: bool = True):
+        """A Word table: bold header row, each column aligned as the document has it."""
+        n = max((len(r) for r in rows), default=0)
+        if not n:
+            return
+        sides = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER,
+                 "right": WD_ALIGN_PARAGRAPH.RIGHT}
+        tbl = d.add_table(rows=len(rows), cols=n)
+        tbl.style = "Table Grid"
+        for i, r in enumerate(rows):
+            for j in range(n):
+                cell = tbl.cell(i, j)
+                cell.text = ""
+                par = cell.paragraphs[0]
+                add_runs(par, str(r[j]) if j < len(r) else "", {"bold": i == 0 and header})
+                side = align[j] if isinstance(align, list) and j < len(align) else None
+                if side in sides:
+                    par.alignment = sides[side]
+
     def add_markdown(md: str, style_quote=False):
         for kind, text in md_blocks(md):
-            if kind.startswith("h"):
+            if kind == "table":
+                add_table(*md_table(text))
+            elif kind.startswith("h"):
                 d.add_heading(text, level=min(3, int(kind[1]) + 1))
             elif kind == "ul":
                 add_runs(d.add_paragraph(style="List Bullet"), text)
@@ -199,17 +275,7 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
         elif t == "callout":
             add_markdown(c.get("markdown", ""), style_quote=True)
         elif t == "table":
-            rows = c.get("rows") or []
-            if rows:
-                n = max(len(r) for r in rows)
-                tbl = d.add_table(rows=len(rows), cols=n)
-                tbl.style = "Table Grid"
-                for i, r in enumerate(rows):
-                    for j in range(n):
-                        cell = tbl.cell(i, j)
-                        cell.text = ""
-                        add_runs(cell.paragraphs[0], str(r[j]) if j < len(r) else "",
-                                 {"bold": i == 0 and c.get("header", True)})
+            add_table(c.get("rows") or [], c.get("align"), bool(c.get("header", True)))
             if c.get("caption"):
                 d.add_paragraph(c["caption"]).style = d.styles["Caption"]
         elif t in ("image", "chart", "video"):
@@ -395,8 +461,14 @@ def to_pptx(store: Store, doc_id: str, structure: dict) -> bytes:
                     lvl = int(b["content"].get("level", 1))
                     items = [("h", b["content"].get("text", ""), body_pt * scale ** (4 - lvl))]
                 else:
+                    parts = []
+                    for k, t in md_blocks(b["content"].get("markdown", "")):
+                        if k == "table":  # a text box has no grid: one line per row
+                            parts.extend(("p", "  |  ".join(r)) for r in md_table(t)[0])
+                        else:
+                            parts.append((k, t))
                     items = [(k, t, body_pt * (scale ** (4 - int(k[1])) if k in ("h1", "h2", "h3") else 1.0))
-                             for k, t in md_blocks(b["content"].get("markdown", ""))]
+                             for k, t in parts]
                 for kind, text, size in items:
                     para = tf.paragraphs[0] if first else tf.add_paragraph()
                     first = False
@@ -405,6 +477,8 @@ def to_pptx(store: Store, doc_id: str, structure: dict) -> bytes:
                         r = para.add_run()
                         r.text = t
                         r.font.size = Pt(size)
+                        if st.get("sup") or st.get("sub"):  # DrawingML: baseline shift in 1/1000 %
+                            r.font._element.set("baseline", "30000" if st.get("sup") else "-25000")
                         r.font.bold = True if (st.get("bold") or kind.startswith("h")) else None
                         r.font.italic = st.get("italic") or None
                     para.space_after = Pt(size * 0.5)

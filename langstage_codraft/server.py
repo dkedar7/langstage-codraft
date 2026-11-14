@@ -34,7 +34,16 @@ from .render import (
     set_renderer,
     zip_images,
 )
-from .store import DEFAULT_SETTINGS, Invalid, NotFound, Store, get_store, set_store
+from .store import (
+    BLOCK_VARIANTS,
+    DEFAULT_SETTINGS,
+    VARIANT_NOTES,
+    Invalid,
+    NotFound,
+    Store,
+    get_store,
+    set_store,
+)
 from .store import _merge as _store_merge
 from .textutil import extract_text
 
@@ -305,6 +314,9 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             "chat_available": st.graph is not None,
             "ui_theme": getattr(cfg, "theme", "auto"),
             "mcp_url": "/mcp" if st.mcp is not None else None,
+            # Typographic styles per block type, each with a line on what it looks like.
+            "block_variants": {t: {v: VARIANT_NOTES.get(v, "") for v in names}
+                               for t, names in BLOCK_VARIANTS.items()},
         }
 
     # ------------------------------------------------------------- documents
@@ -499,6 +511,22 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
 
+    @app.get("/api/docs/{doc_id}/deleted-blocks")
+    def deleted_blocks(doc_id: str) -> list:
+        """Blocks deleted from this document, newest first: each can be restored."""
+        try:
+            return store.deleted_blocks(doc_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.post("/api/blocks/{block_id}/restore")
+    def restore_block(block_id: str) -> dict:
+        """Undo a delete: the block returns where it was, with its history."""
+        try:
+            return store.restore_block(block_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
     @app.post("/api/blocks/{block_id}/move")
     def move_block(block_id: str, body: dict = Body(...)) -> dict:
         try:
@@ -631,14 +659,21 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         overrides and cover style; ``{label, values}`` saves explicit theme values."""
         try:
             values = dict(body.get("values") or {})
+            explicit: list[str] = []
             if body.get("doc_id"):
                 s = store.get_document(body["doc_id"])["settings"]
-                values = {k: v for k, v in themes.effective_theme(s).items() if k in themes.THEME_KEYS}
+                look = themes.effective_theme(s)
+                values = {k: v for k, v in look.items() if k in themes.THEME_KEYS}
+                # What the author chose in this document (or in the saved theme it uses) stays
+                # a choice in the new theme, so heading variants keep yielding to it.
+                explicit = [*(look.get("explicit") or []),
+                            *(k for k, v in (s.get("style") or {}).items() if v not in (None, ""))]
                 cover = s.get("cover") or {}
                 for k in ("background", "text", "image", "align"):
                     if cover.get(k):
                         values[f"cover_{k}"] = cover[k]
-            name = store.save_theme(body.get("label", ""), values, author=current_user(request))
+            name = store.save_theme(body.get("label", ""), values, author=current_user(request),
+                                    explicit=explicit)
             return {"name": name, "themes": themes.all_themes()}
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc

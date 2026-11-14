@@ -26,6 +26,8 @@ function BlockInspector({ block }: { block: Block }) {
   const patchContent = (content: any, note = "edited") => ed.run(api.patchBlock(block.id, { content, note }));
   const L = block.layout;
   const onOwnPage = L.role !== "flow"; // cover or back page: pins place it on that page
+  const variantNotes = ed.cfg.block_variants?.[block.type] || {};
+  const variants = ed.cfg.block_variants ? Object.keys(variantNotes) : VARIANTS[block.type] || [];
 
   return (
     <div className="overflow-auto scroll-thin h-full">
@@ -44,7 +46,7 @@ function BlockInspector({ block }: { block: Block }) {
           <button className="btn" disabled={!ed.cfg.chat_available || ed.agentRunning}
             onClick={() => ed.ask(`Look at block ${block.id} and suggest how to improve it.`)}><Bot size={14} /> Ask {agentName(ed.cfg.ui, false)}</button>
           <button className="btn btn-icon btn-danger ml-auto" title="Delete block" data-testid="delete-block"
-            onClick={() => { ed.select(null); ed.run(api.deleteBlock(block.id)); }}><Trash2 size={14} /></button>
+            onClick={() => ed.removeBlock(block.id)}><Trash2 size={14} /></button>
         </div>
       </div>
 
@@ -72,14 +74,18 @@ function BlockInspector({ block }: { block: Block }) {
             </select>
           </>
         )}
-        {(VARIANTS[block.type] || []).length > 0 && (
+        {variants.length > 0 && (
           <>
             <span className="label">Style</span>
             <select className="select" value={L.variant || ""} data-testid="variant-select"
               onChange={(e) => patchLayout({ variant: e.target.value || null })}>
               <option value="">Default</option>
-              {VARIANTS[block.type].map((v) => <option key={v} value={v}>{v}</option>)}
+              {variants.map((v) => <option key={v} value={v}>{v}</option>)}
             </select>
+            {L.variant && variantNotes[L.variant] && (
+              <div className="text-[11.5px] text-[var(--color-text-muted)] mt-1" data-testid="variant-note">
+                {variantNotes[L.variant][0].toUpperCase() + variantNotes[L.variant].slice(1)}.</div>
+            )}
           </>
         )}
         {block.type === "text" && (

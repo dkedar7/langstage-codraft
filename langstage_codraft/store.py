@@ -105,6 +105,32 @@ BLOCK_VARIANTS: dict[str, tuple[str, ...]] = {
     "references": ("hanging",),
 }
 
+# What each variant looks like, for the Block panel and for an agent choosing one. The heading
+# variants differ in whether they follow the document's heading settings, which is the thing
+# an agent most needs to know before it says a heading's look has changed.
+VARIANT_NOTES: dict[str, str] = {
+    "lead": "an opening paragraph, set a little larger",
+    "pullquote": "a pulled quote: Titles font, capitals, right-aligned",
+    "kicker": "a large line in the Titles font, above or below a title",
+    "byline": "author and date: small spaced capitals in the Titles font",
+    "small": "fine print in the Labels font",
+    "caption": "a bold caption line in the Labels font",
+    "footer": "a closing line: tiny spaced capitals",
+    "bio": "an italic author note",
+    "display": "a title at a fixed large size in the Titles font (font_display, display_weight); "
+               "it ignores heading_case, heading_weight and heading_scale",
+    "section": "a compact section heading: by default small, bold capitals in the Labels font. "
+               "A heading_case, heading_weight, heading_scale or font_heading the document sets "
+               "itself replaces that default",
+    "rule": "like section, with a rule above it; it follows the document's own heading "
+            "settings in the same way",
+    "label": "a small spaced-capitals label in the Labels font (font_label); it ignores "
+             "heading_case, heading_scale and font_heading",
+    "figure-box": "a tinted box around the figure, table or callout",
+    "dark": "a dark, centred callout",
+    "hanging": "an unnumbered list with hanging indents",
+}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS documents (
   id TEXT PRIMARY KEY, title TEXT NOT NULL, settings TEXT NOT NULL,
@@ -400,7 +426,8 @@ class Store:
         if "meta" not in cols:  # 0.5: rendered pages and the extracted style of an upload
             self._db.execute("ALTER TABLE uploads ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
         cols = {r["name"] for r in self._db.execute("PRAGMA table_info(blocks)").fetchall()}
-        if "deleted_at" not in cols:  # when a block was deleted, for the agent's "what changed" note
+        if "deleted_at" not in cols:  # when a block was deleted: to list and restore it, and for the
+            # agent's "what changed" note
             self._db.execute("ALTER TABLE blocks ADD COLUMN deleted_at REAL")
         # Before 0.5.16, deleting a block left its pending suggestions pending forever (gh #39).
         self._db.execute(
@@ -832,7 +859,11 @@ class Store:
                 "SELECT id FROM blocks WHERE doc_id = ? AND deleted = 0 ORDER BY ord", (b["doc_id"],))]
             prev = ids[ids.index(block_id) - 1] if ids.index(block_id) > 0 else None
             now = time.time()
-            self._db.execute("UPDATE blocks SET deleted = 1, deleted_at = ? WHERE id = ?", (now, block_id))
+            # "Recently deleted" lists newest first: two deletes in the same clock tick (a
+            # coarse timer, or Accept all) still get distinct, increasing times.
+            last = self._one("SELECT MAX(deleted_at) AS m FROM blocks WHERE doc_id = ?", (b["doc_id"],))["m"]
+            when = max(now, (last or 0) + 1e-3)
+            self._db.execute("UPDATE blocks SET deleted = 1, deleted_at = ? WHERE id = ?", (when, block_id))
             for r in self._q("SELECT id, block_id, kind, payload FROM suggestions"
                              " WHERE doc_id = ? AND status = 'pending' AND id IS NOT ?", (b["doc_id"], keep)):
                 p = json.loads(r["payload"])
@@ -845,6 +876,45 @@ class Store:
                                      (json.dumps({**p, "after": prev}), r["id"]))
             self._bump(b["doc_id"])
             self._db.commit()
+
+    def deleted_blocks(self, doc_id: str, *, limit: int = 50) -> list[dict]:
+        """A document's deleted blocks, most recently deleted first. A deleted block keeps its
+        content, layout and version history, so it can come back with :meth:`restore_block`."""
+        with self._lock:
+            self.get_document(doc_id)
+            rows = self._q(
+                "SELECT * FROM blocks WHERE doc_id = ? AND deleted = 1"
+                " ORDER BY COALESCE(deleted_at, created_at) DESC, ord LIMIT ?", (doc_id, max(1, limit)))
+            out = []
+            for r in rows:
+                b = self._block_dict(r)
+                out.append({"id": b["id"], "type": b["type"], "deleted_at": r["deleted_at"],
+                            "preview": " ".join(plain_text(b["type"], b["content"]).split())[:160],
+                            "n_versions": b["n_versions"], "author": b["author"]})
+            return out
+
+    def restore_block(self, block_id: str) -> dict:
+        """Bring a deleted block back where it was, with its content, layout and history.
+        Suggestions that became obsolete when it was deleted stay obsolete."""
+        with self._lock:
+            r = self._one("SELECT * FROM blocks WHERE id = ?", (block_id,))
+            if r is None:
+                raise NotFound(f"block {block_id} not found")
+            if r["deleted"] != 1:
+                raise Invalid(f"block {block_id} is not deleted")
+            doc = self.get_document(r["doc_id"])  # NotFound if the document itself is gone
+            # The page layout may have changed since (fewer columns): keep the layout if it is
+            # still valid, else restore the block unpinned so it is at least on the page.
+            layout = json.loads(r["layout"])
+            try:
+                layout = validate_layout(layout, doc["settings"]["columns"])
+            except Invalid:
+                layout = validate_layout({**layout, "pin": None, "repeat": None}, doc["settings"]["columns"])
+            self._db.execute("UPDATE blocks SET deleted = 0, deleted_at = NULL, layout = ? WHERE id = ?",
+                             (json.dumps(layout), block_id))
+            self._bump(r["doc_id"])
+            self._db.commit()
+            return self.get_block(block_id)
 
     def duplicate_block(self, block_id: str, *, author: str = "user") -> dict:
         with self._lock:
@@ -1662,8 +1732,11 @@ class Store:
             self._db.commit()
 
     # ----------------------------------------------------------------- themes
-    def save_theme(self, label: str, values: dict, *, author: str = "") -> str:
-        """Save a document's look as a named theme (validated values; see themes.THEME_KEYS)."""
+    def save_theme(self, label: str, values: dict, *, author: str = "",
+                   explicit: list[str] | None = None) -> str:
+        """Save a document's look as a named theme (validated values; see themes.THEME_KEYS).
+        ``explicit`` names the style keys the author chose in the document the look came from:
+        the section and rule heading variants yield to those, so the look survives the save."""
         from . import themes
 
         label = (label or "").strip()[:60]
@@ -1679,8 +1752,10 @@ class Store:
             name, n = base, 2
             while name in taken:
                 name, n = f"{base}-{n}", n + 1
+            chosen = sorted({k for k in explicit or [] if k in clean})
+            data = {**clean, "label": label, **({"explicit": chosen} if chosen else {})}
             self._db.execute("INSERT INTO themes (name, data, author, created_at) VALUES (?,?,?,?)",
-                             (name, json.dumps({**clean, "label": label}), author, time.time()))
+                             (name, json.dumps(data), author, time.time()))
             self._db.commit()
             return name
 

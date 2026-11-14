@@ -20,7 +20,11 @@ export interface EditorApi {
   ask: (message: string) => void;
   /** Run a mutation, then refresh the document; errors become a toast. */
   run: <T>(p: Promise<T>, okMsg?: string) => Promise<T | undefined>;
-  toast: (msg: string, kind?: "info" | "error") => void;
+  toast: (msg: string, kind?: "info" | "error", action?: { label: string; run: () => void }) => void;
+  /** Delete a block and offer to undo it. */
+  removeBlock: (id: string) => Promise<void>;
+  /** Bring a deleted block back where it was. */
+  restoreBlock: (id: string) => Promise<void>;
   agentRunning: boolean;
   setAgentRunning: (b: boolean) => void;
   zoom: number;

@@ -67,9 +67,12 @@ def reasoning_kwargs(spec: str, reasoning: str = "auto", max_tokens: int = DEFAU
         # OpenRouter's unified switch; it is ignored for models that can't reason.
         return {"extra_body": {"reasoning": {"effort": effort}}}
     if provider == "openai" and re.match(r"(gpt-5|o\d)", name):
-        # Chat Completions. GPT-5.4 and later refuse it together with tools there; the
-        # fallback below then drops it for the session (see ReasoningFallback).
-        return {"reasoning_effort": effort}
+        # The Responses API: GPT-5.4 and later only reason together with tools there (Chat
+        # Completions refuses `reasoning_effort` with function tools). It needs
+        # langstage-core 1.0.64, which no longer repeats the final reply on this API. If an
+        # account or a gateway refuses the Responses API, the fallback below carries on
+        # over plain Chat Completions without reasoning (see ReasoningFallback).
+        return {"use_responses_api": True, "reasoning": {"effort": effort}}
     if provider == "anthropic":
         budget = {"low": 2048, "medium": 6000, "high": 16000}[effort]
         if max_tokens and max_tokens < budget + 1024:
@@ -142,14 +145,20 @@ def make_model(spec: str, *, max_tokens: int | None = DEFAULT_MAX_OUTPUT_TOKENS,
 
 _REJECTS = re.compile(
     r"reasoning|thinking|effort|budget_tokens|unsupported param|unknown param|unrecognized (request )?arg"
-    r"|extra_forbidden|extra inputs|not supported|does not support|unexpected keyword", re.I)
+    r"|extra_forbidden|extra inputs|not supported|does not support|unexpected keyword"
+    r"|/responses\b|responses api", re.I)
 
 
 def rejects_reasoning(exc: BaseException) -> bool:
     """A provider's "bad request" that names the reasoning setting (or an unsupported
-    parameter), as opposed to any other failure."""
+    parameter, or the Responses API), as opposed to any other failure. A gateway that has no
+    Responses API at all answers 404 or 405 for it, often with nothing but "Not Found"; that
+    counts too, since the plain model then says what is really wrong if it is something else
+    (an unknown model fails the same way on it)."""
     code = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
-    if code not in (400, 404, 422) and not isinstance(exc, (TypeError, ValueError)):
+    if code in (404, 405):
+        return True
+    if code not in (400, 422) and not isinstance(exc, (TypeError, ValueError)):
         return False
     return bool(_REJECTS.search(str(exc)))
 

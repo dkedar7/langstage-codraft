@@ -17,7 +17,11 @@ def extract_text(filename: str, data: bytes) -> str:
             from pypdf import PdfReader
 
             reader = PdfReader(io.BytesIO(data))
-            return "\n\n".join((p.extract_text() or "") for p in reader.pages).strip()
+            if _printed_by_a_browser(reader):
+                text = _pdfium_text(data)
+                if text is not None:
+                    return text
+            return "\n\n".join((p.extract_text() or "") for p in reader.pages).replace(_SHY, "").strip()
         if ext == ".docx":
             import docx
 
@@ -41,6 +45,50 @@ def extract_text(filename: str, data: bytes) -> str:
     except Exception as exc:  # noqa: BLE001 - a bad upload must not break the request
         return f"[could not extract text: {type(exc).__name__}: {exc}]"
     return ""
+
+
+_SHY = "\u00ad"
+# What PDFium puts where a word was broken at a soft hyphen at the end of a line.
+_HYPHEN_BREAK = re.compile("[\ufffe\u0002]\\s*")
+
+
+def _printed_by_a_browser(reader) -> bool:  # noqa: ANN001
+    """A PDF printed by Chromium (every Codraft export, and "Save as PDF" in a browser). It
+    tags each possible break point of a hyphenated word as a soft hyphen (ActualText). pypdf
+    ignores the tag and reads a space there ("ap pears"); PDFium reads whole words."""
+    try:
+        meta = reader.metadata or {}
+        made_by = f"{meta.get('/Producer') or ''} {meta.get('/Creator') or ''}".lower()
+    except Exception:  # noqa: BLE001 - damaged metadata: read it the usual way
+        return False
+    return "skia" in made_by or "chrom" in made_by
+
+
+def _pdfium_text(data: bytes) -> str | None:
+    """Text of a PDF as PDFium reads it, with words that were broken at a soft hyphen put
+    back together. None when PDFium can't be used, so the caller falls back to pypdf."""
+    try:
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(data)
+        try:
+            pages = []
+            for page in pdf:
+                tp = page.get_textpage()
+                try:
+                    pages.append(tp.get_text_range())
+                finally:
+                    tp.close()
+                    page.close()
+        finally:
+            pdf.close()
+    except Exception:  # noqa: BLE001
+        return None
+    out = []
+    for t in pages:
+        t = _HYPHEN_BREAK.sub("", t.replace("\r\n", "\n").replace("\r", "\n")).replace(_SHY, "")
+        out.append(t.strip())
+    return "\n\n".join(out).strip()
 
 
 def chunks(text: str, size: int = 1200, overlap: int = 150) -> list[tuple[int, str]]:

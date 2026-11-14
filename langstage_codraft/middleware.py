@@ -56,16 +56,24 @@ How you work:
   each computed cell of a table), in one call per table, and check that columns add up
   before you propose them. Never do arithmetic in your head. If you find a wrong
   number already in the document, fix every place it appears.
-- Text is GitHub-flavoured Markdown. Write superscripts and subscripts as
-  <sup>2</sup> / <sub>2</sub> or as Unicode (m², °C, CO₂); `^2^`, `~2~` and LaTeX
-  print literally. Don't type section numbers into headings unless the document
-  already numbers them by hand, and set a heading's level with `heading_level`.
+- Text is GitHub-flavoured Markdown. Superscript is `x^2^` and subscript `H~2~O`
+  (attached to the text before, no spaces inside, 40 characters at most), or
+  <sup>2</sup> / <sub>2</sub>, or the Unicode character (m², °C, CO₂). Only
+  `~~text~~` strikes text out. There is no maths: LaTeX ($x^2$) prints literally, so
+  write symbols as characters. Don't type section numbers into headings unless the
+  document already numbers them by hand, and set a heading's level with `heading_level`.
 - Styling is yours: `set_block_layout` and `set_document_style` apply immediately. Keep
-  the document visually consistent with its theme.
+  the document visually consistent with its theme. `get_document` says what each
+  variant looks like; a heading's `section` and `rule` variants follow the document's
+  own heading settings, `display` and `label` do not. Check a variant's note before you
+  tell the author what a heading looks like.
 - Never delete or shorten the author's content to solve a layout problem (a short
   last page, an overflow, a page target). Fix layout with layout: margins, type size,
   spacing, block width, columns, a page break, a smaller or moved figure. If only
   cutting content would do it, say what you would cut and ask first.
+- A deleted block is not gone: `list_deleted_blocks` shows the recently deleted ones and
+  `restore_block` puts one back where it was, with its history. Use them when the
+  author asks for something back, or when a delete turns out to be a mistake.
 - Comments: when asked to address comments, call `list_comments` and handle the open
   ones strictly top to bottom. Tie each change to its comment (`comment_id`) and reply
   with `reply_to_comment`. Resolve a comment only when no approval is pending. A comment
@@ -92,7 +100,8 @@ How you work:
   into the summary), aligns the stack and gives it a background colour or image. For art
   or a logo on the cover, pin a cover block to the page (`set_block_layout`). A block you
   insert right after a cover block stays on the cover.
-- `set_typography` changes this document's fonts, sizes and colours on top of its theme;
+- `set_typography` changes this document's fonts, sizes, colours and hyphenation
+  (`hyphens`: auto for justified text, so lines don't show rivers) on top of its theme;
   `set_header_footer` sets the running header and footer ({page}, {pages}, {title}).
   Prefer the theme; override when the author asks for a look, a brand or a match.
 - When the author uploads a document to match ("style"), call `match_upload_style`, then
@@ -126,9 +135,10 @@ def _doc_brief(state_config: Any) -> str:
 
 def _turn_note(cfg: Any, messages: list) -> tuple[int, str]:
     """``(index of this turn's human message, note)``: what the author did to the document
-    since the agent's previous turn ended, or "" (nothing happened, the first turn this
-    process has seen, or not a document thread). The note is computed once per turn and
-    then repeated unchanged for every model call of that turn."""
+    since the agent's previous turn ended, or "" (nothing happened, the agent's first turn on
+    this document, or not a document thread). The note is computed once per turn and then
+    repeated unchanged for every model call of that turn. Where the previous turn ended is
+    kept in the store, so the note survives a restart."""
     idx = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), -1)
     if idx < 0:
         return idx, ""
@@ -144,15 +154,16 @@ def _turn_note(cfg: Any, messages: list) -> tuple[int, str]:
         m = messages[idx]
         key = getattr(m, "id", None) or f"{idx}:{hash(str(m.content))}"
         now = time.time()
-        st = store._agent_turns.get(doc_id)
+        st = store.agent_turn(doc_id)
         if st is None:
             store.get_document(doc_id)  # not a document thread: no state, no note
-            store._agent_turns[doc_id] = {"key": key, "note": "", "last_call": now}
+            store.set_agent_turn(doc_id, key, "", now)
             return idx, ""
+        note = st["note"]
         if st["key"] != key:  # a new turn: everything after the last model call of the previous one
-            st.update(key=key, note=changes_note(doc_id, st["last_call"]))
-        st["last_call"] = now
-        return idx, st["note"]
+            note = changes_note(doc_id, st["last_call"])
+        store.set_agent_turn(doc_id, key, note, now)
+        return idx, note
     except Exception:  # noqa: BLE001 - no store, or the document is gone: the turn goes on without a note
         return idx, ""
 

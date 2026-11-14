@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.7.0 — 2026-11-14
+
+From a real-model evaluation of 0.5.17: a strong model wrote four multi-page documents through
+the editor, and this release fixes what went wrong.
+
+**The co-author sees what it has proposed, and its batches keep their order.**
+
+- **Fixed: a batch of new blocks landed in reverse order once accepted.** Blocks from one
+  `insert_blocks` call now stay in the order written however you accept them, and the editor
+  shows them in that order while they wait. **Accept all** applies suggestions in dependency
+  order (chained moves included) and lists anything it could not apply with the reason, in the
+  toast and in `failed` of `POST /api/docs/{id}/suggestions/accept-all`.
+- **The agent sees its pending suggestions.** `get_document` lists them where they will land,
+  marked PENDING; `read_blocks` shows the accepted text next to the pending edit; `view_pages`
+  renders a preview with them applied through the same print route (`/print/<id>?preview=pending`,
+  `GET /api/docs/<id>?preview=pending`). A pending insert goes by its suggestion id (`sug_…`)
+  and can be revised (`propose_edit`), restyled (`set_block_layout`), redrawn (`draw_figure`),
+  withdrawn (`propose_delete`) or followed (`after_block_id`). A suggestion that changes
+  nothing, or repeats one still waiting, is not recorded.
+- **Model defaults.** The built-in agent caps each call's output (`[codraft] max_output_tokens`,
+  default 16000, `LANGSTAGE_CODRAFT_MAX_OUTPUT_TOKENS`), so a gateway no longer reserves the
+  model's whole output window and fails a low-credit key with 402. Reasoning is on at low
+  effort where the model has a switch (`[codraft] reasoning = auto | off | low | medium | high`,
+  `LANGSTAGE_CODRAFT_REASONING`); if the provider refuses it, the agent carries on without it
+  and logs why.
+- **GPT-5 and o-series models reason with tools:** the built-in agent uses the Responses API
+  for them (needs langstage-core 1.0.64). If an account or a gateway has no Responses API, the
+  agent carries on over Chat Completions without reasoning.
+- **New tool: `calculate`.** Arithmetic for totals, percentages and table cells, so figures are
+  computed, not guessed.
+- **Each turn starts with what you changed.** The agent is told which suggestions you accepted
+  or rejected (with your reason) and which blocks you edited, added or deleted since its last
+  turn. Where its last turn ended is saved, so the note survives a restart. A wrong id now gets
+  an error that says what was passed and which id to use. `CodraftMiddleware(turn_notes=False)`
+  turns the note off.
+- **Research tools.** `fetch_url` returns a PDF's text, decodes HTML entities and pages long
+  documents with `offset`; a failed `web_search` says what to do instead of retrying.
+- **Co-author guidance.** It no longer cuts your content to fix a layout, drafts one block per
+  paragraph, keeps revision talk out of the document, and applies a "throughout" comment to
+  every matching block. `view_pages` says which pages it left out (`from_page` shows the rest);
+  `propose_edit` takes `heading_level`.
+
+**What the page looks like.**
+
+- **Captions wrap.** A figure's caption, its label and title, and its source line were cut off
+  after one line. They take the lines they need and the paginator measures them. A figure with
+  a fixed height keeps it: the picture or chart gives up the room.
+- **Tables keep words whole.** Columns could shrink to one letter, so words broke mid-word
+  ("Buildin g"). A column is now at least as wide as its longest word. A table too wide for
+  its column breaks long words at syllables, then is set smaller, then breaks anywhere. A
+  Markdown table in a text block looks like a table block and keeps its alignment row; a table
+  block takes `"align": [...]`. Word export writes Markdown tables as real tables.
+- **Section headings follow the document.** The `section` and `rule` heading styles forced
+  capitals, body size and the label font whatever the document said. A heading case, weight,
+  scale or font the document sets itself now wins. `display` and `label` are unchanged. Each
+  style has a note on what it does (Block panel, `block_variants` in `/api/config`,
+  `store.VARIANT_NOTES`), and the agent's outline (`get_document`) now carries those notes, so
+  it knows what a variant looks like before it says so. A saved theme remembers which heading
+  settings were chosen.
+- **Restore a deleted block.** Undo on the toast, or Document → Recently deleted: the block
+  returns where it was, with its history. `GET /api/docs/{id}/deleted-blocks`,
+  `POST /api/blocks/{id}/restore`, `Store.deleted_blocks`, `Store.restore_block`. The agent has
+  the same two actions as tools, `list_deleted_blocks` and `restore_block` (also over MCP).
+  A restore applies immediately in either approval mode: it puts your own block back as it
+  was and writes nothing new.
+- **Hyphenation that matches the export.** Justified text is hyphenated by default (Design →
+  Hyphenation; the agent sets it with `set_typography(hyphens="auto" | "manual")`). Codraft
+  places the break points itself, so the editor and the PDF break the same words; before,
+  `hyphens: auto` worked in desktop Chrome and not in exports. In a PDF the break points are
+  tagged soft hyphens; a text extractor that ignores the tag (pypdf) shows a space there.
+- **Superscript and subscript.** `x^2^` and `H~2~O`, as well as `<sup>`/`<sub>`; kept by the
+  rich-text editor and exported to Word and PowerPoint. Only `~~two tildes~~` strike text out.
+  The agent is told the same dialect (0.6 told it `^2^` prints literally).
+- **A block with a table, picture or raw HTML opens as Markdown.** The rich-text editor used
+  to drop those when the block was closed.
+- **Readable chat.** A long run of tool calls folds into one line, and each call names its
+  block by its words, not its id.
+
+**Fixed.**
+
+- **A Codraft PDF uploaded as reference material read as broken words** ("or gan i sa tions").
+  A PDF printed by Chromium (every Codraft export, and a browser's "Save as PDF") is now read
+  with PDFium, which honours the soft-hyphen tags; words broken at a line end are put back
+  together. Other PDFs are read with pypdf as before.
+- **Uploads were lost when the data directory was opened from another directory.** An upload's
+  path was saved relative to the directory the server was started in, so `export --data-dir`
+  from elsewhere, or a server started from a different directory, could not find pictures and
+  reference files. Paths are now absolute, and a saved path that no longer points at a file
+  (an older relative one, or a data directory that was moved) is looked up in the data
+  directory's own `uploads/` folder. Existing data directories need no migration.
+
+`CODRAFT_TOOLS` now has 27 tools: `calculate`, `list_deleted_blocks` and `restore_block` are
+new since 0.6.0. **Requires `langstage-core>=1.0.64`** (was `>=1.0.63`).
+
 ## 0.6.0 — 2026-11-13
 
 - **Import an existing document (gh #45).** A Markdown (`.md`) or Word (`.docx`) file becomes a

@@ -36,7 +36,9 @@ MCP_INSTRUCTIONS = (
 )
 
 # Tools whose LangChain signature we expose 1:1, plus a leading doc_id.
-_SKIP = {"view_pages", "view_sketch", "view_upload"}
+# The three view tools are re-registered below (they return images). calculate is for the
+# built-in co-author's own arithmetic: it takes no document, and an MCP client has its own.
+_SKIP = {"view_pages", "view_sketch", "view_upload", "calculate"}
 
 
 def _cfg(doc_id: str) -> dict:
@@ -89,10 +91,13 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
         _register(server, lc_tool)
 
     @server.tool(description=(
-        "See the document as the author sees it: screenshots of rendered pages "
-        "(default first 4; pass page numbers)."))
-    def view_pages(doc_id: str, pages: list[int] | None = None) -> list:
+        "See the document as the author sees it: screenshots of rendered pages. At most 4 per call "
+        "(default the first 4; pass page numbers or from_page; the result says which pages were not "
+        "shown). While suggestions are waiting for approval the render is a preview with them applied; "
+        "pending=false shows only the accepted document."))
+    def view_pages(doc_id: str, pages: list[int] | None = None, from_page: int = 1, pending: bool = True) -> list:
         from .render import ensure_renderer
+        from .tools import page_shots
 
         try:
             get_store().get_document(doc_id)  # an unknown id reads like the other tools' errors
@@ -101,13 +106,12 @@ def build_mcp_server(cfg: Any = None, house: dict | None = None) -> Any:
             if r is None:
                 return ["view_pages needs a running `langstage-codraft run` server (connect to its "
                         "/mcp endpoint), or `langstage-codraft mcp`, which renders in-process."]
-            shots = r.call(r.screenshot_pages(doc_id, pages=pages, max_pages=4))
+            text, shots = page_shots(r, doc_id, pages, from_page, pending)
         except Exception as exc:  # noqa: BLE001  e.g. BrowserMissing: say how to fix it (gh #17)
             return [_err(exc)]
         if not shots:
-            return ["The document has no pages yet."]
-        pages_seen = ", ".join(f"page {s['page']}" for s in shots)
-        out: list = [f"Rendered {pages_seen} of {shots[0]['total']}."]
+            return ["The document has no pages yet." if text.startswith("Nothing to show") else text]
+        out: list = [text]
         out += [Image(data=Path(s["path"]).read_bytes(), format="jpeg") for s in shots]
         return out
 

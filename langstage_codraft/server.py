@@ -368,8 +368,12 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         return {**store.full(doc["id"]), "import": imp.summary()}
 
     @app.get("/api/docs/{doc_id}")
-    def get_doc(doc_id: str) -> dict:
+    def get_doc(doc_id: str, preview: str = "") -> dict:
+        """``?preview=pending``: the document as it would be with its pending suggestions
+        accepted (read-only; what the agent's view_pages renders in approval mode)."""
         try:
+            if preview == "pending":
+                return store.preview_full(doc_id)
             return store.full(doc_id)
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
@@ -573,20 +577,20 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
     def bulk(doc_id: str, action: str) -> dict:
         if action not in ("accept-all", "reject-all"):
             raise HTTPException(404, "unknown action")
-        n, skipped, gone = 0, [], []
-        for s in store.list_suggestions(doc_id):
-            if action == "accept-all" and s.get("gone"):
-                gone.append(s["id"])  # its block was deleted: only Reject can clear it (gh #39)
-                continue
-            if action == "accept-all" and s["outdated"]:
-                skipped.append(s["id"])  # never apply a stale edit unseen (gh #37)
-                continue
+        if action == "accept-all":
+            # In a dependency-safe order; whatever stays behind is listed with its reason.
             try:
-                (store.accept_suggestion if action == "accept-all" else store.reject_suggestion)(s["id"])
+                return store.accept_all(doc_id)
+            except Exception as exc:  # noqa: BLE001
+                raise _json_error(exc) from exc
+        n = 0
+        for s in store.list_suggestions(doc_id):
+            try:
+                store.reject_suggestion(s["id"])
                 n += 1
             except (Invalid, NotFound):
-                continue  # closed by an earlier accept in this loop (e.g. its block was deleted)
-        return {"ok": True, "count": n, "skipped": skipped + gone, "skipped_gone": gone}
+                continue
+        return {"ok": True, "count": n, "skipped": [], "skipped_gone": [], "failed": []}
 
     # ---------------------------------------------------------------- uploads
     @app.post("/api/docs/{doc_id}/uploads")

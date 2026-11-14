@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import inspect
 import json
+import logging
 import os
 import re
 import uuid
 from typing import Any
 
+from langchain.agents.middleware import AgentMiddleware
 from langchain_core.runnables import RunnableConfig
 
 from .middleware import CodraftMiddleware
@@ -32,6 +34,14 @@ OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-haiku-5.5"
 DEFAULT_OPENAI_MODEL = "gpt-5-mini"
 DEFAULT_IMAGE_MODEL = "google/gemini-3.1-flash-image"
+# The most the default agent may write in one model call (reasoning included). Without a
+# cap some gateways reserve the model's whole output window up front (OpenRouter: 65,536
+# tokens for a Claude model), and a key with little credit fails before the first token.
+DEFAULT_MAX_OUTPUT_TOKENS = 16000
+REASONING_LEVELS = ("auto", "off", "low", "medium", "high")
+_AUTO_EFFORT = "low"  # what "auto" asks for where the model can reason
+
+_log = logging.getLogger("langstage_codraft.agent")
 
 
 # ------------------------------------------------------------------------- models
@@ -45,8 +55,30 @@ def default_model_spec() -> str | None:
     return None
 
 
-def make_model(spec: str) -> Any:
-    """``openrouter:<slug>`` or any ``init_chat_model`` spec (``openai:gpt-4.1``…)."""
+def reasoning_kwargs(spec: str, reasoning: str = "auto", max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS) -> dict:
+    """The constructor arguments that turn reasoning on for this model, or {} when it is
+    off or this provider has no switch Codraft knows. Reasoning is what keeps a model's
+    arithmetic and multi-step edits right; see ``[codraft] reasoning``."""
+    effort = _AUTO_EFFORT if reasoning == "auto" else reasoning
+    if effort not in ("low", "medium", "high"):
+        return {}
+    provider, _, name = spec.partition(":")
+    if provider == "openrouter":
+        # OpenRouter's unified switch; it is ignored for models that can't reason.
+        return {"extra_body": {"reasoning": {"effort": effort}}}
+    if provider == "openai" and re.match(r"(gpt-5|o\d)", name):
+        # Chat Completions. GPT-5.4 and later refuse it together with tools there; the
+        # fallback below then drops it for the session (see ReasoningFallback).
+        return {"reasoning_effort": effort}
+    if provider == "anthropic":
+        budget = {"low": 2048, "medium": 6000, "high": 16000}[effort]
+        if max_tokens and max_tokens < budget + 1024:
+            budget = max_tokens - 1024
+        return {"thinking": {"type": "enabled", "budget_tokens": budget}} if budget >= 1024 else {}
+    return {}
+
+
+def _construct(spec: str, **kwargs: Any) -> Any:
     if spec.startswith("openrouter:"):
         from langchain_openai import ChatOpenAI
 
@@ -54,15 +86,114 @@ def make_model(spec: str) -> Any:
         if not key:
             raise RuntimeError("OPENROUTER_API_KEY is not set (needed for an openrouter: model)")
         return ChatOpenAI(model=spec.split(":", 1)[1], base_url=OPENROUTER_BASE, api_key=key,
-                          temperature=0.3, default_headers={"X-Title": "langstage-codraft"})
+                          temperature=0.3, default_headers={"X-Title": "langstage-codraft"}, **kwargs)
     from langchain.chat_models import init_chat_model
 
     try:
-        return init_chat_model(spec)
+        return init_chat_model(spec, **kwargs)
     except ImportError as exc:
         provider = spec.split(":", 1)[0]
         hint = ' (pip install "langstage-codraft[anthropic]")' if provider == "anthropic" else ""
         raise ImportError(f"model {spec!r} needs the langchain-{provider} package{hint}: {exc}") from exc
+
+
+def make_models(spec: str, *, max_tokens: int | None = DEFAULT_MAX_OUTPUT_TOKENS,
+                reasoning: str = "auto") -> tuple[Any, Any, list[str]]:
+    """``(model, plain, notes)`` for ``openrouter:<slug>`` or any ``init_chat_model`` spec.
+
+    ``model`` has the output cap and, where the provider has a switch, reasoning on.
+    ``plain`` is the same model without reasoning (None when reasoning isn't on), for
+    :class:`ReasoningFallback`. A provider class that refuses one of these arguments still
+    yields a model: the argument is dropped and ``notes`` says so."""
+    notes: list[str] = []
+    cap = {"max_tokens": int(max_tokens)} if max_tokens and int(max_tokens) > 0 else {}
+    think = reasoning_kwargs(spec, reasoning, int(max_tokens or 0))
+    if reasoning not in ("off", "auto") and not think:
+        notes.append(f"reasoning={reasoning} has no effect: Codraft has no reasoning switch for {spec}")
+
+    def build(**kw: Any) -> Any:
+        try:
+            return _construct(spec, **kw)
+        except (ImportError, RuntimeError):
+            raise
+        except Exception as exc:  # noqa: BLE001 - a provider class that refuses an argument
+            if not kw:
+                raise
+            notes.append(f"{spec} refused {', '.join(sorted(kw))} ({type(exc).__name__}); using the provider's defaults")
+            return _construct(spec)
+
+    plain = build(**cap)
+    if not think:
+        return plain, None, notes
+    try:
+        return _construct(spec, **cap, **think), plain, notes
+    except (ImportError, RuntimeError):
+        raise
+    except Exception as exc:  # noqa: BLE001
+        notes.append(f"reasoning is off: {spec} refused the setting ({type(exc).__name__})")
+        return plain, None, notes
+
+
+def make_model(spec: str, *, max_tokens: int | None = DEFAULT_MAX_OUTPUT_TOKENS, reasoning: str = "auto") -> Any:
+    """``openrouter:<slug>`` or any ``init_chat_model`` spec (``openai:gpt-4.1``…), with the
+    output cap and reasoning (see :func:`make_models`)."""
+    return make_models(spec, max_tokens=max_tokens, reasoning=reasoning)[0]
+
+
+_REJECTS = re.compile(
+    r"reasoning|thinking|effort|budget_tokens|unsupported param|unknown param|unrecognized (request )?arg"
+    r"|extra_forbidden|extra inputs|not supported|does not support|unexpected keyword", re.I)
+
+
+def rejects_reasoning(exc: BaseException) -> bool:
+    """A provider's "bad request" that names the reasoning setting (or an unsupported
+    parameter), as opposed to any other failure."""
+    code = getattr(exc, "status_code", None) or getattr(getattr(exc, "response", None), "status_code", None)
+    if code not in (400, 404, 422) and not isinstance(exc, (TypeError, ValueError)):
+        return False
+    return bool(_REJECTS.search(str(exc)))
+
+
+class ReasoningFallback(AgentMiddleware):
+    """Run the default agent with reasoning on, and without it if the provider refuses.
+
+    Which models accept which reasoning setting changes faster than this package ships, so
+    the setting is tried, not assumed: the first model call the provider rejects because of
+    it is repeated on ``plain`` (the same model, reasoning off), and every later call goes
+    straight to ``plain``. The agent never fails over a setting the author didn't choose."""
+
+    def __init__(self, plain: Any, label: str = ""):
+        super().__init__()
+        self.plain = plain
+        self.label = label
+        self.degraded = ""  # why, once reasoning has been dropped
+
+    def _degrade(self, exc: BaseException) -> None:
+        self.degraded = f"{type(exc).__name__}: {exc}"[:300]
+        _log.warning("codraft: %s refused the reasoning setting, continuing without it (%s). "
+                     "Set [codraft] reasoning = \"off\" to skip the attempt.", self.label or "the model", self.degraded)
+
+    def wrap_model_call(self, request, handler):  # type: ignore[override]
+        if self.degraded:
+            return handler(request.override(model=self.plain))
+        try:
+            return handler(request)
+        except Exception as exc:  # noqa: BLE001
+            if not rejects_reasoning(exc):
+                raise
+            self._degrade(exc)
+            return handler(request.override(model=self.plain))
+
+    async def awrap_model_call(self, request, handler):  # type: ignore[override]
+        if self.degraded:
+            return await handler(request.override(model=self.plain))
+        try:
+            return await handler(request)
+        except Exception as exc:  # noqa: BLE001
+            if not rejects_reasoning(exc):
+                raise
+            self._degrade(exc)
+            return await handler(request.override(model=self.plain))
 
 
 def research_tools() -> list:
@@ -71,8 +202,9 @@ def research_tools() -> list:
     from langchain_core.tools import tool
 
     @tool
-    def fetch_url(url: str, max_chars: int = 6000) -> str:
-        """Fetch a web page and return its readable text (truncated)."""
+    def fetch_url(url: str, max_chars: int = 6000, offset: int = 0) -> str:
+        """Fetch a web page or a PDF and return its readable text. Long documents are cut
+        at max_chars; the result says how much is left, and `offset` continues from there."""
         import httpx
 
         try:
@@ -80,11 +212,9 @@ def research_tools() -> list:
                           headers={"User-Agent": "Mozilla/5.0 (langstage-codraft)"})
             r.raise_for_status()
         except Exception as exc:  # noqa: BLE001
-            return f"ERROR fetching {url}: {exc}"
-        from .textutil import extract_text
-
-        text = extract_text("page.html", r.content) if "html" in r.headers.get("content-type", "") else r.text
-        return text[: max(500, min(max_chars, 20000))]
+            return (f"ERROR fetching {url}: {exc}. Do not cite this source unless you can open it another "
+                    "way; say so if it matters.")
+        return readable_text(url, r.headers.get("content-type", ""), r.content, max_chars=max_chars, offset=offset)
 
     tools = [fetch_url]
     if os.environ.get("OPENROUTER_API_KEY"):
@@ -96,16 +226,60 @@ def research_tools() -> list:
         def web_search(query: str, max_results: int = 5) -> str:
             """Search the web. Returns titles, urls and snippets to cite as references."""
 
-            try:
-                hits = list(DDGS().text(query, max_results=max(1, min(max_results, 10))))
-            except Exception as exc:  # noqa: BLE001
-                return f"ERROR searching: {exc}"
-            return "\n".join(f"- {h.get('title')} — {h.get('href')}\n  {h.get('body')}" for h in hits) or "No results."
+            import time
+
+            n = max(1, min(max_results, 10))
+            err: Exception | None = None
+            for attempt in (0, 1):  # the search service rate-limits in bursts: one retry clears most
+                try:
+                    hits = list(DDGS().text(query, max_results=n))
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    err = exc
+                    if attempt == 0:
+                        time.sleep(1.5)
+            else:
+                return (f"ERROR: web search failed twice ({type(err).__name__}: {str(err)[:160]}). The search "
+                        "service is rate-limited or unreachable right now. Do not keep retrying: use fetch_url on "
+                        "a URL you already know, use the uploaded reference material (search_document), or tell "
+                        "the author which claims you could not source. Never cite a page you have not opened.")
+            return ("\n".join(f"- {h.get('title')} — {h.get('href')}\n  {h.get('body')}" for h in hits)
+                    or f"No results for {query!r}. Try fewer or different keywords.")
 
         tools.append(web_search)
     except ImportError:
         pass
     return tools
+
+
+def readable_text(url: str, content_type: str, data: bytes, *, max_chars: int = 6000, offset: int = 0) -> str:
+    """What fetch_url returns for a response body: page text with entities decoded, a
+    PDF's extracted text (never its raw bytes), cut to a window with a note on the rest."""
+    import html as _html
+
+    from .textutil import extract_text
+
+    ctype = (content_type or "").lower()
+    is_pdf = "pdf" in ctype or data[:5] == b"%PDF-" or url.lower().split("?")[0].endswith(".pdf")
+    if is_pdf:
+        text = extract_text("page.pdf", data)
+        if not text or text.startswith("[could not extract"):
+            return (f"{url} is a PDF whose text can't be read here (scanned, encrypted or damaged). Don't quote "
+                    "from it; cite it only for what its title or abstract page (if you can open one) supports.")
+        kind = "PDF"
+    elif "html" in ctype or data[:200].lstrip().lower().startswith((b"<!doctype html", b"<html")):
+        text, kind = _html.unescape(extract_text("page.html", data)).replace("\xa0", " "), "page"
+    elif ctype.startswith(("text/", "application/json", "application/xml")) or not ctype:
+        text, kind = data.decode("utf-8", "replace"), "text"
+    else:
+        return f"{url} is {ctype or 'a binary file'}, not text: nothing readable to return."
+    size = max(500, min(int(max_chars), 20000))
+    start = max(0, int(offset))
+    part = text[start:start + size]
+    left = len(text) - (start + len(part))
+    more = f"\n[{left} more characters: call fetch_url again with offset={start + len(part)}]" if left > 0 else ""
+    return (f"[{kind}, characters {start}-{start + len(part)} of {len(text)}]\n{part}{more}" if (start or left > 0)
+            else part)
 
 
 def generate_image_tool():
@@ -185,13 +359,25 @@ def generate_image_tool():
     return generate_image
 
 
-def build_default_agent(model_spec: str, *, extra_tools: list | None = None) -> Any:
+def build_default_agent(model_spec: str, *, extra_tools: list | None = None,
+                        max_tokens: int | None = DEFAULT_MAX_OUTPUT_TOKENS, reasoning: str = "auto",
+                        notes: list[str] | None = None) -> Any:
+    """The built-in co-author on ``model_spec``: output capped at ``max_tokens``, reasoning
+    on where the model has it (and dropped, not fatal, if the provider refuses it)."""
     from langchain.agents import create_agent
 
+    model, plain, found = make_models(model_spec, max_tokens=max_tokens, reasoning=reasoning)
+    if notes is not None:
+        notes.extend(found)
+    for n in found:
+        _log.warning("codraft: %s", n)
+    middleware: list = [CodraftMiddleware()]
+    if plain is not None:
+        middleware.append(ReasoningFallback(plain, model_spec))
     return create_agent(
-        make_model(model_spec),
+        model,
         tools=research_tools() + list(extra_tools or []),
-        middleware=[CodraftMiddleware()],
+        middleware=middleware,
         name="codraft",
     )
 
@@ -388,7 +574,16 @@ def resolve(cfg: Any, *, model: str | None = None) -> tuple[Any, dict]:
                       "missing_tools": sorted(TOOL_NAMES),
                       "hint": "Pass --agent path.py:graph, --model provider:model, set OPENROUTER_API_KEY "
                               "or OPENAI_API_KEY, or run with --demo."}
-    return build_default_agent(spec), {"kind": "default", "label": spec, "missing_tools": []}
+    notes: list[str] = []
+    cap = getattr(cfg, "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
+    reasoning = getattr(cfg, "reasoning", "auto")
+    graph = build_default_agent(spec, max_tokens=cap, reasoning=reasoning, notes=notes)
+    on = reasoning_kwargs(spec, reasoning, int(cap or 0))
+    info = {"kind": "default", "label": spec, "missing_tools": [], "max_output_tokens": cap or None,
+            "reasoning": (_AUTO_EFFORT if reasoning == "auto" else reasoning) if on else "off"}
+    if notes:
+        info["notes"] = notes
+    return graph, info
 
 
 def describe_info(info: dict) -> str:

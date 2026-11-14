@@ -8,10 +8,14 @@ Adding it to ``create_agent(..., middleware=[CodraftMiddleware()])`` does three 
    OpenAI-compatible APIs accept images only in user messages, not in tool results,
    so the screenshots go into a transient user message. That message is never saved
    to the thread.
+4. tells the agent, at the start of each turn, what the author did since its last turn
+   (accepted and rejected suggestions, their own edits, new and deleted blocks), in
+   another transient message, so it doesn't work from a stale picture of the document.
 """
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,24 +31,62 @@ research and revision when asked.
 
 How you work:
 - Start with `get_document` to see the brief, the outline and the comments. Read only
-  the blocks you need with `read_blocks`. Never paste the whole document back.
-- Content changes are SUGGESTIONS (`propose_edit`, `propose_insert`, `propose_delete`,
-  `propose_move`). When approval is "required", the author accepts or rejects them, so
-  propose each change once and move on. Give every suggestion a one-line `note`.
+  the blocks you need with `read_blocks`. Never paste the whole document back. Copy
+  ids from the outline; never guess or reuse one from memory.
+- Content changes are SUGGESTIONS (`propose_edit`, `propose_insert`, `insert_blocks`,
+  `propose_delete`, `propose_move`). When approval is "required", the author accepts
+  or rejects them, so propose each change once and move on. Give every suggestion a
+  one-line `note`.
+- You can see your own pending suggestions. `get_document` lists them where they
+  will land, marked PENDING (a pending insert goes by its `sug_…` id); `read_blocks`
+  shows your proposed text next to the accepted text; `view_pages` renders a preview
+  with them applied. Look before you propose: never send a change that is already
+  pending, and never rewrite a pending draft you have not re-read. To change a pending
+  insert, `propose_edit` its `sug_` id. To reorder blocks use `propose_move`, never a
+  delete plus a re-insert.
+- A note that starts "[Codraft note" tells you what the author accepted, rejected,
+  edited, added or deleted since your last turn. Trust it over what you remember.
+- Draft in small blocks: a heading, then one text block per paragraph. The author
+  approves, comments on and versions each block separately, so a whole section in
+  one block is all-or-nothing for them.
+- The document text is the finished document, not a conversation. Never write about
+  the editing in it ("revised", "corrected", "updated as requested", "on the new
+  figures"): that goes in the suggestion's `note`, a comment reply or chat.
+- Numbers: use `calculate` for every figure you derive (totals, percentages, growth,
+  each computed cell of a table), in one call per table, and check that columns add up
+  before you propose them. Never do arithmetic in your head. If you find a wrong
+  number already in the document, fix every place it appears.
+- Text is GitHub-flavoured Markdown. Write superscripts and subscripts as
+  <sup>2</sup> / <sub>2</sub> or as Unicode (m², °C, CO₂); `^2^`, `~2~` and LaTeX
+  print literally. Don't type section numbers into headings unless the document
+  already numbers them by hand, and set a heading's level with `heading_level`.
 - Styling is yours: `set_block_layout` and `set_document_style` apply immediately. Keep
   the document visually consistent with its theme.
+- Never delete or shorten the author's content to solve a layout problem (a short
+  last page, an overflow, a page target). Fix layout with layout: margins, type size,
+  spacing, block width, columns, a page break, a smaller or moved figure. If only
+  cutting content would do it, say what you would cut and ask first.
 - Comments: when asked to address comments, call `list_comments` and handle the open
   ones strictly top to bottom. Tie each change to its comment (`comment_id`) and reply
-  with `reply_to_comment`. Resolve a comment only when no approval is pending.
-  Honor preferences in resolved comments and in block history (`get_block_history`).
+  with `reply_to_comment`. Resolve a comment only when no approval is pending. A comment
+  that says "throughout", "everywhere" or "all …", or that sits on the document rather
+  than a block, applies to every block it fits: find them (`search_document`, the
+  outline) and propose one change per block, each with that `comment_id`.
+  Honor preferences in resolved comments. `get_block_history` is for a block the
+  author has revised or commented on before; don't call it routinely.
 - Cite sources in `references` on the block you change (title, url, note). Use
   `search_document` for uploaded reference material. Use any research tools you have.
+  Cite only pages you opened, under the authors and title the page itself gives. If a
+  search or a fetch fails, say which claims you could not source instead of guessing.
 - Blocks with a fixed height state a word budget. Stay roughly within it unless the
   author asks for more.
 - When the author drew a sketch on an image block, `view_sketch` shows it. Turn it into
   an image if you have an image tool (e.g. `generate_image`), otherwise say you can't.
 - Use `view_pages` to check layout visually (overflow, stranded headings, unbalanced
-  columns) after structural or styling changes.
+  columns, clipped captions) after structural or styling changes, and after
+  `draw_figure`: you can't see an SVG as you write it, so look, and redraw if a label
+  is cut off or overlaps. It shows at most four pages per call and says which pages
+  it left out.
 - Design: blocks with role=cover sit on their own cover page. `set_cover` turns that page
   off (the cover blocks then open page 1 as a title block, for reports that start straight
   into the summary), aligns the stack and gives it a background colour or image. For art
@@ -80,6 +122,39 @@ def _doc_brief(state_config: Any) -> str:
     return (f"\nCurrent document: {doc['title']!r} ({doc_id}). {s['mode']}, {s['columns']} column(s), "
             f"theme {s['theme']}. Approval mode: {s['approval']}."
             + (f"\nBrief: {brief}." if brief else ""))
+
+
+def _turn_note(cfg: Any, messages: list) -> tuple[int, str]:
+    """``(index of this turn's human message, note)``: what the author did to the document
+    since the agent's previous turn ended, or "" (nothing happened, the first turn this
+    process has seen, or not a document thread). The note is computed once per turn and
+    then repeated unchanged for every model call of that turn."""
+    idx = next((i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), -1)
+    if idx < 0:
+        return idx, ""
+    try:
+        from .store import get_store
+        from .tools import changes_note
+
+        conf = (cfg or {}).get("configurable", {})
+        doc_id = conf.get("codraft_doc_id") or conf.get("thread_id")
+        store = get_store()
+        if not doc_id:
+            return idx, ""
+        m = messages[idx]
+        key = getattr(m, "id", None) or f"{idx}:{hash(str(m.content))}"
+        now = time.time()
+        st = store._agent_turns.get(doc_id)
+        if st is None:
+            store.get_document(doc_id)  # not a document thread: no state, no note
+            store._agent_turns[doc_id] = {"key": key, "note": "", "last_call": now}
+            return idx, ""
+        if st["key"] != key:  # a new turn: everything after the last model call of the previous one
+            st.update(key=key, note=changes_note(doc_id, st["last_call"]))
+        st["last_call"] = now
+        return idx, st["note"]
+    except Exception:  # noqa: BLE001 - no store, or the document is gone: the turn goes on without a note
+        return idx, ""
 
 
 def _tool_images(m: Any) -> list[str]:
@@ -146,15 +221,17 @@ class CodraftMiddleware(AgentMiddleware):
     """Co-author prompt, tools and page images for a ``create_agent`` agent."""
 
     def __init__(self, *, extra_prompt: str = "", attach_images: bool = True, tools: list | None = None,
-                 tool_errors: bool = True):
+                 tool_errors: bool = True, turn_notes: bool = True):
         """``tool_errors``: when any tool (yours or Codraft's) raises, hand the error back to
         the model as the tool's result instead of ending the turn, so one failing lookup
-        doesn't throw away a half-drafted document."""
+        doesn't throw away a half-drafted document. ``turn_notes``: start each turn by
+        telling the agent what the author changed since its last one."""
         super().__init__()
         self.tools = list(CODRAFT_TOOLS if tools is None else tools)
         self.extra_prompt = extra_prompt
         self.attach_images = attach_images
         self.tool_errors = tool_errors
+        self.turn_notes = turn_notes
 
     def _prepare(self, request: Any) -> Any:
         from langgraph.config import get_config
@@ -169,11 +246,16 @@ class CodraftMiddleware(AgentMiddleware):
             existing = sys_msg.content if isinstance(sys_msg.content, str) else ""
             prompt = (existing + "\n\n" + prompt) if existing else prompt
         overrides: dict[str, Any] = {"system_message": SystemMessage(content=prompt)}
-        if self.attach_images:
-            msgs = list(request.messages)
-            with_imgs = _with_images(msgs)
-            if len(with_imgs) != len(msgs):
-                overrides["messages"] = with_imgs
+        msgs = list(request.messages)
+        out = _with_images(msgs) if self.attach_images else msgs
+        if self.turn_notes:
+            # Before the author's message, so the request is the last thing the model reads.
+            # Images only ever go after it, so the index holds in ``out`` too.
+            idx, note = _turn_note(cfg, msgs)
+            if note:
+                out = [*out[:idx], HumanMessage(content=note), *out[idx:]]
+        if len(out) != len(msgs):
+            overrides["messages"] = out
         return request.override(**overrides)
 
     def wrap_model_call(self, request, handler):  # type: ignore[override]

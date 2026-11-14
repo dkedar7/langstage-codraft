@@ -33,10 +33,12 @@ export function ReviewPanel() {
               const r = await ed.run(api.bulk(doc.id, "accept-all"));
               if (!r) return;
               const gone = r.skipped_gone?.length ?? 0;
-              const stale = (r.skipped?.length ?? 0) - gone;
+              const failed = r.failed ?? [];
+              const stale = (r.skipped?.length ?? 0) - gone - failed.length;
               const parts = [
                 stale ? `${stale} outdated suggestion${stale > 1 ? "s" : ""} (the block changed since)` : "",
                 gone ? `${gone} on deleted block${gone > 1 ? "s" : ""}` : "",
+                failed.length ? `${failed.length} that could not be applied (${failed[0].reason})` : "",
               ].filter(Boolean);
               ed.toast(parts.length ? `Accepted ${r.count}; skipped ${parts.join(" and ")}` : "Accepted all");
             }}>

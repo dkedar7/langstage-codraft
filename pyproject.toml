@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "langstage-codraft"
-version = "0.5.17"
+version = "0.6.0"
 description = "The document stage for your LangGraph agent: co-author paged documents block by block, with approval-gated agent edits, per-block version history, and PDF/HTML/PNG export."
 readme = "README.md"
 license = "MIT"
@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
     # Host layer (config chain, spec loading, demo) + the in-process AG-UI stream.
-    "langstage-core[agui]>=1.0.50",
+    "langstage-core[agui]>=1.0.63",
     "langgraph>=1.0",
     "langchain>=1.0",
     # Default agent: OpenAI-compatible chat (OpenAI, OpenRouter, any compatible gateway).

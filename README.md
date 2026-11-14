@@ -42,7 +42,8 @@ you ask it to.
 - **Export matches the screen.** PDF, PNG/JPG per page, or a self-contained HTML zip, all
   rendered by the same component as the editor (CI checks them pixel for pixel). Also Word
   (`.docx`, editable and reflowing), PowerPoint (`.pptx`, one slide per page, with editable text
-  boxes where the paginator put them), and an animated GIF or MP4 page slideshow.
+  boxes where the paginator put them), and an animated GIF or MP4 page slideshow. Batch jobs
+  export straight from the data directory, [with no server running](#export-without-a-running-server).
 - **Sketch it, get an image.** Draw on an image block; the agent looks at the sketch
   (`view_sketch`) and turns it into an image with its image tool, or says it can't.
 - **Video and GIF blocks.** They play in the editor and in the HTML export; PDF and images use
@@ -236,15 +237,19 @@ The same tools are served over MCP, so agents outside LangGraph can co-author to
 are suggestions the author approves, exactly like the built-in co-author's.
 
 ```bash
-# with `langstage-codraft run` going (view_pages works over HTTP):
+# with `langstage-codraft run` going:
 claude mcp add --transport http codraft http://localhost:8060/mcp
 
-# or stdio, for clients that launch a command:
+# or stdio, for clients that launch a command (no server needed):
 langstage-codraft mcp --data-dir .codraft
 ```
 
 MCP tools: `list_documents`, `create_document`, every `CODRAFT_TOOLS` tool with a `doc_id`
 argument, plus `view_pages` and `view_sketch`, which return images.
+
+Over stdio, `view_pages` works on its own: it uses the server on the configured port if one is
+running, and otherwise starts a private in-process renderer the first time the tool is called
+(the first call takes a few seconds; it needs `langstage-codraft install-browser` once).
 
 ## For deployers
 
@@ -405,10 +410,54 @@ langstage-codraft check [--live] [--json]
 langstage-codraft new "Title" --template report
 langstage-codraft import FILE.md|FILE.docx [--title T] [--template ID] [--theme NAME] [--split paragraph|section] [--json]
 langstage-codraft list
-langstage-codraft export DOC_ID -f pdf|docx|pptx|png|jpg|html|gif|mp4 -o out.pdf
+langstage-codraft export DOC_ID... -f pdf|docx|pptx|png|jpg|html|gif|mp4 -o out.pdf [--data-dir DIR]
 langstage-codraft mcp [--data-dir DIR]          # Codraft over MCP (stdio)
 langstage-codraft install-browser
 ```
+
+### Export without a running server
+
+`export` doesn't need `langstage-codraft run` in the background. Point it at the data directory
+and it renders in-process, so a batch job or CI step is one command:
+
+```bash
+langstage-codraft export doc_6e07ed1cea -f pdf -o report.pdf --data-dir .codraft
+
+# several documents and formats share one browser launch; -o is then a directory
+langstage-codraft export doc_6e07ed1cea doc_9a41c2d07b -f pdf -f png -o out/ --data-dir .codraft
+```
+
+It is the same renderer: the command starts the Codraft app inside its own process, prints
+through the same page route the editor's Export button uses, and shuts down, so the output is
+what a running server gives. That in-process app listens on `127.0.0.1` only, on a port the OS
+picks, and every request to it needs a one-off password made for that run. It reads the same
+`langstage.toml` (themes, `doc_defaults`, fonts) and is safe to run while a server is using the
+same data directory.
+
+Which path `export` takes:
+
+| You pass | It exports |
+|---|---|
+| `--data-dir DIR` or `--standalone` | in-process, from that data directory (`--standalone`: the configured one) |
+| `--port` or `--url` | through that running server |
+| neither | through the server on the configured port if one is running, else in-process |
+
+From Python:
+
+```python
+from langstage_codraft import Standalone, export_document
+
+pdf = export_document(".codraft", "doc_6e07ed1cea", "pdf")                  # bytes
+export_document(".codraft", "doc_6e07ed1cea", "docx", "out/report.docx")   # writes the file
+
+with Standalone(".codraft") as codraft:       # one browser for many exports
+    for doc_id in ("doc_6e07ed1cea", "doc_9a41c2d07b"):
+        open(f"{doc_id}.pdf", "wb").write(codraft.export(doc_id, "pdf"))
+```
+
+PNG and JPG come back as the image for a one-page document and as a zip of page images
+otherwise; HTML is always a zip. A failed export raises `ExportError` (`.status` 404 for an
+unknown document, 503 when Chromium isn't installed).
 
 ## How the layout works
 

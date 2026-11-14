@@ -4,7 +4,7 @@
     langstage-codraft check [--live]
     langstage-codraft new "Title" [--template report]
     langstage-codraft list
-    langstage-codraft export DOC_ID --format pdf -o out.pdf   (needs a running server)
+    langstage-codraft export DOC_ID --format pdf -o out.pdf   (no server needed)
     langstage-codraft install-browser
 """
 from __future__ import annotations
@@ -248,37 +248,115 @@ EXPORT_FORMATS = ["pdf", "docx", "pptx", "png", "jpg", "html", "gif", "mp4"]
 
 
 @main.command()
-@click.argument("doc_id")
-@click.option("-f", "--format", "fmt", type=click.Choice(EXPORT_FORMATS), default="pdf")
-@click.option("-o", "--output", type=click.Path(path_type=Path))
-@click.option("--url", default=None, help="Server URL (default http://localhost:<port>).")
-@click.option("-p", "--port", type=int, help="Port of the running server (default 8060).")
-def export(doc_id, fmt, output, url, port) -> None:
-    """Export a document through a running Codraft server."""
+@click.argument("doc_ids", nargs=-1, required=True, metavar="DOC_ID...")
+@click.option("-f", "--format", "fmts", type=click.Choice(EXPORT_FORMATS), multiple=True,
+              help="Output format (default pdf). Repeat for several: -f pdf -f png.")
+@click.option("-o", "--output", type=click.Path(path_type=Path),
+              help="Output file; a directory when exporting several documents or formats.")
+@click.option("--data-dir", type=click.Path(path_type=Path),
+              help="Render this data directory in-process; no server needed.")
+@click.option("--standalone", is_flag=True,
+              help="Render in-process from the configured data directory, even if a server is running.")
+@click.option("--url", default=None, help="Export through the running server at this URL.")
+@click.option("-p", "--port", type=int, help="Export through the running server on this port.")
+def export(doc_ids, fmts, output, data_dir, standalone, url, port) -> None:
+    """Export documents: PDF, DOCX, PPTX, PNG, JPG, HTML, GIF or MP4.
+
+    With --port or --url it exports through that running server. With --data-dir or
+    --standalone it needs no server: it starts the app in-process on a private loopback
+    port, renders through the same print route and shuts down. With neither, it uses the
+    server on the configured port if one is running and renders in-process if not.
+
+    Several documents and formats share one browser:
+
+        langstage-codraft export DOC1 DOC2 -f pdf -f png -o out/ --data-dir .codraft
+    """
     import httpx
 
     from .render import auth_headers
+    from .standalone import NoData, Standalone, _detail, export_filename, output_path
 
-    cfg = _cfg(port=port)
+    fmts = list(dict.fromkeys(fmts)) or ["pdf"]
+    live = url is not None or port is not None
+    if live and (data_dir is not None or standalone):
+        raise click.UsageError("--data-dir / --standalone render in-process; --port / --url export through a "
+                               "running server. Pass one or the other.")
+    jobs = [(d, f) for d in dict.fromkeys(doc_ids) for f in fmts]
+    many = len(jobs) > 1
+    if many and output is not None and output.is_file():
+        raise click.UsageError(f"-o {output} is a file; with several documents or formats it must be a directory")
+
+    cfg = _cfg(port=port, data_dir=data_dir)
     base = url or f"http://{cfg.host}:{cfg.port}"
-    try:
+    in_process = data_dir is not None or standalone
+    if not live and not in_process:
+        # No flag says which: a server on the configured port if there is one, else in-process.
+        try:
+            httpx.get(f"{base}/api/health", headers=auth_headers(cfg), timeout=2)
+        except httpx.HTTPError:
+            in_process = True
+            _echo(f"No server at {base}; rendering in-process from {Path(cfg.data_dir).resolve()}")
+
+    sa = None
+    if in_process:
+        sa = Standalone(cfg=cfg)
+        try:
+            sa.start()
+        except NoData as exc:
+            _fail(f"{exc}; pass --data-dir, or --port / --url to export through a running server")
+            sys.exit(1)
+        except Exception as exc:  # noqa: BLE001
+            _fail(f"could not start the in-process renderer: {type(exc).__name__}: {exc}")
+            sys.exit(1)
+
+    def fetch(doc_id: str, fmt: str):
+        if sa is not None:
+            return sa.get(doc_id, fmt)
         # The configured password / proxy secret, as the server checks them on loopback too (gh #2).
-        r = httpx.get(f"{base}/api/docs/{doc_id}/export", params={"format": fmt},
-                      headers=auth_headers(cfg), timeout=180)
-    except httpx.HTTPError as exc:
-        _fail(f"no Codraft server at {base} ({type(exc).__name__}); start one with "
-              "`langstage-codraft run`, or pass --port / --url")
+        return httpx.get(f"{base}/api/docs/{doc_id}/export", params={"format": fmt},
+                         headers=auth_headers(cfg), timeout=180)
+
+    failed = 0
+    written: set[Path] = set()
+    try:
+        if many and output is not None:
+            output.mkdir(parents=True, exist_ok=True)
+        for doc_id, fmt in jobs:
+            try:
+                r = fetch(doc_id, fmt)
+            except httpx.HTTPError as exc:
+                if sa is not None:
+                    _fail(f"{doc_id} ({fmt}): the in-process renderer did not answer ({type(exc).__name__})")
+                    failed += 1
+                    continue
+                _fail(f"no Codraft server at {base} ({type(exc).__name__}); start one with "
+                      "`langstage-codraft run`, pass --port / --url, or render without a server: --data-dir DIR")
+                sys.exit(1)
+            if r.status_code != 200:
+                if sa is not None and r.status_code == 404:
+                    _fail(f"{doc_id}: not found in {Path(cfg.data_dir).resolve()} (see `langstage-codraft list`)")
+                elif many or sa is not None:
+                    _fail(f"{doc_id} ({fmt}): {r.status_code}: {_detail(r)[:300]}")
+                else:
+                    _fail(f"{r.status_code}: {r.text[:300]}")
+                failed += 1
+                continue
+            name = export_filename(r, doc_id, fmt)
+            if many:
+                out = (output or Path(".")) / name
+                if out in written:  # two documents with the same title
+                    out = out.with_name(f"{doc_id}-{name}")
+            else:
+                out = output_path(r, output or Path(name))  # multi-page images / HTML come zipped
+            written.add(out)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(r.content)
+            _ok(f"wrote {out} ({len(r.content)} bytes)")
+    finally:
+        if sa is not None:
+            sa.close()
+    if failed:
         sys.exit(1)
-    if r.status_code != 200:
-        _fail(f"{r.status_code}: {r.text[:300]}")
-        sys.exit(1)
-    disp = r.headers.get("content-disposition", "")
-    name = disp.split("filename=")[-1].strip('"') if "filename=" in disp else f"{doc_id}.{fmt}"
-    out = output or Path(name)
-    if r.headers.get("content-type") == "application/zip" and out.suffix.lower() != ".zip":
-        out = out.with_name(out.name + ".zip")  # multi-page images / HTML come zipped
-    out.write_bytes(r.content)
-    _ok(f"wrote {out} ({len(r.content)} bytes)")
 
 
 @main.command()
@@ -287,14 +365,15 @@ def export(doc_id, fmt, output, url, port) -> None:
 def mcp(data_dir, port) -> None:
     """Serve Codraft documents over MCP on stdio (for Claude Code, Cursor, Claude Desktop...).
 
-    Works on the same data directory as `run`. view_pages needs a running server; with
-    one up, prefer its streamable-HTTP endpoint at http://localhost:8060/mcp.
+    Works on the same data directory as `run`, with or without a server running. For
+    view_pages it uses the server on the configured port if one is up; otherwise it
+    starts an in-process renderer the first time the tool is called.
     """
     from . import templates as tpl
     from . import themes
     from .config import codraft_toml_table
     from .mcp_server import build_mcp_server
-    from .render import Renderer, auth_headers, set_renderer
+    from .render import Renderer, auth_headers, set_renderer, set_renderer_factory
     from .store import Store, set_store
 
     cfg = _cfg(data_dir=data_dir, port=port)
@@ -310,8 +389,10 @@ def mcp(data_dir, port) -> None:
         httpx.get(f"http://{host}:{cfg.port}/api/health", timeout=1)
         set_renderer(Renderer(f"http://{host}:{cfg.port}", Path(cfg.data_dir) / "renders",
                               headers=auth_headers(cfg)))
-    except Exception:  # noqa: BLE001 - no server: everything but view_pages still works
-        pass
+    except Exception:  # noqa: BLE001 - no server: view_pages renders in-process on first use (gh #44)
+        from .standalone import lazy_renderer
+
+        set_renderer_factory(lazy_renderer(cfg))
     from .server import house_defaults
 
     build_mcp_server(cfg, house_defaults()).run("stdio")

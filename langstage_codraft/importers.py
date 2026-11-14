@@ -34,6 +34,9 @@ MAX_BLOCKS = 5000
 MAX_IMAGES = 500
 MAX_DOCX_UNZIPPED = 300 * 1024 * 1024    # a .docx is a zip: refuse a decompression bomb
 MAX_DOCX_PARTS = 5000
+MAX_DOCX_XML = 32 * 1024 * 1024          # one XML part of it (the text; pictures are separate)
+MAX_MARKDOWN_LINES = 400_000
+MAX_ITEMS = 50_000                       # paragraphs, lists, headings... before they become blocks
 MARKDOWN_EXTENSIONS = (".md", ".markdown", ".mdown", ".mkd", ".txt")
 IMPORT_EXTENSIONS = (*MARKDOWN_EXTENSIONS, ".docx")
 SPLITS = ("paragraph", "section")
@@ -201,17 +204,23 @@ def _short(s: str, n: int = 60) -> str:
     return repr(s if len(s) <= n else s[: n - 1] + "…")
 
 
+_INLINE_CHARS = re.compile(r"[\\`*_\[\]<>~!]")
+
+
 def strip_inline(md: str) -> str:
     """Inline Markdown as plain text, for headings, table cells and reference titles."""
-    s = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", md)
-    s = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", s)
-    s = re.sub(r"<(https?://[^>\s]+)>", r"\1", s)
-    s = re.sub(r"</?[a-zA-Z][^>]*>", "", s)
-    s = re.sub(r"(`+)(.+?)\1", r"\2", s)
-    s = re.sub(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", r"\2", s)
-    s = re.sub(r"(?<![\w*])\*(?=\S)(.+?)(?<=\S)\*(?![\w*])", r"\1", s)
-    s = re.sub(r"(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?![\w_])", r"\1", s)
-    s = re.sub(r"~~(.+?)~~", r"\1", s)
+    if not _INLINE_CHARS.search(md):
+        return " ".join(md.split())
+    s = re.sub(r"!\[([^\]\[]*)\]\([^()]*\)", r"\1", md)
+    s = re.sub(r"\[([^\]\[]*)\]\([^()]*\)", r"\1", s)
+    s = re.sub(r"<(https?://[^<>\s]+)>", r"\1", s)
+    s = re.sub(r"</?[a-zA-Z][^<>]*>", "", s)
+    if len(s) <= 5000:  # emphasis is matched lazily: keep it to text of a sane length
+        s = re.sub(r"(`+)(.+?)\1", r"\2", s)
+        s = re.sub(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", r"\2", s)
+        s = re.sub(r"(?<![\w*])\*(?=\S)(.+?)(?<=\S)\*(?![\w*])", r"\1", s)
+        s = re.sub(r"(?<![\w_])_(?=\S)(.+?)(?<=\S)_(?![\w_])", r"\1", s)
+        s = re.sub(r"~~(.+?)~~", r"\1", s)
     s = re.sub(r"\\([\\`*_{}\[\]()#+\-.!|<>~])", r"\1", s)
     return re.sub(r"\s+", " ", s).strip()
 
@@ -221,7 +230,7 @@ _URL = re.compile(r"https?://[^\s<>\")\]]+")
 
 def _ref_from(text_md: str) -> dict | None:
     """A reference ({title, url}) from a footnote's text."""
-    m = re.search(r"\[[^\]]*\]\((https?://[^)\s]+)", text_md)
+    m = re.search(r"\[[^\]\[]*\]\((https?://[^)\s]+)", text_md)
     bare = _URL.search(text_md)
     url = (m.group(1) if m else bare.group(0) if bare else "").rstrip(".,;")
     title = strip_inline(text_md)
@@ -250,24 +259,83 @@ _HTML_BLOCK = re.compile(
     r"^ {0,3}</?(?:div|p|table|thead|tbody|tr|td|th|img|details|summary|figure|figcaption|center|"
     r"picture|source|video|audio|iframe|section|article|aside|header|footer|nav|ul|ol|li|dl|dt|dd|"
     r"blockquote|pre|h[1-6]|hr|br|a|span|style|script|svg)\b", re.I)
-_IMG = r"!\[((?:[^\]\\]|\\.)*)\]\(\s*(<[^>]*>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:\"([^\"]*)\"|'([^']*)'))?\s*\)"
+_IMG = r"!\[((?:[^\]\[\\]|\\.)*)\]\(\s*(<[^>]*>|(?:[^()\s]|\([^()\s]*\))+)(?:\s+(?:\"([^\"]*)\"|'([^']*)'))?\s*\)"
 _IMG_RE = re.compile(_IMG)
 _LINKED_IMG_RE = re.compile(r"\[\s*(" + _IMG + r")\s*\]\([^)]*\)")
-_HTML_IMG_RE = re.compile(r"<img\b[^>]*>", re.I)
+_HTML_IMG_RE = re.compile(r"<img\b[^<>]*>", re.I)
 _ALERT = re.compile(r"^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$", re.I)
 _ALERT_TONE = {"note": "note", "tip": "success", "important": "info", "warning": "warn", "caution": "warn"}
-_CODE_SPANS = re.compile(r"(^ {0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^ {0,3}\2[`~]*[ \t]*$|\Z)|(?<!`)(`+)(?!`).+?(?<!`)\3(?!`))",
-                         re.S | re.M)
+_FENCE_LINE = re.compile(r"^[ \t]*(`{3,}|~{3,})", re.M)
+_TICKS = re.compile(r"`+")
+
+
+def _code_ranges(text: str) -> list[tuple[int, int]]:
+    """(start, end) of the code in ``text``, in order: fenced blocks, and inline spans
+    (a run of backticks up to the next run of the same length). One pass, so a file
+    built to make a regex backtrack can't slow it down."""
+    fenced: list[tuple[int, int]] = []
+    opened: tuple[int, str] | None = None
+    for m in _FENCE_LINE.finditer(text):
+        if opened is None:
+            opened = (m.start(), m.group(1))
+        elif m.group(1)[0] == opened[1][0] and len(m.group(1)) >= len(opened[1]):
+            eol = text.find("\n", m.end())
+            fenced.append((opened[0], len(text) if eol < 0 else eol))
+            opened = None
+    if opened is not None:
+        fenced.append((opened[0], len(text)))
+    out: list[tuple[int, int]] = []
+    prev = 0
+    for start, end in [*fenced, (len(text), len(text))]:
+        runs = [(m.start(), m.end()) for m in _TICKS.finditer(text, prev, start)]
+        by_len: dict[int, list[int]] = {}
+        for idx, (a, z) in enumerate(runs):
+            by_len.setdefault(z - a, []).append(idx)
+        ptr = dict.fromkeys(by_len, 0)
+        i = 0
+        while i < len(runs):
+            size = runs[i][1] - runs[i][0]
+            same, p = by_len[size], ptr[size]
+            while p < len(same) and same[p] <= i:
+                p += 1
+            ptr[size] = p
+            if p < len(same):  # the closing run
+                out.append((runs[i][0], runs[same[p]][1]))
+                i = same[p] + 1
+            else:
+                i += 1
+        if start < end:
+            out.append((start, end))
+        prev = end
+    return out
 
 
 def _outside_code(text: str, fn: Callable[[str], str]) -> str:
     """Apply ``fn`` to the parts of ``text`` that aren't code (fenced or inline)."""
     out, pos = [], 0
-    for m in _CODE_SPANS.finditer(text):
-        out.append(fn(text[pos:m.start()]))
-        out.append(m.group(0))
-        pos = m.end()
+    for start, end in _code_ranges(text):
+        out.append(fn(text[pos:start]))
+        out.append(text[start:end])
+        pos = end
     out.append(fn(text[pos:]))
+    return "".join(out)
+
+
+def _drop_elements(text: str, names: tuple[str, ...] = ("script", "style")) -> str:
+    """``text`` without those HTML elements and what they contain (one pass)."""
+    low = text.lower()
+    out, pos = [], 0
+    for m in re.finditer(r"<(" + "|".join(names) + r")\b", low):
+        if m.start() < pos:
+            continue
+        out.append(text[pos:m.start()])
+        close = low.find("</" + m.group(1), m.end())
+        if close < 0:
+            pos = len(text)
+            break
+        gt = low.find(">", close)
+        pos = len(text) if gt < 0 else gt + 1
+    out.append(text[pos:])
     return "".join(out)
 
 
@@ -348,6 +416,8 @@ def _scan(lines: list[str]) -> tuple[list[tuple], dict[str, tuple[str, str]], di
         if not line.strip():
             i += 1
             continue
+        if len(items) > MAX_ITEMS:
+            raise Invalid(f"the file is too long to import (more than {MAX_ITEMS:,} paragraphs)")
         m = _FENCE.match(line)
         if m:
             fence, j = m.group(1), i + 1
@@ -493,7 +563,10 @@ def from_markdown(text: str, *, resolve: Resolver | None = None, split: str = "p
     b = _Builder(resolve)
     text = text.replace("\r\n", "\n").replace("\r", "\n").lstrip("﻿")
     meta, text = _front_matter(text)
-    items, links, foots = _scan(text.split("\n"))
+    lines = text.split("\n")
+    if len(lines) > MAX_MARKDOWN_LINES:
+        raise Invalid(f"the file is too long to import ({len(lines):,} lines; the limit is {MAX_MARKDOWN_LINES:,})")
+    items, links, foots = _scan(lines)
     used_foots: set[str] = set()
 
     def inline(md: str, refs: list[dict]) -> str:
@@ -569,7 +642,7 @@ def from_markdown(text: str, *, resolve: Resolver | None = None, split: str = "p
         # A paragraph that is only images becomes image blocks.
         bare = _LINKED_IMG_RE.sub("", md)
         bare = _HTML_IMG_RE.sub("", _IMG_RE.sub("", bare))
-        if (_IMG_RE.search(md) or _HTML_IMG_RE.search(md)) and not re.sub(r"</?(?:p|div|center|a|br|picture)\b[^>]*>", "", bare, flags=re.I).strip():
+        if (_IMG_RE.search(md) or _HTML_IMG_RE.search(md)) and not re.sub(r"</?(?:p|div|center|a|br|picture)\b[^<>]*>", "", bare, flags=re.I).strip():
             found = [(m.start(), m.group(1), m.group(2), m.group(3) or m.group(4) or "") for m in _IMG_RE.finditer(md)]
             if len(found) > 1 and not _HTML_IMG_RE.search(md) and all(
                     re.match(r"(?:https?:)?//", f[2].strip("<>"), re.I) for f in found):
@@ -650,7 +723,7 @@ def from_markdown(text: str, *, resolve: Resolver | None = None, split: str = "p
             b.add("page-break")
         elif kind == "html":
             raw = "\n".join(item[1])
-            if _HTML_IMG_RE.search(raw) and not re.sub(r"<[^>]*>", "", raw).strip():
+            if _HTML_IMG_RE.search(raw) and not re.sub(r"<[^<>]*>", "", raw).strip():
                 paragraph(item[1])
                 continue
             pics = [(_attr(t, "alt"), _attr(t, "src"), _attr(t, "title")) for t in _HTML_IMG_RE.findall(raw)]
@@ -660,8 +733,8 @@ def from_markdown(text: str, *, resolve: Resolver | None = None, split: str = "p
                     if src:
                         image(alt, src, cap)
             plain = re.sub(r"(?i)<br\s*/?>|</(?:p|div|li|tr|h[1-6]|summary)>", "\n", raw)
-            plain = re.sub(r"(?is)<(script|style)\b.*?</\1>", "", plain)
-            plain = re.sub(r"<[^>]+>", "", plain)
+            plain = _drop_elements(plain)
+            plain = re.sub(r"<[^<>]+>", "", plain)
             plain = "\n\n".join(s.strip() for s in re.split(r"\n\s*\n|\n", plain) if s.strip())
             if plain:
                 prose(plain)
@@ -723,6 +796,13 @@ _M = "{http://schemas.openxmlformats.org/officeDocument/2006/math}"
 _MC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
 
 
+def _int(v: Any, default: int = 0) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
 def _on(el: Any) -> bool:
     """A toggle property (w:b, w:i, ...): present means on unless it says otherwise."""
     return el is not None and (el.get(_W + "val") or "true").lower() not in ("0", "false", "off")
@@ -746,6 +826,8 @@ def _check_docx_zip(data: bytes) -> None:
         raise Invalid("not a Word .docx file (it has no word/document.xml)")
     if len(infos) > MAX_DOCX_PARTS or sum(i.file_size for i in infos) > MAX_DOCX_UNZIPPED:
         raise Invalid(f"the Word file is too large to import (over {MAX_DOCX_UNZIPPED // (1024 * 1024)} MB unzipped)")
+    if any(i.file_size > MAX_DOCX_XML for i in infos if i.filename.lower().endswith((".xml", ".rels"))):
+        raise Invalid(f"the Word file is too large to import (over {MAX_DOCX_XML // (1024 * 1024)} MB of text)")
 
 
 def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
@@ -783,18 +865,27 @@ def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
             if txt:
                 notes_text[(kind, fn.get(_W + "id") or "")] = txt
 
+    styles_seen: dict[str, list[str]] = {}
+    kinds_seen: dict[tuple[str, int], str] = {}
+
     def style_names(p: Any) -> list[str]:
         """The paragraph style's name and its base styles' names, lower-case."""
+        ppr = p.find(_W + "pPr")
+        ps = ppr.find(_W + "pStyle") if ppr is not None else None
+        key = (ps.get(_W + "val") or "") if ps is not None else ""
+        if key in styles_seen:
+            return styles_seen[key]
         out: list[str] = []
         try:
             st = Paragraph(p, d).style
+            for _ in range(6):
+                if st is None:
+                    break
+                out.append((st.name or "").lower())
+                st = st.base_style
         except Exception:  # noqa: BLE001 - a style id that doesn't resolve
-            st = None
-        for _ in range(6):
-            if st is None:
-                break
-            out.append((st.name or "").lower())
-            st = st.base_style
+            pass
+        styles_seen[key] = out
         return out
 
     def list_kind(p: Any, names: list[str]) -> tuple[str, int] | None:
@@ -804,7 +895,7 @@ def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
         level, num_id = 0, None
         if numpr is not None:
             il, ni = numpr.find(_W + "ilvl"), numpr.find(_W + "numId")
-            level = int(il.get(_W + "val") or 0) if il is not None else 0
+            level = _int(il.get(_W + "val")) if il is not None else 0
             num_id = ni.get(_W + "val") if ni is not None else None
             if num_id == "0":
                 return None
@@ -816,6 +907,9 @@ def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
             level = int(m.group(1)) - 1 if m else 0
             return ("ol" if styled.startswith("list number") else "ul", max(0, level))
         kind = "ol" if styled.startswith("list number") else "ul"
+        level = max(0, min(level, 8))
+        if (num_id, level) in kinds_seen:
+            return (kinds_seen[(num_id, level)], level)
         try:
             numbering = part.numbering_part.element
             num = next(x for x in numbering.iter(_W + "num") if x.get(_W + "numId") == num_id)
@@ -826,7 +920,8 @@ def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
             kind = "ul" if fmt in ("bullet", "none") else "ol"
         except Exception:  # noqa: BLE001 - no numbering part: fall back to the style
             pass
-        return (kind, max(0, min(level, 8)))
+        kinds_seen[(num_id, level)] = kind
+        return (kind, level)
 
     def run_format(r: Any) -> tuple[bool, bool, bool, bool]:
         rpr = r.find(_W + "rPr")
@@ -1152,7 +1247,12 @@ def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
             if len(b.out.blocks) + len(pending) > MAX_BLOCKS * 2:
                 break
 
-    walk(d.element.body)
+    try:
+        walk(d.element.body)
+    except Invalid:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a malformed part: a reason, not a traceback
+        raise Invalid(f"could not read the Word file: {type(exc).__name__}: {str(exc)[:160]}") from None
     flush()
 
     blocks = b.out.blocks
@@ -1162,11 +1262,13 @@ def from_docx(data: bytes, *, split: str = "paragraph") -> Imported:
         blocks.pop(0)
     blocks[:] = [x for i, x in enumerate(blocks)
                  if not (x["type"] == "page-break" and i and blocks[i - 1]["type"] == "page-break")]
-    if any(x.get("meta") == "title" for x in blocks):
-        # Word's Title sits above Heading 1; Codraft's title is the level-1 heading.
-        for x in blocks:
-            if x["type"] == "heading" and x.get("meta") != "title":
-                x["content"]["level"] = min(6, x["content"]["level"] + 1)
+    others = [x for x in blocks if x["type"] == "heading" and x.get("meta") != "title"]
+    if len(others) < len([x for x in blocks if x["type"] == "heading"]) and any(
+            x["content"]["level"] == 1 for x in others):
+        # Word's Title sits above Heading 1; Codraft's title is the level-1 heading, so
+        # the headings under a Title move down a level (unless they already start at 2).
+        for x in others:
+            x["content"]["level"] = min(6, x["content"]["level"] + 1)
     for sec in d.sections:
         try:
             parts_hf = [sec.header, sec.footer]
@@ -1202,12 +1304,17 @@ def read(filename: str, data: bytes, *, resolve: Resolver | None = None, split: 
         raise Invalid(f"the file is too large to import ({MAX_IMPORT_BYTES // (1024 * 1024)} MB max)")
     if not bytes(data).strip():
         raise Invalid("the file is empty: there is nothing to import")
-    if ext == ".docx":
-        out = from_docx(bytes(data), split=split)
-    else:
-        carrier = Imported()
-        out = from_markdown(decode_text(bytes(data), carrier), resolve=resolve, split=split)
-        out.notes[:0] = carrier.notes
+    try:
+        if ext == ".docx":
+            out = from_docx(bytes(data), split=split)
+        else:
+            carrier = Imported()
+            out = from_markdown(decode_text(bytes(data), carrier), resolve=resolve, split=split)
+            out.notes[:0] = carrier.notes
+    except Invalid:
+        raise
+    except Exception as exc:  # noqa: BLE001 - whatever the file holds: a reason, not a traceback
+        raise Invalid(f"could not import the file: {type(exc).__name__}: {str(exc)[:160]}") from None
     if not out.blocks:
         raise Invalid("nothing to import: the file has no text, tables or images")
     if len(out.blocks) > MAX_BLOCKS:

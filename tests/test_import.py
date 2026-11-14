@@ -299,6 +299,38 @@ def test_markdown_never_raises_on_junk():
                     assert all(isinstance(c, str) for r in b["content"]["rows"] for c in r)
 
 
+def test_code_is_found_in_one_pass_and_left_alone():
+    text = "a `x [g]` b ``y ` [g]`` c ` lone [g]\n```\n[g] fenced\n```\nafter [g] `open"
+    got = [text[s:e] for s, e in importers._code_ranges(text)]
+    assert got == ["`x [g]`", "``y ` [g]``", "```\n[g] fenced\n```"]
+    imp = from_markdown(text + "\n\n[g]: https://example.org/g")
+    assert types(imp) == ["text", "text", "text"]
+    md = "|".join(md_of(imp))
+    assert md.count("(https://example.org/g)") == 2  # the lone one and the one after the fence
+    assert "`x [g]`" in md and "``y ` [g]``" in md and "[g] fenced" in md
+    assert importers._drop_elements("a<script>x</script>b<STYLE>y</style >c<script>never closed") == "abc"
+
+
+def test_input_built_to_backtrack_is_handled_in_linear_time():
+    import time
+
+    start = time.monotonic()
+    for text in ("<script>" * 150_000, "".join("`" * k + " a " for k in range(1, 46)) * 1500,
+                 "<div " * 300_000, "![a " * 300_000, "# " + "**a " * 300_000, "<http://a" * 150_000):
+        assert len(from_markdown(text).blocks) <= 1
+    assert time.monotonic() - start < 30  # these took minutes before the scans were made linear
+
+
+def test_markdown_length_limits(monkeypatch):
+    monkeypatch.setattr(importers, "MAX_MARKDOWN_LINES", 50)
+    with pytest.raises(Invalid, match=r"too long to import \(101 lines; the limit is 50\)"):
+        from_markdown("a\n" * 100)
+    monkeypatch.setattr(importers, "MAX_MARKDOWN_LINES", 10**6)
+    monkeypatch.setattr(importers, "MAX_ITEMS", 20)
+    with pytest.raises(Invalid, match="more than 20 paragraphs"):
+        from_markdown("a\n\n" * 100)
+
+
 # ----------------------------------------------------------------------- read(): refusals
 @pytest.mark.parametrize("name,data,why", [
     ("a.md", b"", "the file is empty"),
@@ -427,6 +459,17 @@ def test_docx_without_a_title_style_keeps_heading_levels_and_uses_the_core_title
     assert imp.title == "Core title" and imp.blocks[0]["content"] == {"text": "One", "level": 1}
 
 
+def test_docx_headings_that_already_start_below_the_title_keep_their_levels():
+    # Codraft's own Word export writes a cover title as Title and sections as Heading 2.
+    def build(d):
+        d.add_paragraph("Acme Study", style="Title")
+        d.add_heading("Background", level=2)
+        d.add_heading("Detail", level=3)
+
+    imp = from_docx(make_docx(build))
+    assert [b["content"]["level"] for b in imp.blocks] == [1, 2, 3]
+
+
 W_NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
 R_NS = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
 
@@ -483,6 +526,27 @@ def test_docx_one_cell_table_is_a_box_around_text_and_merged_cells_stay_square()
     assert imp.blocks[1]["content"]["rows"] == [["Wide", "", "C"], ["a", "b", "c"]]
 
 
+def test_docx_with_malformed_values_is_read_or_refused_never_a_traceback():
+    def edit(parts):
+        doc = parts["word/document.xml"].decode()
+        doc = doc.replace("<w:p>", '<w:p><w:pPr><w:numPr><w:ilvl w:val="x"/><w:numId w:val="7"/></w:numPr>'
+                          '<w:outlineLvl w:val="zz"/></w:pPr>', 1)
+        parts["word/document.xml"] = doc.encode()
+
+    imp = from_docx(rezip(make_docx(lambda d: d.add_paragraph("Item")), edit))
+    assert types(imp) == ["text"] and imp.blocks[0]["content"]["markdown"].endswith(" Item")
+
+    def boom(*a, **k):
+        raise RuntimeError("unexpected")
+
+    import unittest.mock as mock
+
+    with mock.patch.object(importers, "_md_escape", boom), pytest.raises(Invalid, match="could not read the Word file"):
+        from_docx(make_docx(lambda d: d.add_paragraph("Item")))
+    with mock.patch.object(importers, "_scan", boom), pytest.raises(Invalid, match="could not import the file"):
+        read("a.md", b"# T")
+
+
 def test_docx_zip_guards(monkeypatch):
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w") as z:
@@ -493,7 +557,11 @@ def test_docx_zip_guards(monkeypatch):
     with pytest.raises(Invalid, match="too large to import"):
         from_docx(_sample_docx())
     monkeypatch.setattr(importers, "MAX_DOCX_UNZIPPED", 10**9)
-    broken = rezip(_sample_docx(), lambda parts: parts.update({"word/document.xml": b"<not-xml"}))
+    monkeypatch.setattr(importers, "MAX_DOCX_XML", 500)
+    with pytest.raises(Invalid, match="MB of text"):
+        from_docx(_sample_docx())
+    monkeypatch.setattr(importers, "MAX_DOCX_XML", 10**9)
+    broken =rezip(_sample_docx(), lambda parts: parts.update({"word/document.xml": b"<not-xml"}))
     with pytest.raises(Invalid, match="could not read the Word file"):
         from_docx(broken)
 

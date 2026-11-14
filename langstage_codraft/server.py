@@ -326,6 +326,47 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
 
+    @app.post("/api/docs/import")
+    async def import_doc(
+        request: Request, file: UploadFile = File(...), title: str = Form(""),
+        template: str = Form("blank"), theme: str = Form(""), settings: str = Form(""),
+        split: str = Form("paragraph"), author: str = Form(""),
+        assets: list[UploadFile] = File(default=[]),
+    ) -> dict:
+        """Create a document from a Markdown or Word file. The template supplies the look
+        and the file the content; ``assets`` are the image files a Markdown file refers to
+        (matched by name). The answer is the document plus ``import`` (what was mapped,
+        and notes on anything that needs a look)."""
+        from . import importers
+
+        async def body(f: UploadFile, budget: int) -> bytes:
+            data = await f.read(budget + 1)
+            if len(data) > budget:
+                raise HTTPException(413, f"file too large ({importers.MAX_IMPORT_BYTES // (1024 * 1024)} MB max)")
+            return data
+
+        data = await body(file, importers.MAX_IMPORT_BYTES)
+        if len(assets) > importers.MAX_IMAGES:
+            raise HTTPException(413, f"too many image files ({importers.MAX_IMAGES} max)")
+        images: dict[str, bytes] = {}
+        budget = 4 * importers.MAX_IMPORT_BYTES
+        for a in assets:
+            images[a.filename or "image"] = await body(a, min(importers.MAX_IMPORT_BYTES, budget))
+            budget -= len(images[a.filename or "image"])
+        try:
+            wanted = json.loads(settings) if settings.strip() else None
+        except json.JSONDecodeError as exc:
+            raise HTTPException(400, f"settings must be a JSON object: {exc}") from exc
+        try:
+            doc, imp = await asyncio.to_thread(
+                importers.import_document, store, cfg, house, file.filename or "", data,
+                title=title or None, template=template or "blank", theme=theme or None, settings=wanted,
+                split=split or "paragraph", resolve=importers.files_resolver(images) if images else None,
+                author=human(request, {"author": author}))
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+        return {**store.full(doc["id"]), "import": imp.summary()}
+
     @app.get("/api/docs/{doc_id}")
     def get_doc(doc_id: str) -> dict:
         try:

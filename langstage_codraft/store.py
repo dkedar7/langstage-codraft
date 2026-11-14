@@ -702,6 +702,26 @@ class Store:
             self._db.commit()
             return self.get_block(bid)
 
+    def insert_blocks(self, doc_id: str, blocks: list[dict], *, author: str = "user",
+                      note: str = "") -> list[str]:
+        """Append many blocks (``{type, content, layout, refs}``) in one transaction: all
+        of them or, if one is refused, none. Used by import. Returns the new block ids."""
+        with self._lock:
+            doc = self.get_document(doc_id)
+            last = self._one("SELECT MAX(ord) AS m FROM blocks WHERE doc_id = ? AND deleted = 0", (doc_id,))
+            base = last["m"] if last and last["m"] is not None else 0.0
+            ids = [
+                self._insert_block_row(
+                    doc_id, b.get("type", "text"), b.get("content"), b.get("layout"),
+                    ord_=base + i + 1, refs=b.get("refs"), author=author,
+                    columns=doc["settings"]["columns"], note=note,
+                )
+                for i, b in enumerate(blocks)
+            ]
+            self._bump(doc_id)
+            self._db.commit()
+            return ids
+
     def _inherit_role(self, after: str | None, layout: dict | None) -> dict | None:
         """A block added right after a cover (or back-page) block, with no role of its own,
         joins that page instead of landing in the body."""

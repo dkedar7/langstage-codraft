@@ -1,6 +1,9 @@
 import type { AppConfig, Block, Comment, Doc, DocSummary, Suggestion, Theme, Upload, VersionTree } from "./types";
 import { notifyHost, withBase } from "./base";
 
+/** What an import mapped, and notes on anything that needs a look. */
+export interface ImportReport { blocks: number; images: number; notes: string[] }
+
 /** The collaborator's display name, sent with human changes (the server prefers a trusted
  *  host header when it has one). */
 let author = "";
@@ -46,6 +49,17 @@ export const api = {
   config: () => req<AppConfig>("GET", "/api/config"),
   listDocs: () => req<DocSummary[]>("GET", "/api/docs"),
   createDoc: (body: { title?: string; template?: string; settings?: any }) => req<Doc>("POST", "/api/docs", body),
+  /** Create a document from a Markdown or Word file: the template supplies the look. */
+  importDoc: (file: File, opts: { title?: string; template?: string; settings?: any; images?: File[] } = {}) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    for (const img of opts.images || []) fd.append("assets", img);
+    if (opts.title) fd.append("title", opts.title);
+    if (opts.template) fd.append("template", opts.template);
+    if (opts.settings) fd.append("settings", JSON.stringify(opts.settings));
+    if (author) fd.append("author", author);
+    return req<Doc & { import: ImportReport }>("POST", "/api/docs/import", fd);
+  },
   getDoc: (id: string) => req<Doc>("GET", `/api/docs/${id}`),
   rev: (id: string) => req<{ rev: number; running: boolean }>("GET", `/api/docs/${id}/rev`),
   patchDoc: (id: string, body: { title?: string; settings?: any }) => req<Doc>("PATCH", `/api/docs/${id}`, body),

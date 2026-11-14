@@ -1,6 +1,6 @@
-import { FileUp, X } from "lucide-react";
+import { FileInput, FileUp, X } from "lucide-react";
 import { useState } from "react";
-import { api } from "../api";
+import { api, type ImportReport } from "../api";
 import { PAGE_SIZE_LABELS } from "../layout/units";
 import type { AppConfig, Doc } from "../types";
 
@@ -25,6 +25,22 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
   const hasCover = !!cfg.templates.find((t) => t.id === template)?.has_cover;
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // An existing Markdown or Word file to bring in: the template then supplies only the look.
+  const [source, setSource] = useState<File | null>(null);
+  // The image files a Markdown file refers to, picked along with it.
+  const [sourceImages, setSourceImages] = useState<File[]>([]);
+  const pickSource = (picked: File[]) => {
+    const isImage = (f: File) => f.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|svg)$/i.test(f.name);
+    const main = picked.find((f) => !isImage(f));
+    if (!main) {
+      setErr(picked.length ? "Pick the Markdown or Word file too: the images go with it." : null);
+      return;
+    }
+    setErr(null);
+    setSource(main);
+    setSourceImages(picked.filter((f) => f !== main && isImage(f)));
+  };
+  const [imported, setImported] = useState<{ doc: Doc; report: ImportReport; kickoff?: string } | null>(null);
 
   const create = async () => {
     setBusy(true);
@@ -34,7 +50,15 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
       if (layout.columns) settings.columns = layout.columns;
       if (layout.theme) settings.theme = layout.theme;
       if (hasCover) settings.cover = { enabled: cover };
-      let doc = await api.createDoc({ title: title || undefined, template, settings });
+      let doc: Doc;
+      let report: ImportReport | null = null;
+      if (source) {
+        const r = await api.importDoc(source, { title: title || undefined, template, settings, images: sourceImages });
+        report = r.import;
+        doc = r;
+      } else {
+        doc = await api.createDoc({ title: title || undefined, template, settings });
+      }
       let kickoff: string | undefined;
       let match: string | undefined;
       for (const f of files) {
@@ -47,19 +71,47 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
             + "compare view_upload with view_pages and refine the cover, heading styles, callouts and figures. Keep my text.";
         }
       }
-      if (!kickoff && notes.trim()) {
+      if (!kickoff && notes.trim() && !source) {
         kickoff = template === "blank"
           ? `Here is what I want to write: ${notes.trim()}\nPropose an outline as heading and text blocks (short placeholder text only; I will write the content).`
           : `Here is what I want to write: ${notes.trim()}\nAdapt this template's headings and placeholder text to fit it (short placeholders only; I will write the content).`;
       }
       if (match) kickoff = kickoff ? `${kickoff}\n\nThen: ${match}` : match;
-      onCreated(doc, cfg.chat_available ? kickoff : undefined);
+      const ask = cfg.chat_available ? kickoff : undefined;
+      // Anything the import couldn't bring in is shown before the document opens.
+      if (report && report.notes.length) setImported({ doc, report, kickoff: ask });
+      else onCreated(doc, ask);
     } catch (e: any) {
       setErr(String(e.message || e));
     } finally {
       setBusy(false);
     }
   };
+
+  if (imported) {
+    const { doc, report } = imported;
+    const open = () => onCreated(doc, imported.kickoff);
+    return (
+      <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-6" onClick={open}>
+        <div className="bg-[var(--color-card)] rounded-xl shadow-2xl w-full max-w-xl max-h-full flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}
+          data-testid="import-report">
+          <div className="px-5 py-3 border-b border-[var(--color-border)] flex-none font-semibold text-[15px]">
+            Imported “{doc.title}”
+          </div>
+          <div className="p-5 flex-1 min-h-0 overflow-auto scroll-thin text-[13px]">
+            <p>{report.blocks} blocks{report.images ? ` and ${report.images} image${report.images === 1 ? "" : "s"}` : ""} were
+              brought in. {report.notes.length === 1 ? "One thing needs" : `${report.notes.length} things need`} a look:</p>
+            <ul className="list-disc pl-5 mt-2 space-y-1" data-testid="import-notes">
+              {report.notes.map((n, i) => <li key={i}>{n}</li>)}
+            </ul>
+          </div>
+          <div className="flex items-center px-5 py-3 border-t border-[var(--color-border)] flex-none">
+            <button className="btn btn-primary ml-auto" data-testid="import-open" onClick={open}>Open document</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/30 flex items-center justify-center p-6" onClick={onClose}>
@@ -87,8 +139,23 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
                 Cover page <span className="text-[var(--color-text-muted)]">(off: the title opens page 1)</span>
               </label>
             )}
+            <span className="label">Or bring in a document you already have</span>
+            {source ? (
+              <div className="flex items-center gap-2 text-xs border border-[var(--ui-accent)] bg-[var(--ui-accent-soft)] rounded-lg px-2.5 py-2" data-testid="import-chosen">
+                <FileInput size={14} className="flex-none" />
+                <span className="truncate flex-1"><b>{source.name}</b>{sourceImages.length ? ` (+${sourceImages.length} image${sourceImages.length === 1 ? "" : "s"})` : ""} becomes
+                  the content; “{cfg.templates.find((t) => t.id === template)?.name || template}” sets the look.</span>
+                <button className="btn btn-ghost btn-icon" title="Don't import" data-testid="import-clear" onClick={() => { setSource(null); setSourceImages([]); }}><X size={12} /></button>
+              </div>
+            ) : (
+              <label className="btn cursor-pointer" title="For a Markdown file with pictures, select its image files along with it">
+                <FileInput size={14} /> Import Markdown or Word file
+                <input type="file" hidden multiple accept=".md,.markdown,.txt,.docx,image/png,image/jpeg,image/gif,image/webp,image/svg+xml" data-testid="import-file"
+                  onChange={(e) => { pickSource(Array.from(e.target.files || [])); e.target.value = ""; }} />
+              </label>
+            )}
             <span className="label">Title</span>
-            <input className="input" value={title} placeholder="Untitled document" data-testid="new-title" onChange={(e) => setTitle(e.target.value)} />
+            <input className="input" value={title} placeholder={source ? "From the file" : "Untitled document"} data-testid="new-title" onChange={(e) => setTitle(e.target.value)} />
             <span className="label">Describe it in your own words (optional)</span>
             <textarea className="textarea" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)}
               placeholder="e.g. a two-page proposal to fund a city bike-share pilot, for the transportation committee" />
@@ -148,7 +215,7 @@ export function NewDocDialog({ cfg, onClose, onCreated }: { cfg: AppConfig; onCl
           {err && <span className="text-[var(--color-error)] text-xs">{err}</span>}
           <button className="btn ml-auto" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary" data-testid="create-doc" disabled={busy} onClick={create}>
-            {busy ? "Creating…" : "Create document"}</button>
+            {busy ? (source ? "Importing…" : "Creating…") : source ? "Import document" : "Create document"}</button>
         </div>
       </div>
     </div>

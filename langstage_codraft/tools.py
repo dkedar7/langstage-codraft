@@ -78,6 +78,17 @@ def begin_turn(doc_id: str | None, key: Any) -> None:
         _TURNS[k] = _fresh_turn(key)
 
 
+_AGENT = "agent"  # who a design step made through these tools is logged as
+
+
+def _design_group(doc_id: str | None) -> str:
+    """The design-history group for the agent's styling right now: one step per turn (the
+    turn's key); "" when there is no turn to name (an MCP client), where the store groups a
+    burst of changes by time instead."""
+    key = turn_state(doc_id).get("key")
+    return f"turn:{key}" if key is not None else ""
+
+
 def _bump(st: dict, name: str) -> int:
     st["n"][name] = st["n"].get(name, 0) + 1
     return st["n"][name]
@@ -256,10 +267,10 @@ def _layout_cut_check(store: Any, doc_id: str, before: dict, after: dict) -> str
     if was and box >= was - 0.5 and before["layout"].get("pin") == after["layout"].get("pin"):
         # It already had this box (or a smaller one), the author's own choice. Don't refuse an
         # unrelated restyle, unless it is this restyle that made the content outgrow the box.
-        store.set_layout(bid, before["layout"], replace=True)
+        store.set_layout(bid, before["layout"], replace=True, log=False)
         earlier = cut_off_blocks(doc_id)
         still = earlier is None or bid in earlier
-        store.set_layout(bid, after["layout"], replace=True)
+        store.set_layout(bid, after["layout"], replace=True, log=False)
         if still:
             return None
     need = f"its content needs about {c['natural_px']} px" if c.get("natural_px") else "its content is taller"
@@ -753,6 +764,17 @@ def get_block_history(block_id: str, config: RunnableConfig) -> str:
 
 
 # -------------------------------------------------------------------------- write
+def _chart_note(block_type: str, content: Any) -> str:
+    """What is wrong with a chart the agent just wrote (mixed units on one axis, colours too
+    close to tell apart), so it fixes it before the author sees it. "" for anything else."""
+    if block_type != "chart" or not isinstance(content, dict):
+        return ""
+    from .charts import chart_warnings
+
+    found = chart_warnings(content.get("spec"))
+    return (" CHART CHECK: " + " ".join(found)) if found else ""
+
+
 def _sugg_result(s: dict) -> str:
     if s["status"] == "applied":
         res = s["payload"].get("result", {})
@@ -837,7 +859,7 @@ def propose_edit(
                     f"{', '.join(ids)}. The author approves and comments on each separately. (keep_together=True "
                     "keeps a draft in one block; use it only when the paragraphs must not be separated.)")
         sg = store.propose(doc_id, "edit", payload, block_id=block_id, comment_id=comment_id, note=note)
-        res = _sugg_result(sg)
+        res = _sugg_result(sg) + _chart_note(b["type"], c)
         if b["type"] in ("text", "callout"):
             # From what the store kept, so a value it repaired (a list of paragraphs) counts too.
             was = _words(b)
@@ -898,7 +920,8 @@ def propose_insert(
                 {"blocks": [{"type": "text", "content": c, "layout": payload["layout"],
                              **({"references": references} if references else {})}],
                  "after_block_id": after_block_id, "note": note}, config=config)
-        return _sugg_result(store.propose(doc_id, "insert", payload, comment_id=comment_id, note=note))
+        return (_sugg_result(store.propose(doc_id, "insert", payload, comment_id=comment_id, note=note))
+                + _chart_note(block_type, c))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -1099,11 +1122,14 @@ def set_block_layout(
             sg = store.revise_suggestion(pend["id"], layout=lay)
             return f"Layout of your pending insert {block_id} is now {json.dumps(sg['payload'].get('layout'))}"
         before = _block(store, doc_id, block_id)
-        b = store.set_layout(block_id, lay)
+        b = store.set_layout(block_id, lay, log=False)
         why = _layout_cut_check(store, doc_id, before, b)
         if why:
-            store.set_layout(block_id, before["layout"], replace=True)
+            store.set_layout(block_id, before["layout"], replace=True, log=False)
             return f"ERROR: {why}"
+        if b["layout"] != before["layout"]:  # a step in the design history, one per turn (gh #54)
+            store.log_design(doc_id, by=_AGENT, group=_design_group(doc_id),
+                             layouts_before={block_id: before["layout"]})
         return f"Layout of {block_id} is now {json.dumps(b['layout'])}"
     except (Invalid, NotFound, ValueError) as exc:
         return _err(exc)
@@ -1183,7 +1209,7 @@ def set_document_style(
             s["block_gap"] = float(block_gap_mm)
         if column_gap_mm is not None:
             s["column_gap"] = float(column_gap_mm)
-        doc = store.update_document(doc_id, title=title, settings=s or None)
+        doc = store.update_document(doc_id, title=title, settings=s or None, by=_AGENT, group=_design_group(doc_id))
         st = doc["settings"]
         return (f"Style updated: {st['mode']}, {st['page_size']} {st['orientation']}, "
                 f"{st['columns']} col, theme {st['theme']}." + _cut_note(store, doc_id))
@@ -1371,7 +1397,8 @@ def reserve_area(config: RunnableConfig, page: int, x_px: int, y_px: int, w_px: 
             r = repeat.strip().lower()
             rep = r if r in ("all", "odd", "even") else [int(v) for v in re.findall(r"\d+", r)]
         got = store.reserve_area(doc_id, {"page": int(page), "x": int(x_px), "y": int(y_px), "w": int(w_px),
-                                          "h": int(h_px)}, repeat=rep, label=label, remove=remove)
+                                          "h": int(h_px)}, repeat=rep, label=label, remove=remove,
+                                 group=_design_group(doc_id))
         was = f" (replaced {', '.join(got['replaced'])})" if got["replaced"] and not remove else ""
         if remove:
             return (f"Removed {len(got['replaced'])} reserved area(s): {', '.join(got['replaced'])}" if got["replaced"]
@@ -1674,9 +1701,9 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
             # one is applied already or still a pending suggestion.
             after = new_id or sg["id"]
             if new_id:
-                out.append(f"{i}: {t} -> {new_id}")
+                out.append(f"{i}: {t} -> {new_id}{_chart_note(t, c)}")
             else:
-                out.append(f"{i}: {t} suggested ({sg['id']}, waiting for approval)")
+                out.append(f"{i}: {t} suggested ({sg['id']}, waiting for approval){_chart_note(t, c)}")
         if split:
             out.append(f"{split} long text item(s) were split into one block per paragraph, so the author can "
                        "approve and comment on each paragraph separately.")
@@ -1743,7 +1770,7 @@ def set_typography(
         store = get_store()
         doc_id = _doc_id(config)
         if reset:
-            store.update_document(doc_id, settings={"style": None})
+            store.update_document(doc_id, settings={"style": None}, by=_AGENT, group=_design_group(doc_id))
             return "Typography reset to the theme."
         vals: dict[str, Any] = {
             "font_body": font_body, "font_heading": font_heading, "font_display": font_display,
@@ -1759,7 +1786,7 @@ def set_typography(
                 for k, v in vals.items() if v is not None}
         if not vals:
             return "Nothing to change: pass at least one value (or reset=True)."
-        doc = store.update_document(doc_id, settings={"style": vals})
+        doc = store.update_document(doc_id, settings={"style": vals}, by=_AGENT, group=_design_group(doc_id))
         return "Style overrides now: " + json.dumps(doc["settings"]["style"]) + _cut_note(store, doc_id)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -1798,7 +1825,7 @@ def set_cover(
             c["image"] = None if clear_image else image
         if not c:
             return "Nothing to change."
-        doc = store.update_document(doc_id, settings={page: c})
+        doc = store.update_document(doc_id, settings={page: c}, by=_AGENT, group=_design_group(doc_id))
         has = any(b["layout"].get("role") == page for b in store.list_blocks(doc_id))
         hint = "" if has or page == "cover" and c.get("enabled") is False else (
             f" Note: no block has role={page} yet, so there is no {page} page; insert one with role='{page}'.")
@@ -1825,7 +1852,7 @@ def set_header_footer(
         doc_id = _doc_id(config)
         empty = {"left": "", "center": "", "right": ""}
         if clear:
-            store.update_document(doc_id, settings={"header": empty, "footer": empty})
+            store.update_document(doc_id, settings={"header": empty, "footer": empty}, by=_AGENT, group=_design_group(doc_id))
             return "Header and footer removed."
         patch: dict[str, dict] = {"header": {}, "footer": {}}
         for part, vals in (("header", (header_left, header_center, header_right)),
@@ -1840,7 +1867,7 @@ def set_header_footer(
         patch = {k: v for k, v in patch.items() if v}
         if not patch:
             return "Nothing to change."
-        doc = store.update_document(doc_id, settings=patch)
+        doc = store.update_document(doc_id, settings=patch, by=_AGENT, group=_design_group(doc_id))
         return "\n".join(_design_lines(doc["settings"])[1:]) or "Header and footer are empty."
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -1872,8 +1899,69 @@ def match_upload_style(upload_id: str, config: RunnableConfig) -> str:
         patch, changes = stylematch.to_settings(prof)
         if not patch:
             return f"Nothing readable in {u['filename']}; look at it with view_upload and style by eye."
-        store.update_document(doc_id, settings=patch)
+        store.update_document(doc_id, settings=patch, by=_AGENT, group=_design_group(doc_id))
         return f"Matched {u['filename']}:\n- " + "\n- ".join(changes) + _cut_note(store, doc_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ------------------------------------------------------------- design history (gh #54)
+def _step_line(e: dict, now: float) -> str:
+    from .design_history import age
+
+    who = "you (the agent)" if e["kind"] == "agent" else f"the author ({e['by']})"
+    what = ("undid " if e["note"] == "undo" else "restored the look from before ") + f"step {e['restore_of']}: " \
+        if e["restore_of"] else ""
+    state = "" if e["undoable"] else "  [no longer in effect]"
+    return f"{e['id']}  {age(now - e['updated_at'])}  {who}: {what}{e['summary']}{state}"
+
+
+@tool
+def list_design_history(config: RunnableConfig, limit: int = 10) -> str:
+    """List the recent changes to the document's look, newest first: who made each step
+    (you or the author), when, and what it changed. Every styling change is a step: document
+    style, typography, cover, header and footer, block layouts, reserved areas. One turn of
+    yours is one step, however many styling calls it made. Use it when the author asks to
+    undo styling or to go back to an earlier look, then call restore_design with the step's
+    id."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        steps = store.design_history(doc_id, limit=max(1, min(int(limit), 40)))
+        if not steps:
+            return "The look of this document has not been changed since it was created: nothing to undo."
+        now = time.time()
+        return ("Design history, newest first (restore_design(step_id) undoes one step; whole_look=True goes "
+                "back to how the document looked before it):\n" + "\n".join(_step_line(e, now) for e in steps))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def restore_design(step_id: str, config: RunnableConfig, whole_look: bool = False) -> str:
+    """Undo a styling step from the design history (list_design_history gives the ids). Only
+    when the author asks for it ("undo that restyle", "put the old cover back", "go back to
+    how it looked this morning"): never on your own initiative.
+    By default it undoes that step alone and leaves later changes in place. whole_look=True
+    puts the document back to how it looked before the step, undoing every later change to
+    the look as well. It changes settings, block layouts and reserved areas only: never a
+    block's content, and it neither creates nor deletes content blocks. The restore is a step
+    in the history itself, so the author can undo it in Design -> History."""
+    try:
+        store = get_store()
+        doc_id = _doc_id(config)
+        got = store.restore_design(doc_id, step_id, only=not whole_look, by=_AGENT)
+        notes = (" Note: " + "; ".join(got["notes"]) + ".") if got["notes"] else ""
+        if not got["changed"]:
+            return (f"Nothing to undo for {step_id}: its changes are no longer in effect (already undone, or "
+                    f"restyled again since).{notes}")
+        parts = (["document settings"] if got["settings"] else []) + (
+            [f"{got['blocks']} block layout(s)"] if got["blocks"] else []) + (
+            [f"{got['areas_removed']} reserved area(s) removed"] if got["areas_removed"] else []) + (
+            [f"{got['areas_restored']} reserved area(s) brought back"] if got["areas_restored"] else [])
+        how = "The look is as it was before that step" if whole_look else "That step is undone"
+        return (f"{how}: {', '.join(parts)} put back. No content was changed. This is step {got['step']} in the "
+                f"design history; the author can undo it in Design -> History.{notes}")
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -2022,6 +2110,19 @@ def changes_note(doc_id: str, since: float) -> str:
     if ch["comments"]:
         lines.append("- new open comments: " + ", ".join(
             c["id"] + (f" on {c['block_id']}" if c["block_id"] else " (document)") for c in ch["comments"]))
+    try:
+        look = [e for e in get_store().design_history(doc_id, limit=20)
+                if e["kind"] == "author" and e["updated_at"] > since]
+    except Exception:  # noqa: BLE001
+        look = []
+    undone = [e for e in look if e["restore_of"] and e.get("restore_of_kind") == "agent"]
+    if undone:
+        lines.append("- the author UNDID styling of yours (" + "; ".join(e["summary"] for e in undone[:3])
+                     + "). Do not apply it again unless asked.")
+    own = [e for e in look if e not in undone]
+    if own:
+        lines.append("- the author changed the look themselves (" + "; ".join(e["summary"] for e in own[:3])
+                     + "). Keep their choices.")
     if not lines:
         return ""
     return ("[Codraft note, not written by the author] Since your last turn:\n" + "\n".join(lines)
@@ -2048,6 +2149,8 @@ CODRAFT_TOOLS = [
     set_cover,
     set_header_footer,
     match_upload_style,
+    list_design_history,
+    restore_design,
     compile_references,
     view_pages,
     view_sketch,

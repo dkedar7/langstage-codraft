@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { agentName } from "../branding";
+import { AgentName, agentName } from "../branding";
 import type { AppConfig, Doc } from "../types";
 import { BlockPanel } from "./BlockPanel";
 import { Canvas } from "./Canvas";
@@ -215,6 +215,35 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
   const setCutOff = useCallback((c: Record<string, { natural: number; box: number }>) => {
     setCutOffState((prev) => (JSON.stringify(prev) === JSON.stringify(c) ? prev : c));
   }, []);
+  // When the agent's turn ends and it changed the look, say so and offer to undo it (gh #54).
+  // "Changed" is judged against the newest step seen before the turn, in the server's own
+  // times, so a browser clock that is off doesn't matter.
+  const running = agentRunning || serverRunning;
+  const wasRunning = useRef(false);
+  const seenLook = useRef<number | null>(null);
+  const rev = doc?.rev;
+  useEffect(() => {
+    if (running) {
+      wasRunning.current = true;
+      return;
+    }
+    let alive = true;
+    api.designHistory(docId, 5).then(({ steps }) => {
+      if (!alive) return;
+      const ended = wasRunning.current;
+      const seen = seenLook.current;
+      wasRunning.current = false;
+      seenLook.current = steps[0]?.updated_at ?? 0;
+      if (!ended || seen === null) return;
+      const st = steps.find((x) => x.kind === "agent" && !x.restore_of && x.undoable && x.updated_at > seen);
+      if (!st) return;
+      toast(`${AgentName(cfg.ui)} changed the look: ${st.summary}.`, "info", {
+        label: "Undo",
+        run: () => { run(api.restoreDesign(docId, st.id, true), "Undone: the look is as it was before that turn."); },
+      });
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [running, rev, docId]); // eslint-disable-line react-hooks/exhaustive-deps
   const apiValue: EditorApi | null = useMemo(() => (doc ? {
     doc, cfg, refresh, selected, select: (id) => { select(id); if (id && tab !== "chat" && tab !== "comments") setTab("block"); },
     editing, setEditing, tab, setTab: (t) => { setPanelOpen(true); setTab(t); }, commentFilter, setCommentFilter, ask, run, toast,

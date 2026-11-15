@@ -1,7 +1,7 @@
-import { RotateCcw, Upload as UploadIcon, Wand2, X } from "lucide-react";
+import { History, RotateCcw, Undo2, Upload as UploadIcon, Wand2, X } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api } from "../api";
-import { agentName, feature } from "../branding";
+import { api, type DesignStep } from "../api";
+import { AgentName, agentName, feature } from "../branding";
 import { familyOf } from "../fonts";
 import { baseThemeName, effectiveTheme, pageDesign } from "../render/theme";
 import type { FontInfo, HeaderFooter, PageDesign, Settings, Theme } from "../types";
@@ -34,6 +34,7 @@ export function DesignPanel() {
 
   return (
     <div className="overflow-auto scroll-thin h-full" data-testid="design-panel">
+      <DesignHistory />
       <Section title="Cover page">
         {hasCover ? (
           <>
@@ -345,6 +346,77 @@ function MatchStyle() {
           )}
         </div>
       ))}
+    </Section>
+  );
+}
+
+function ago(t: number): string {
+  const s = Math.max(0, Date.now() / 1000 - t);
+  if (s < 45) return "just now";
+  if (s < 3600) return `${Math.max(1, Math.round(s / 60))} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  const d = Math.round(s / 86400);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+
+/** Design history: every change to the look, by the author or the agent, newest first. A
+ *  step can be undone on its own, or the look put back to how it was before it. A restore
+ *  is a step too, so nothing is lost, and content is never touched. */
+function DesignHistory() {
+  const { ed, doc, cfg } = useDesign();
+  const [steps, setSteps] = useState<DesignStep[] | null>(null);
+  const [all, setAll] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.designHistory(doc.id).then((r) => { if (alive) setSteps(r.steps); }).catch(() => { if (alive) setSteps([]); });
+    return () => { alive = false; };
+  }, [doc.id, doc.rev]);
+  const restore = async (st: DesignStep, only: boolean) => {
+    const r = await ed.run(api.restoreDesign(doc.id, st.id, only));
+    if (!r) return;
+    const res = r.result;
+    if (!res.changed) { ed.toast("Nothing to undo: that change is no longer in effect.", "info"); return; }
+    const parts = [res.settings ? "settings" : "", res.blocks ? `${res.blocks} block layout${res.blocks === 1 ? "" : "s"}` : "",
+      res.areas_removed + res.areas_restored ? "reserved areas" : ""].filter(Boolean).join(", ");
+    ed.toast(`${only ? "Undone" : "Look restored"}: ${parts} put back.${res.notes.length ? ` ${res.notes.join("; ")}.` : ""}`, "info",
+      res.step ? { label: "Undo", run: () => { ed.run(api.restoreDesign(doc.id, res.step!, true)); } } : undefined);
+  };
+  const name = (st: DesignStep) => (st.kind === "agent" ? AgentName(cfg.ui)
+    : !st.by || ["user", "author", "human"].includes(st.by.toLowerCase()) ? "You" : st.by);
+  const what = (st: DesignStep) => (st.restore_of ? (st.note === "undo" ? "Undid a step: " : "Restored an earlier look: ") : "") + st.summary;
+  const lastAgent = (steps || []).find((st) => st.kind === "agent" && !st.restore_of && st.undoable);
+  const shown = all ? steps || [] : (steps || []).slice(0, 5);
+  return (
+    <Section title="History" right={lastAgent ? (
+      <button className="btn btn-ghost text-[11.5px]" data-testid="undo-agent-design" title={lastAgent.summary}
+        onClick={() => restore(lastAgent, true)}><Undo2 size={12} /> Undo {agentName(cfg.ui)}'s last restyle</button>) : null}>
+      <Hint>Every change to the look, yours and {agentName(cfg.ui)}'s. Undoing one never touches the text.</Hint>
+      {steps && steps.length === 0 && <div className="text-[12px] text-[var(--color-text-muted)] mt-2" data-testid="design-history-empty">No changes to the look yet.</div>}
+      <div className="mt-2 space-y-1.5" data-testid="design-history">
+        {shown.map((st, i) => (
+          <div key={st.id} data-testid="design-step" data-step-id={st.id} data-kind={st.kind}
+            className={`rounded border border-[var(--color-border)] px-2 py-1.5 text-[12px] ${st.undoable ? "" : "opacity-60"}`}>
+            <div className="flex items-center gap-1.5">
+              <History size={11} className="text-[var(--color-text-muted)] flex-none" />
+              <span className="font-semibold">{name(st)}</span>
+              <span className="text-[var(--color-text-muted)]">{ago(st.updated_at)}</span>
+              <span className="ml-auto flex gap-1">
+                {st.undoable && (
+                  <button className="btn btn-ghost text-[11.5px]" data-testid="design-undo" title="Undo this change only; later changes stay"
+                    onClick={() => restore(st, true)}>Undo</button>)}
+                {(i > 0 || all) && steps![0].id !== st.id && (
+                  <button className="btn btn-ghost text-[11.5px]" data-testid="design-restore"
+                    title="Put the look back to how it was before this change (this and every later change is undone)"
+                    onClick={() => restore(st, false)}>Back to before this</button>)}
+              </span>
+            </div>
+            <div className="text-[var(--color-text-secondary)] mt-0.5" data-testid="design-step-summary">{what(st)}</div>
+          </div>
+        ))}
+      </div>
+      {steps && steps.length > 5 && (
+        <button className="btn btn-ghost text-[11.5px] mt-1" data-testid="design-history-more" onClick={() => setAll(!all)}>
+          {all ? "Show fewer" : `Show all ${steps.length}`}</button>)}
     </Section>
   );
 }

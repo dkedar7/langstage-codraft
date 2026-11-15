@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.0 — 2026-11-15
+
+**The look has a history, so a restyle can be undone (#54).** The agent changes the look without
+approval, by design, and until now nothing recorded it: content had a version tree per block,
+the look had only "Reset to Classic".
+
+- **Design history.** Every change to the document settings, typography, cover, header and
+  footer, block layouts and reserved areas is a step, with who made it (the author or the
+  agent), when, and a one-line summary ("1 → 2 columns, body font Lato, 14 block layouts").
+  - One agent turn is one step, however many styling calls it makes. An author's changes within
+    ten seconds are one step (a slider, a colour picker). An MCP client's calls are grouped by
+    time.
+  - **Undo** reverts one step and leaves later changes in place; what was restyled again since
+    keeps its newer look. **Back to before this** restores the look from before a step, undoing
+    it and everything after it.
+  - A restore is itself a step, so it can be undone. It changes settings, layouts and reserved
+    areas only: it never edits, creates or deletes a content block. Layouts of blocks deleted
+    since are skipped; blocks added since are left alone.
+  - The newest 200 steps of each document are kept.
+- **Editor.** Design → **History** lists the steps with **Undo** and **Back to before this**, and
+  **Undo the agent's last restyle** at the top. After a turn in which the agent changed the
+  look, a notice says what changed and offers **Undo**.
+- **API.** `GET /api/docs/{id}/design-history` and
+  `POST /api/docs/{id}/design-history/{step}/restore` (`{"only": true}` undoes that step alone).
+  `Store.design_history`, `Store.restore_design`, `Store.last_agent_design`. `update_document`,
+  `set_layout` and `reserve_area` take `by` and `group`.
+- **Agent and MCP.** New tools `list_design_history` and `restore_design`: `CODRAFT_TOOLS` has
+  29 tools. The agent is told to go back only when the author asks, and its next turn is told
+  when the author undid its styling or changed the look themselves.
+- **A chart's problems come back with the tool result.** `propose_insert`, `propose_edit` and
+  `insert_blocks` end with `CHART CHECK:` when a chart puts different units on one axis or uses
+  colours too close to tell apart (`charts.chart_warnings`, added in 0.9.0, was not wired in).
+- **Prompt.** The co-author's prompt now names `anchor="bottom"` for a block at the foot of a
+  page and back-fill for a gap before a figure; before, only the tool descriptions did.
+
 ## 0.9.1 — 2026-11-15
 
 - **Fixed: the agent could shorten the exported document without approval (#58).**

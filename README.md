@@ -38,6 +38,9 @@ you ask it to.
   history: **Undo** on the toast, or **Document → Recently deleted** later (this also covers a
   deletion the agent suggested and you accepted). The agent can do the same when you ask for
   something back (`list_deleted_blocks`, `restore_block`).
+- **The look has a history too.** The agent restyles without asking, so every change to the
+  look is a step you can undo: **Design → History**, or **Undo** on the notice after a
+  restyling turn. One agent turn is one step, and undoing it never touches your text.
 - **Sources stay with each block.** The agent cites as it writes: `[@key]` in the text prints
   as the source's number, and a `references` block lists them with authors, year and
   publisher (see [References and citations](#references-and-citations)).
@@ -161,13 +164,13 @@ Name your agent and the editor uses that name wherever it would say "agent": "As
 "Suggestions from Juniper", replies and history credited to Juniper. Codraft reads `graph.name`
 (`create_agent(model, name="Juniper")`); `[ui] agent_name` overrides it.
 
-The agent's toolset (`CODRAFT_TOOLS`) has 27 tools. Each one reads and writes through the same
+The agent's toolset (`CODRAFT_TOOLS`) has 29 tools. Each one reads and writes through the same
 API the editor uses, so the agent has no private path, and nothing the agent can do is out of
 the author's reach:
 
 | Read | Write (suggestions) | Style (applies directly) | Other |
 |---|---|---|---|
-| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload`, `calculate`, `list_deleted_blocks`, `restore_block` |
+| `get_document`, `read_blocks`, `search_document`, `read_upload`, `list_comments`, `get_block_history` | `propose_edit`, `propose_insert`, `propose_delete`, `propose_move`, `insert_blocks`, `draw_figure` | `set_block_layout`, `set_document_style`, `set_typography`, `set_cover`, `set_header_footer`, `match_upload_style`, `reserve_area` | `reply_to_comment`, `compile_references`, `view_pages`, `view_sketch`, `view_upload`, `calculate`, `list_deleted_blocks`, `restore_block`, `list_design_history`, `restore_design` |
 
 **The agent sees what it has proposed.** While its suggestions wait for you, the agent works from
 the document as it will be, not only the one you have accepted:
@@ -357,6 +360,49 @@ the fonts, colours, header and footer too).
   "footer": {"left": "{page}", "center": "{title}", "right": "Example Forum", "rule": True},
 }
 ```
+
+### Design history: undo a restyle
+
+Styling is the agent's to change without approval, which only works if it is cheap to undo. So
+the look has a history, like the text does. Every change to the document settings, typography,
+cover, header and footer, block layouts and reserved areas is a **step**, with who made it, when,
+and what it changed:
+
+```text
+The agent   3 min ago    1 → 2 columns, theme classic → modern, body font Lato, 14 block layouts
+You         1 h ago      heading case uppercase
+```
+
+- **One turn is one step.** An agent turn that makes 30 or 200 styling calls is a single step.
+  So is one drag of a colour picker or a size field. An MCP client has no turns, so its calls
+  are grouped by time (a pause of two minutes starts a new step).
+- **Undo** reverts that step alone and leaves later changes in place. A setting or a block that
+  was restyled again since keeps its newer look, and the result says how many were left.
+- **Back to before this** puts the document back to how it looked before the step: that step
+  and every later change to the look are undone.
+- **A restore is a step itself**, so it can be undone the same way. Nothing is overwritten.
+- **Content is never touched.** A restore changes settings, block layouts and reserved areas.
+  It doesn't edit, create or delete content blocks; the layout of a block deleted since is
+  skipped, and a block added since keeps its layout. The exported page after an undo is the
+  page from before the restyle, pixel for pixel.
+- After a turn in which the agent changed the look, the editor says what changed and offers
+  **Undo**. **Design → History** lists every step, with **Undo the agent's last restyle** at
+  the top.
+- The agent has `list_design_history` and `restore_design` (over MCP too), and is told to use
+  them only when you ask ("undo that", "the old cover was better"). Its next turn is told when
+  you undid its styling, so it doesn't apply it again.
+
+```python
+steps = httpx.get(f"{base}/api/docs/{doc_id}/design-history").json()["steps"]     # newest first
+# {"id": "dsn_4e1c…", "by": "agent", "kind": "agent", "summary": "1 → 2 columns, 14 block layouts",
+#  "settings": True, "blocks": 14, "undoable": True, "restore_of": None, "updated_at": 1763200000.0, …}
+httpx.post(f"{base}/api/docs/{doc_id}/design-history/{steps[0]['id']}/restore", json={"only": True})  # undo it
+httpx.post(f"{base}/api/docs/{doc_id}/design-history/{steps[0]['id']}/restore", json={})   # the look before it
+```
+
+The history keeps the newest 200 steps of a document. In Python: `Store.design_history(doc_id)`,
+`Store.restore_design(doc_id, step_id, only=False, by="author")`. The approval mode, the brief and
+the page count you asked for are not part of the look, and a restore leaves them alone.
 
 ## Bring any agent: MCP
 

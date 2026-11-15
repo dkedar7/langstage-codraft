@@ -22,6 +22,17 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .design_history import (
+    AGENT_FOLD_S,
+    AUTHOR_FOLD_S,
+    NON_DESIGN,
+    changed_paths,
+    design_of,
+    get_path,
+    set_path,
+    summarize,
+)
+from .design_history import CAP as DESIGN_CAP
 from .pages import PAGE_SIZES_MM
 
 BLOCK_TYPES = (
@@ -189,6 +200,15 @@ CREATE TABLE IF NOT EXISTS uploads (
 CREATE TABLE IF NOT EXISTS themes (
   name TEXT PRIMARY KEY, data TEXT NOT NULL, author TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS design_history (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, doc_id TEXT NOT NULL,
+  actor TEXT NOT NULL, kind TEXT NOT NULL, group_key TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '', restore_of TEXT,
+  settings_before TEXT, layouts_before TEXT NOT NULL DEFAULT '{}',
+  areas_added TEXT NOT NULL DEFAULT '[]', areas_removed TEXT NOT NULL DEFAULT '[]',
+  created_at REAL NOT NULL, updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS design_history_doc ON design_history (doc_id, seq);
 """
 
 UPLOAD_PURPOSES = ("reference", "template", "style", "asset")
@@ -584,6 +604,9 @@ class Store:
         # the author did in between (middleware). A cache over the agent_turns table, which
         # keeps it across a restart.
         self._agent_turns: dict[str, dict] = {}
+        # > 0 while a design restore applies its changes: they are logged as one step by the
+        # restore itself, not one by one.
+        self._design_mute = 0
 
     # ------------------------------------------------------------ agent turns
     def agent_turn(self, doc_id: str) -> dict | None:
@@ -776,12 +799,17 @@ class Store:
     def rev(self, doc_id: str) -> int:
         return self.get_document(doc_id)["rev"]
 
-    def update_document(self, doc_id: str, *, title: str | None = None, settings: dict | None = None) -> dict:
+    def update_document(self, doc_id: str, *, title: str | None = None, settings: dict | None = None,
+                        by: str = "author", group: str = "") -> dict:
+        """Change the title or settings. A change to the document's look is a step in its
+        design history (``by``: who made it, "agent" for the agent; ``group``: changes with
+        the same group, e.g. one agent turn, are one step)."""
         with self._lock:
             doc = self.get_document(doc_id)
             if title is not None:
                 self._db.execute("UPDATE documents SET title = ? WHERE id = ?", (title, doc_id))
             if settings:
+                look = design_of(doc["settings"])
                 if "style" in settings and settings["style"] is None:  # reset to the theme
                     settings = {**settings, "style": {}}
                     doc["settings"]["style"] = {}
@@ -794,6 +822,8 @@ class Store:
                 self._db.execute(
                     "UPDATE documents SET settings = ? WHERE id = ?", (json.dumps(merged), doc_id)
                 )
+                if design_of(merged) != look:
+                    self._log_design(doc_id, by=by, group=group, settings_before=look)
             self._bump(doc_id)
             self._db.commit()
             return self.get_document(doc_id)
@@ -994,8 +1024,11 @@ class Store:
             self._db.commit()
             return self.get_block(block_id)
 
-    def set_layout(self, block_id: str, layout: dict, *, replace: bool = False) -> dict:
-        """Layout is styling, not content: it is applied in place, not versioned.
+    def set_layout(self, block_id: str, layout: dict, *, replace: bool = False, by: str = "author",
+                   group: str = "", log: bool = True) -> dict:
+        """Layout is styling, not content: it is applied in place, not versioned. A change
+        is a step in the document's design history instead (``by``, ``group``: see
+        ``update_document``; ``log=False`` for a trial the caller logs or undoes itself).
         ``replace`` sets the layout to exactly ``layout`` (putting an earlier one back)
         instead of merging it into the current one."""
         with self._lock:
@@ -1008,12 +1041,276 @@ class Store:
             lay = validate_layout(merged, cols)
             check_variant(b["type"], lay)
             self._db.execute("UPDATE blocks SET layout = ? WHERE id = ?", (json.dumps(lay), block_id))
+            if log and lay != b["layout"]:
+                self._log_design(b["doc_id"], by=by, group=group, layouts_before={block_id: b["layout"]})
             self._bump(b["doc_id"])
             self._db.commit()
             return self.get_block(block_id)
 
+    # ---------------------------------------------------------- design history
+    @staticmethod
+    def _design_entry(r: sqlite3.Row) -> dict:
+        return {"seq": r["seq"], "id": r["id"], "doc_id": r["doc_id"], "by": r["actor"], "kind": r["kind"],
+                "group": r["group_key"], "note": r["note"], "restore_of": r["restore_of"],
+                "settings_before": json.loads(r["settings_before"]) if r["settings_before"] else None,
+                "layouts_before": json.loads(r["layouts_before"]),
+                "areas_added": json.loads(r["areas_added"]), "areas_removed": json.loads(r["areas_removed"]),
+                "created_at": r["created_at"], "updated_at": r["updated_at"]}
+
+    def _design_entries(self, doc_id: str) -> list[dict]:
+        """The document's design steps, oldest first."""
+        return [self._design_entry(r) for r in
+                self._q("SELECT * FROM design_history WHERE doc_id = ? ORDER BY seq", (doc_id,))]
+
+    def _look_rows(self, doc_id: str) -> tuple[dict[str, dict], set[str]]:
+        """Each live block's type and layout by id, and the ids of the deleted ones: all a
+        design step needs to know about blocks (no content, no versions)."""
+        live: dict[str, dict] = {}
+        gone: set[str] = set()
+        for r in self._q("SELECT id, type, layout, deleted FROM blocks WHERE doc_id = ?", (doc_id,)):
+            if r["deleted"]:
+                gone.add(r["id"])
+            else:
+                live[r["id"]] = {"type": r["type"], "layout": json.loads(r["layout"])}
+        return live, gone
+
+    def log_design(self, doc_id: str, *, by: str = "author", group: str = "",
+                   layouts_before: dict[str, dict] | None = None) -> None:
+        """Record layouts that were changed with ``set_layout(log=False)`` (a trial that was
+        kept): ``layouts_before`` is each block's layout before the change."""
+        with self._lock:
+            self._log_design(doc_id, by=by, group=group, layouts_before=layouts_before)
+            self._db.commit()
+
+    def _log_design(self, doc_id: str, *, by: str, group: str = "", settings_before: dict | None = None,
+                    layouts_before: dict[str, dict] | None = None, areas_added: list[str] | None = None,
+                    areas_removed: list[str] | None = None, note: str = "", restore_of: str | None = None) -> str | None:
+        """Add a step to the design history, or fold the change into the latest step when it
+        is the same burst of work: the same agent turn (``group``), or the same person within
+        a few seconds (one drag of a slider). The step keeps the state *before* its first
+        change. Called inside the lock, by the method that makes the change."""
+        if self._design_mute:
+            return None
+        by = by or "author"
+        kind = "agent" if by == "agent" else "author"
+        now = time.time()
+        last = self._one("SELECT * FROM design_history WHERE doc_id = ? ORDER BY seq DESC LIMIT 1", (doc_id,))
+        fold = None
+        if last is not None and restore_of is None and last["restore_of"] is None and last["actor"] == by:
+            window = AGENT_FOLD_S if kind == "agent" else AUTHOR_FOLD_S
+            same_group = bool(group) and last["group_key"] == group
+            if same_group or (not group and not last["group_key"] and now - last["updated_at"] <= window):
+                fold = self._design_entry(last)
+        if fold is not None:
+            lays = fold["layouts_before"]
+            for bid, lay in (layouts_before or {}).items():
+                lays.setdefault(bid, lay)  # the layout before the step's first change to it
+            added, removed = list(fold["areas_added"]), list(fold["areas_removed"])
+            for sid in areas_removed or []:
+                if sid in added:
+                    added.remove(sid)  # added and removed again within the step: never there
+                elif sid not in removed:
+                    removed.append(sid)
+            added += [sid for sid in areas_added or [] if sid not in added]
+            before = fold["settings_before"] if fold["settings_before"] is not None else settings_before
+            self._db.execute(
+                "UPDATE design_history SET settings_before = ?, layouts_before = ?, areas_added = ?,"
+                " areas_removed = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(before) if before is not None else None, json.dumps(lays), json.dumps(added),
+                 json.dumps(removed), now, fold["id"]))
+            return fold["id"]
+        eid = _id("dsn")
+        self._db.execute(
+            "INSERT INTO design_history (id, doc_id, actor, kind, group_key, note, restore_of, settings_before,"
+            " layouts_before, areas_added, areas_removed, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (eid, doc_id, by, kind, group or "", note, restore_of,
+             json.dumps(settings_before) if settings_before is not None else None,
+             json.dumps(layouts_before or {}), json.dumps(areas_added or []), json.dumps(areas_removed or []),
+             now, now))
+        # Bounded: keep the newest DESIGN_CAP steps of each document.
+        self._db.execute(
+            "DELETE FROM design_history WHERE doc_id = ? AND seq NOT IN"
+            " (SELECT seq FROM design_history WHERE doc_id = ? ORDER BY seq DESC LIMIT ?)",
+            (doc_id, doc_id, DESIGN_CAP))
+        return eid
+
+    def _design_plan(self, entries: list[dict], idx: int, only: bool, look: dict, blocks: dict[str, dict],
+                     deleted: set[str]) -> dict:
+        """What a restore would do, without doing it. ``entries`` oldest first, ``idx`` the
+        step, ``look`` the current design settings, ``blocks`` the current blocks by id,
+        ``deleted`` the ids of deleted blocks. Returns the settings to end up with, the
+        layouts to put back, the reserved areas to remove and to bring back, and how much
+        was left alone: ``kept`` (changed again since the step) and ``gone`` (deleted blocks)."""
+        step, later = entries[idx], entries[idx + 1:]
+
+        def first_look(es: list[dict]) -> dict | None:
+            return next((e["settings_before"] for e in es if e["settings_before"] is not None), None)
+
+        new_look, layouts, kept, gone = deepcopy(look), {}, 0, 0
+        if only:
+            # Undo this step alone: put back what it changed, where its change still stands.
+            before = step["settings_before"]
+            if before is not None:
+                after = first_look(later)
+                after = look if after is None else after
+                for path in changed_paths(before, after):
+                    if get_path(look, path) == get_path(after, path):
+                        set_path(new_look, path, get_path(before, path))
+                    else:
+                        kept += 1
+            for bid, lay in step["layouts_before"].items():
+                if any(bid in e["layouts_before"] for e in later):
+                    kept += 1  # restyled again since: that later choice stands
+                else:
+                    layouts[bid] = lay
+            drop, back = list(step["areas_added"]), list(step["areas_removed"])
+        else:
+            # The look before this step: undo it and everything after it.
+            earlier = first_look(entries[idx:])
+            if earlier is not None:
+                new_look = deepcopy(earlier)
+            drop, back = [], []
+            for e in entries[idx:]:
+                for bid, lay in e["layouts_before"].items():
+                    layouts.setdefault(bid, lay)
+                for sid in e["areas_added"]:
+                    if sid not in drop:
+                        drop.append(sid)
+                back += [sid for sid in e["areas_removed"] if sid not in drop and sid not in back]
+        todo = {}
+        for bid, lay in layouts.items():
+            if bid not in blocks:
+                gone += 1
+            elif blocks[bid]["layout"] != lay:
+                todo[bid] = lay
+        return {"look": new_look, "layouts": todo, "drop": [s for s in drop if s in blocks],
+                "back": [s for s in back if s in deleted], "kept": kept, "gone": gone}
+
+    def design_history(self, doc_id: str, *, limit: int = 50) -> list[dict]:
+        """The document's design steps, newest first: who changed the look, when, and what
+        (``summary``). ``undoable`` says whether undoing the step alone would still change
+        anything; ``settings``/``blocks`` say what the step touched. Steps that ended up
+        changing nothing (a value dragged away and back) are left out."""
+        with self._lock:
+            doc = self.get_document(doc_id)
+            entries = self._design_entries(doc_id)
+            blocks, deleted = self._look_rows(doc_id)
+            look = design_of(doc["settings"])
+            kinds = {e["id"]: e["kind"] for e in entries}
+            after_look: dict = look
+            after_lay: dict[str, Any] = {bid: b["layout"] for bid, b in blocks.items()}
+            out: list[dict] = []
+            for i in range(len(entries) - 1, -1, -1):
+                if len(out) >= max(1, limit):
+                    break
+                e = entries[i]
+                n_lay = sum(1 for bid, lay in e["layouts_before"].items() if bid in after_lay and after_lay[bid] != lay)
+                changed = e["settings_before"] is not None and e["settings_before"] != after_look
+                summary = summarize(e["settings_before"] if changed else None, after_look if changed else None,
+                                    layouts=n_lay, areas_added=len(e["areas_added"]),
+                                    areas_removed=len(e["areas_removed"]))
+                if changed or n_lay or e["areas_added"] or e["areas_removed"]:
+                    plan = self._design_plan(entries, i, True, look, blocks, deleted)
+                    out.append({
+                        "id": e["id"], "by": e["by"], "kind": e["kind"], "note": e["note"],
+                        "restore_of": e["restore_of"],
+                        "restore_of_kind": kinds.get(e["restore_of"]) if e["restore_of"] else None,
+                        "created_at": e["created_at"], "updated_at": e["updated_at"],
+                        "summary": summary, "settings": changed, "blocks": n_lay,
+                        "areas_added": len(e["areas_added"]), "areas_removed": len(e["areas_removed"]),
+                        "undoable": bool(plan["look"] != look or plan["layouts"] or plan["drop"] or plan["back"]),
+                    })
+                if e["settings_before"] is not None:
+                    after_look = e["settings_before"]
+                for bid, lay in e["layouts_before"].items():
+                    after_lay[bid] = lay
+            return out
+
+    def restore_design(self, doc_id: str, step_id: str, *, only: bool = False, by: str = "author") -> dict:
+        """Put the document's look back. ``only=False``: as it was *before* the step (the step
+        and everything after it are undone). ``only=True``: undo that step alone, leaving
+        later changes in place (what was restyled again since is left as it is now).
+
+        Only settings, block layouts and reserved areas change: never a block's content, and
+        no content block is created or deleted. Layouts of blocks deleted since are skipped.
+        The restore is a step in the history itself, so it can be undone the same way.
+        Returns ``{"changed", "step" (the new step's id), "settings", "blocks", "areas_removed",
+        "areas_restored", "kept", "skipped", "notes"}``."""
+        with self._lock:
+            doc = self.get_document(doc_id)
+            entries = self._design_entries(doc_id)
+            idx = next((i for i, e in enumerate(entries) if e["id"] == step_id), None)
+            if idx is None:
+                raise NotFound(f"no design step {step_id} in this document (see its design history)")
+            blocks, deleted = self._look_rows(doc_id)
+            look = design_of(doc["settings"])
+            plan = self._design_plan(entries, idx, only, look, blocks, deleted)
+            notes: list[str] = []
+            new_look = plan["look"]
+            if new_look.get("theme") != look.get("theme"):
+                from . import themes
+
+                if new_look.get("theme") not in themes.theme_names():
+                    notes.append(f"the theme {new_look.get('theme')!r} no longer exists: kept {look.get('theme')!r}")
+                    new_look["theme"] = look.get("theme")
+            settings_changed = new_look != look
+            skipped = plan["gone"]
+            put_back: dict[str, dict] = {}
+            dropped: list[str] = []
+            brought: list[str] = []
+            self._design_mute += 1
+            try:
+                if settings_changed:
+                    merged = {**{k: v for k, v in doc["settings"].items() if k in NON_DESIGN}, **new_look}
+                    merged["columns"] = int(merged.get("columns", 1))
+                    self._check_settings(merged, changed=set())
+                    self._db.execute("UPDATE documents SET settings = ? WHERE id = ?", (json.dumps(merged), doc_id))
+                cols = int(new_look.get("columns", doc["settings"]["columns"]))
+                for bid, lay in plan["layouts"].items():
+                    try:
+                        good = validate_layout(lay, cols)
+                        check_variant(blocks[bid]["type"], good)
+                    except Invalid:
+                        skipped += 1
+                        continue
+                    self._db.execute("UPDATE blocks SET layout = ? WHERE id = ?", (json.dumps(good), bid))
+                    put_back[bid] = blocks[bid]["layout"]
+                for sid in plan["drop"]:  # reserved areas the undone steps added
+                    if blocks[sid]["type"] == "spacer":
+                        self.delete_block(sid)
+                        dropped.append(sid)
+                for sid in plan["back"]:  # reserved areas the undone steps removed
+                    r = self._one("SELECT type FROM blocks WHERE id = ?", (sid,))
+                    if r is not None and r["type"] == "spacer":
+                        self.restore_block(sid)
+                        brought.append(sid)
+            finally:
+                self._design_mute -= 1
+            changed = bool(settings_changed or put_back or dropped or brought)
+            new_id = None
+            if changed:
+                new_id = self._log_design(
+                    doc_id, by=by, restore_of=step_id, note="undo" if only else "restore",
+                    settings_before=look if settings_changed else None, layouts_before=put_back,
+                    areas_added=brought, areas_removed=dropped)
+                self._bump(doc_id)
+            self._db.commit()
+            if plan["kept"]:
+                notes.append(f"{plan['kept']} change(s) of that step were restyled again since and left as they are")
+            if skipped:
+                notes.append(f"{skipped} block layout(s) skipped (the block was deleted or the layout no longer fits)")
+            return {"changed": changed, "step": new_id, "settings": settings_changed, "blocks": len(put_back),
+                    "areas_removed": len(dropped), "areas_restored": len(brought), "kept": plan["kept"],
+                    "skipped": skipped, "notes": notes}
+
+    def last_agent_design(self, doc_id: str) -> dict | None:
+        """The agent's newest design step that can still be undone, or None."""
+        return next((e for e in self.design_history(doc_id, limit=DESIGN_CAP)
+                     if e["kind"] == "agent" and e["restore_of"] is None and e["undoable"]), None)
+
+
     def reserve_area(self, doc_id: str, pin: dict, *, repeat: Any = None, label: str = "",
-                     author: str = "agent", remove: bool = False) -> dict:
+                     author: str = "agent", remove: bool = False, group: str = "") -> dict:
         """Keep a rectangle of a page empty (a pinned ``spacer`` block). A reserved area that
         the new rectangle overlaps on the same page is replaced, so asking twice never leaves
         two spacers on top of each other. ``remove`` only removes the ones it overlaps.
@@ -1036,6 +1333,10 @@ class Store:
                 self.delete_block(bid)
             block = None if remove else self.insert_block(doc_id, "spacer", {"label": label}, layout=lay,
                                                           author=author, note="reserved area")
+            if block or gone:  # a reserved area is part of the look: a step in the design history
+                self._log_design(doc_id, by=author, group=group, areas_added=[block["id"]] if block else [],
+                                 areas_removed=gone)
+                self._db.commit()
             return {"block": block, "replaced": gone}
 
     def move_block(self, block_id: str, after: str | None) -> dict:

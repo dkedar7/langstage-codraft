@@ -399,12 +399,35 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             raise _json_error(exc) from exc
 
     @app.patch("/api/docs/{doc_id}")
-    def patch_doc(doc_id: str, body: dict = Body(...)) -> dict:
+    def patch_doc(doc_id: str, request: Request, body: dict = Body(...)) -> dict:
         try:
             if "settings" in body and "theme" in body["settings"] and body["settings"]["theme"] not in themes.theme_names():
                 raise Invalid(f"unknown theme {body['settings']['theme']!r}")
-            store.update_document(doc_id, title=body.get("title"), settings=body.get("settings"))
+            store.update_document(doc_id, title=body.get("title"), settings=body.get("settings"),
+                                  by=human(request, body))
             return store.full(doc_id)
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    # --------------------------------------------------------- design history
+    @app.get("/api/docs/{doc_id}/design-history")
+    def design_history(doc_id: str, limit: int = 50) -> dict:
+        """Every change to the document's look, newest first (gh #54): who, when and what.
+        A step's ``undoable`` says whether undoing it alone would still change anything."""
+        try:
+            return {"steps": store.design_history(doc_id, limit=max(1, min(int(limit), 200)))}
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.post("/api/docs/{doc_id}/design-history/{step_id}/restore")
+    def restore_design(doc_id: str, step_id: str, request: Request, body: dict = Body(default={})) -> dict:
+        """Put the look back: ``{"only": true}`` undoes that step alone; otherwise the document
+        looks as it did before the step. Settings, block layouts and reserved areas only,
+        never content. The restore is a step itself."""
+        try:
+            got = store.restore_design(doc_id, step_id, only=bool((body or {}).get("only")),
+                                       by=human(request, body or {}))
+            return {"result": got, "doc": store.full(doc_id)}
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
 
@@ -499,7 +522,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                                      note=body.get("note", "edited"),
                                      base=body.get("base"))
             if "layout" in body:
-                b = store.set_layout(block_id, body["layout"])
+                b = store.set_layout(block_id, body["layout"], by=human(request, body))
             return b or store.get_block(block_id)
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
@@ -639,7 +662,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         return store.set_upload_meta(u["id"], meta) if meta else u
 
     @app.post("/api/uploads/{uid}/apply-style")
-    def apply_style(uid: str) -> dict:
+    def apply_style(uid: str, request: Request) -> dict:
         """Apply the look read from a "style" upload to its document."""
         try:
             u = store.get_upload(uid)
@@ -648,7 +671,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             if u["style"].get("error"):
                 raise Invalid(f"could not read the style of {u['filename']}: {u['style']['error']}")
             patch, changes = stylematch.to_settings(u["style"])
-            store.update_document(u["doc_id"], settings=patch)
+            store.update_document(u["doc_id"], settings=patch, by=human(request, {}))
             return {"doc": store.full(u["doc_id"]), "changes": changes}
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc

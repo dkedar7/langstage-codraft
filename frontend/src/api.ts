@@ -5,6 +5,19 @@ import { notifyHost, withBase } from "./base";
 export interface DeletedBlock { id: string; type: string; deleted_at: number | null; preview: string; n_versions: number; author: string }
 
 /** What an import mapped, and notes on anything that needs a look. */
+/** One change to the document's look: who made it, when, and what it changed. */
+export interface DesignStep {
+  id: string; by: string; kind: "agent" | "author"; note: string;
+  restore_of: string | null; restore_of_kind: string | null;
+  created_at: number; updated_at: number; summary: string;
+  settings: boolean; blocks: number; areas_added: number; areas_removed: number;
+  /** undoing this step alone would still change something */
+  undoable: boolean;
+}
+export interface DesignRestore {
+  changed: boolean; step: string | null; settings: boolean; blocks: number;
+  areas_removed: number; areas_restored: number; kept: number; skipped: number; notes: string[];
+}
 export interface ImportReport { blocks: number; images: number; notes: string[] }
 
 /** The collaborator's display name, sent with human changes (the server prefers a trusted
@@ -66,6 +79,11 @@ export const api = {
   getDoc: (id: string, preview = false) => req<Doc>("GET", `/api/docs/${id}${preview ? "?preview=pending" : ""}`),
   rev: (id: string) => req<{ rev: number; running: boolean }>("GET", `/api/docs/${id}/rev`),
   patchDoc: (id: string, body: { title?: string; settings?: any }) => req<Doc>("PATCH", `/api/docs/${id}`, body),
+  /** Changes to the document's look, newest first. */
+  designHistory: (id: string, limit = 50) => req<{ steps: DesignStep[] }>("GET", `/api/docs/${id}/design-history?limit=${limit}`),
+  /** Undo one step (`only`), or put the look back to how it was before the step. Never touches content. */
+  restoreDesign: (id: string, stepId: string, only: boolean) =>
+    req<{ result: DesignRestore; doc: Doc }>("POST", `/api/docs/${id}/design-history/${stepId}/restore`, { only, author }),
   deleteDoc: (id: string) => req("DELETE", `/api/docs/${id}`),
   duplicateDoc: (id: string) => req<Doc>("POST", `/api/docs/${id}/duplicate`),
   reportLayout: (id: string, body: any) => req("POST", `/api/docs/${id}/layout`, body),

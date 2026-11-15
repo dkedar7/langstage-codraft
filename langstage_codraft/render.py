@@ -35,6 +35,26 @@ PAGE_RECTS_JS = """() => [...document.querySelectorAll('.cd-page')].map(e => {
 })"""
 
 
+# The blocks the print view marks as cut off (content taller than a fixed height, a pin's box
+# or the page), once each, with the first page they are cut on. ``natural`` and ``box`` are
+# the content's own height and the height it was given, in px, when the print view knows them.
+CUT_JS = """() => { const seen = new Map();
+  [...document.querySelectorAll('.cd-page')].forEach((pg, i) => {
+    pg.querySelectorAll('.cd-item[data-overflow="1"]').forEach((n) => {
+      const id = n.dataset.blockId;
+      if (id && !seen.has(id)) seen.set(id, { block_id: id, page: i + 1, type: n.dataset.type || '',
+        natural_px: Number(n.dataset.natural) || null, box_px: Number(n.dataset.box) || null });
+    });
+  });
+  return [...seen.values()]; }"""
+
+
+async def _cut(page: Any, info: dict | None) -> None:
+    """Record the cut-off blocks of an opened print view in ``info["cut_off"]`` (gh #58)."""
+    if info is not None:
+        info["cut_off"] = await page.evaluate(CUT_JS)
+
+
 class BrowserMissing(RuntimeError):
     """Chromium for Playwright isn't installed."""
 
@@ -163,9 +183,21 @@ class Renderer:
         return ctx, page
 
     # --------------------------------------------------------------- outputs
-    async def pdf(self, doc_id: str) -> bytes:
+    async def cut_off(self, doc_id: str, *, preview: bool = False) -> list[dict]:
+        """The blocks whose content an export cuts off: taller than the fixed height or the
+        pin's box it was given, or than the page (gh #58). Each is ``{block_id, page, type,
+        natural_px, box_px}``. Every output below records the same list in ``info`` when
+        given one, from the page it already has open."""
+        ctx, page = await self._open(doc_id, preview=preview)
+        try:
+            return await page.evaluate(CUT_JS)
+        finally:
+            await ctx.close()
+
+    async def pdf(self, doc_id: str, *, info: dict | None = None) -> bytes:
         ctx, page = await self._open(doc_id)
         try:
+            await _cut(page, info)
             await page.emulate_media(media="print")
             await page.wait_for_function(READY_JS, timeout=30000)
             return await page.pdf(prefer_css_page_size=True, print_background=True)
@@ -173,9 +205,11 @@ class Renderer:
             await ctx.close()
 
     async def page_images(self, doc_id: str, *, fmt: str = "png", scale: float = 2.0,
-                          pages: list[int] | None = None, quality: int = 85) -> list[tuple[int, bytes]]:
+                          pages: list[int] | None = None, quality: int = 85,
+                          info: dict | None = None) -> list[tuple[int, bytes]]:
         ctx, page = await self._open(doc_id, scale=scale)
         try:
+            await _cut(page, info)
             jpeg = fmt in ("jpg", "jpeg")
             return await _page_shots(page, scale, pages or None, jpeg=jpeg, quality=quality)
         finally:
@@ -262,11 +296,12 @@ class Renderer:
         finally:
             await ctx.close()
 
-    async def structure(self, doc_id: str, *, scale: float = 2.0) -> dict:
+    async def structure(self, doc_id: str, *, scale: float = 2.0, info: dict | None = None) -> dict:
         """Where every block landed on every page (px, page-relative), with a PNG of each
         item that isn't editable text (pictures for PPTX/DOCX)."""
         ctx, page = await self._open(doc_id, scale=scale)
         try:
+            await _cut(page, info)
             info = await page.evaluate(
                 """() => [...document.querySelectorAll('.cd-page')].map(p => {
                     const r = p.getBoundingClientRect();
@@ -296,10 +331,11 @@ class Renderer:
         finally:
             await ctx.close()
 
-    async def html_zip(self, doc_id: str, title: str = "document") -> bytes:
+    async def html_zip(self, doc_id: str, title: str = "document", *, info: dict | None = None) -> bytes:
         """A static, self-contained HTML snapshot: index.html + assets/."""
         ctx, page = await self._open(doc_id)
         try:
+            await _cut(page, info)
             payload = await page.evaluate(
                 """() => {
                     const css = [];

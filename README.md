@@ -210,6 +210,13 @@ for your approval in every approval mode, including `auto`. Word counts are in `
 number. A long draft of several paragraphs becomes one block per paragraph, so you approve and
 comment on each (`keep_together` keeps a draft whole).
 
+A layout change can't hide content either. `set_block_layout` refuses a height, or a pin's box,
+that would cut off a block's text, table or cells, and says how much room the content needs:
+what is cut off doesn't print, so shortening a block is a content change, and that is a
+suggestion you approve. The check is in the tool, so an MCP client and a bring-your-own agent
+get it too. You can still give a block any height in the Block panel; the panel then says how
+much is cut off and offers **Fit the content**.
+
 **Research tools of the built-in agent.** `fetch_url` reads a page or a PDF. `web_search` is part
 of the default install (the `ddgs` package). If it can't be imported, `langstage-codraft check`
 says so and the agent is told it has no search and must not guess URLs. After six failed fetches
@@ -591,6 +598,27 @@ with Standalone(".codraft") as codraft:       # one browser for many exports
 PNG and JPG come back as the image for a one-page document and as a zip of page images
 otherwise; HTML is always a zip. A failed export raises `ExportError` (`.status` 404 for an
 unknown document, 503 when Chromium isn't installed).
+
+**Cut-off content.** A block whose content is taller than the fixed height (or the pin's box)
+it was given is cut off on the page, and what doesn't fit is missing from the export. Every
+export says so:
+
+```console
+$ langstage-codraft export doc_6e07ed1cea -o report.pdf --data-dir .codraft
+[ ok ] wrote report.pdf (48213 bytes)
+[warn] doc_6e07ed1cea: 1 block is cut off in report.pdf, so part of the content does not print: blk_2b4f2daac7 (page 2). ...
+$ langstage-codraft export doc_6e07ed1cea -o report.pdf --data-dir .codraft --strict   # exit 1, nothing written
+```
+
+| Where | What you get |
+|---|---|
+| `export` | a `[warn]` line per file; `--strict` fails the document (exit 1, no file); `--json` prints one object per export with `cut_off` |
+| `GET /api/docs/{id}/export` | the header `X-Codraft-Cut-Off: blk_…@page,…`; `?strict=true` answers 409 with the list |
+| `GET /api/docs/{id}/layout-check` | `{"ok": false, "cut_off": [{"block_id", "page", "type", "natural_px", "box_px", "preview"}]}` |
+| `export_document`, `Standalone.export` | a `CutOffWarning`; `strict=True` raises `ExportError` (`.status` 409). `Standalone.check(doc_id)` returns the list |
+| the editor's Export button | a notice naming the page, with **Show** to open the block |
+
+A Word export has no such warning: Word reflows the text itself.
 
 ## Text, tables and figures on the page
 

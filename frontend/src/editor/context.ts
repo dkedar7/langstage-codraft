@@ -21,6 +21,10 @@ export interface EditorApi {
   /** Run a mutation, then refresh the document; errors become a toast. */
   run: <T>(p: Promise<T>, okMsg?: string) => Promise<T | undefined>;
   toast: (msg: string, kind?: "info" | "error", action?: { label: string; run: () => void }) => void;
+  /** Blocks whose content is taller than the fixed height or pin box they were given (what
+   *  doesn't fit doesn't print): the height the content needs and the box it has, in px. */
+  cutOff: Record<string, { natural: number; box: number }>;
+  setCutOff: (c: Record<string, { natural: number; box: number }>) => void;
   /** Delete a block and offer to undo it. */
   removeBlock: (id: string) => Promise<void>;
   /** Bring a deleted block back where it was. */

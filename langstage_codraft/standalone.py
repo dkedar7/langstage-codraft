@@ -40,6 +40,27 @@ class ExportError(RuntimeError):
         self.detail = detail
 
 
+class CutOffWarning(UserWarning):
+    """An export in which some blocks are cut off (content taller than the fixed height or
+    the pin's box it was given): that part of the document does not print (gh #58)."""
+
+
+def cut_off_of(response: Any) -> list[dict]:
+    """The blocks an export response reports as cut off: ``[{"block_id", "page"}]``, from
+    its ``X-Codraft-Cut-Off`` header (or the body of a ``strict`` refusal)."""
+    if response.status_code == 409:
+        try:
+            return list(response.json().get("cut_off") or [])
+        except ValueError:
+            return []
+    out = []
+    for part in (response.headers.get("x-codraft-cut-off") or "").split(","):
+        bid, _, page = part.strip().partition("@")
+        if bid:
+            out.append({"block_id": bid, "page": int(page) if page.isdigit() else None})
+    return out
+
+
 class NoData(RuntimeError):
     """The data directory holds no Codraft documents (no ``codraft.db``)."""
 
@@ -205,22 +226,33 @@ class Standalone:
         self.close()
 
     # --------------------------------------------------------------- output
-    def get(self, doc_id: str, fmt: str = "pdf") -> Any:
+    def get(self, doc_id: str, fmt: str = "pdf", *, strict: bool = False) -> Any:
         """The raw response of the app's export route (status, headers, bytes)."""
         import httpx
 
         self.start()
-        return httpx.get(f"{self.base_url}/api/docs/{doc_id}/export", params={"format": fmt},
+        params = {"format": fmt, **({"strict": "true"} if strict else {})}
+        return httpx.get(f"{self.base_url}/api/docs/{doc_id}/export", params=params,
                          headers=self.headers, timeout=600)
 
-    def export(self, doc_id: str, fmt: str = "pdf") -> bytes:
+    def export(self, doc_id: str, fmt: str = "pdf", *, strict: bool = False) -> bytes:
         """The exported bytes. PDF, DOCX, PPTX, GIF and MP4 are the file itself. PNG and JPG
         are the image when the document has one page and a zip of page images otherwise;
-        HTML is always a zip (``index.html`` plus assets)."""
-        r = self.get(doc_id, fmt)
+        HTML is always a zip (``index.html`` plus assets). Blocks that are cut off in the
+        export raise a :class:`CutOffWarning`; with ``strict`` they raise
+        :class:`ExportError` (status 409) instead."""
+        return _checked(self.get(doc_id, fmt, strict=strict), doc_id).content
+
+    def check(self, doc_id: str) -> list[dict]:
+        """The blocks an export of this document would cut off (empty when none):
+        ``[{"block_id", "page", "type", "natural_px", "box_px", "preview"}]``."""
+        import httpx
+
+        self.start()
+        r = httpx.get(f"{self.base_url}/api/docs/{doc_id}/layout-check", headers=self.headers, timeout=600)
         if r.status_code != 200:
             raise ExportError(r.status_code, _detail(r))
-        return r.content
+        return r.json()["cut_off"]
 
     def renderer(self) -> Any:
         """The app's renderer (for ``view_pages``-style screenshots)."""
@@ -230,8 +262,23 @@ class Standalone:
         return get_renderer()
 
 
+def _checked(r: Any, doc_id: str) -> Any:
+    """The export response, or ExportError; warns when the export cut blocks off."""
+    if r.status_code != 200:
+        raise ExportError(r.status_code, _detail(r))
+    cut = cut_off_of(r)
+    if cut:
+        import warnings
+
+        warnings.warn(CutOffWarning(
+            f"{doc_id}: {len(cut)} block(s) are cut off in this export and part of their content does not "
+            "print: " + ", ".join(f"{c['block_id']} (page {c['page']})" for c in cut)), stacklevel=3)
+    return r
+
+
 def export_document(data_dir: str | Path | None, doc_id: str, fmt: str = "pdf",
-                    output: str | Path | None = None, *, cfg: CodraftConfig | None = None) -> bytes | Path:
+                    output: str | Path | None = None, *, cfg: CodraftConfig | None = None,
+                    strict: bool = False) -> bytes | Path:
     """Export one document straight from a data directory; no server needs to be running.
 
     ::
@@ -249,12 +296,13 @@ def export_document(data_dir: str | Path | None, doc_id: str, fmt: str = "pdf",
     manager, which keeps one Chromium for all of them.
 
     Raises :class:`ExportError` (unknown document, Chromium not installed, ...) or
-    :class:`NoData` (no ``codraft.db`` in the directory).
+    :class:`NoData` (no ``codraft.db`` in the directory). When blocks are cut off in the
+    export (content taller than the fixed height it was given) it emits a
+    :class:`CutOffWarning` naming them; ``strict=True`` raises :class:`ExportError` with
+    status 409 instead and writes nothing.
     """
     with Standalone(data_dir, cfg=cfg) as codraft:
-        r = codraft.get(doc_id, fmt)
-        if r.status_code != 200:
-            raise ExportError(r.status_code, _detail(r))
+        r = _checked(codraft.get(doc_id, fmt, strict=strict), doc_id)
         if output is None:
             return r.content
         out = output_path(r, Path(output))

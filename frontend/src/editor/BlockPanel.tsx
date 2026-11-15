@@ -127,6 +127,18 @@ function BlockInspector({ block }: { block: Block }) {
             <NumberInput value={L.height} suffix="px" onCommit={(v) => patchLayout({ height: v })} />
           ) : null}
         </div>
+        {ed.cutOff[block.id] && (
+          <div className="mt-2 text-[12px] rounded border border-[var(--color-warning,#b45309)] px-2 py-1.5" data-testid="cut-off-warning" role="alert">
+            <strong>Cut off.</strong> The content needs about {ed.cutOff[block.id].natural} px and this box is {ed.cutOff[block.id].box} px.
+            What doesn't fit is left out of every export and print.
+            {L.height && !L.pin ? (
+              <div className="mt-1 flex gap-2">
+                <button className="btn" data-testid="cut-off-fit" onClick={() => patchLayout({ height: ed.cutOff[block.id].natural })}>Fit the content</button>
+                <button className="btn" onClick={() => patchLayout({ height: null })}>Auto height</button>
+              </div>
+            ) : null}
+          </div>
+        )}
         {!onOwnPage && !L.pin && (
           <label className="flex items-center gap-2 mt-3" title="The block sits at the foot of the page it lands on, and later blocks flow above it. Use it for a call to action, a closing band or a footer note.">
             <input type="checkbox" data-testid="anchor-bottom" checked={L.anchor === "bottom"}

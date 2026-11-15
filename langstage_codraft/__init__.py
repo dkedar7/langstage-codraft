@@ -36,12 +36,12 @@ def __getattr__(name: str):
         from .middleware import CODRAFT_PROMPT
 
         return CODRAFT_PROMPT
-    if name in ("export_document", "Standalone", "ExportError"):
+    if name in ("export_document", "Standalone", "ExportError", "CutOffWarning"):
         from . import standalone
 
         return getattr(standalone, name)
     raise AttributeError(name)
 
 
-__all__ = ["CODRAFT_PROMPT", "CODRAFT_TOOLS", "CodraftMiddleware", "ExportError", "Standalone",
+__all__ = ["CODRAFT_PROMPT", "CODRAFT_TOOLS", "CodraftMiddleware", "CutOffWarning", "ExportError", "Standalone",
            "__version__", "export_document"]

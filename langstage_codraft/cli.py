@@ -328,7 +328,11 @@ EXPORT_FORMATS = ["pdf", "docx", "pptx", "png", "jpg", "html", "gif", "mp4"]
               help="Render in-process from the configured data directory, even if a server is running.")
 @click.option("--url", default=None, help="Export through the running server at this URL.")
 @click.option("-p", "--port", type=int, help="Export through the running server on this port.")
-def export(doc_ids, fmts, output, data_dir, standalone, url, port) -> None:
+@click.option("--strict", is_flag=True,
+              help="Fail (exit 1, nothing written) when a block is cut off in the export.")
+@click.option("--json", "as_json", is_flag=True,
+              help="Print one JSON object per export (file, bytes, cut_off) instead of the status lines.")
+def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_json) -> None:
     """Export documents: PDF, DOCX, PPTX, PNG, JPG, HTML, GIF or MP4.
 
     With --port or --url it exports through that running server. With --data-dir or
@@ -339,11 +343,17 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port) -> None:
     Several documents and formats share one browser:
 
         langstage-codraft export DOC1 DOC2 -f pdf -f png -o out/ --data-dir .codraft
+
+    A block whose content is taller than the fixed height it was given is cut off in the
+    export. That gets a [warn] line naming the block; --strict makes it an error.
     """
     import httpx
 
     from .render import auth_headers
-    from .standalone import NoData, Standalone, _detail, export_filename, output_path
+    from .standalone import NoData, Standalone, _detail, cut_off_of, export_filename, output_path
+
+    def _fail(msg: str) -> None:  # with --json, stdout carries only the JSON lines
+        _echo(f"[fail] {msg}", **({"file": sys.stderr} if as_json else {}))
 
     fmts = list(dict.fromkeys(fmts)) or ["pdf"]
     live = url is not None or port is not None
@@ -364,7 +374,8 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port) -> None:
             httpx.get(f"{base}/api/health", headers=auth_headers(cfg), timeout=2)
         except httpx.HTTPError:
             in_process = True
-            _echo(f"No server at {base}; rendering in-process from {Path(cfg.data_dir).resolve()}")
+            if not as_json:
+                _echo(f"No server at {base}; rendering in-process from {Path(cfg.data_dir).resolve()}")
 
     sa = None
     if in_process:
@@ -380,10 +391,15 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port) -> None:
 
     def fetch(doc_id: str, fmt: str):
         if sa is not None:
-            return sa.get(doc_id, fmt)
+            return sa.get(doc_id, fmt, **({"strict": True} if strict else {}))
         # The configured password / proxy secret, as the server checks them on loopback too (gh #2).
-        return httpx.get(f"{base}/api/docs/{doc_id}/export", params={"format": fmt},
+        return httpx.get(f"{base}/api/docs/{doc_id}/export",
+                         params={"format": fmt, **({"strict": "true"} if strict else {})},
                          headers=auth_headers(cfg), timeout=180)
+
+    def report(doc_id: str, fmt: str, **fields) -> None:
+        if as_json:
+            _echo(json.dumps({"doc_id": doc_id, "format": fmt, **fields}))
 
     failed = 0
     written: set[Path] = set()
@@ -401,7 +417,14 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port) -> None:
                 _fail(f"no Codraft server at {base} ({type(exc).__name__}); start one with "
                       "`langstage-codraft run`, pass --port / --url, or render without a server: --data-dir DIR")
                 sys.exit(1)
+            if r.status_code == 409 and strict:
+                cut = cut_off_of(r)
+                _fail(f"{doc_id} ({fmt}): not written (--strict): {_detail(r)[:600]}")
+                report(doc_id, fmt, ok=False, file=None, cut_off=cut, error="cut_off")
+                failed += 1
+                continue
             if r.status_code != 200:
+                report(doc_id, fmt, ok=False, file=None, cut_off=[], error=f"{r.status_code}: {_detail(r)[:300]}")
                 if sa is not None and r.status_code == 404:
                     _fail(f"{doc_id}: not found in {Path(cfg.data_dir).resolve()} (see `langstage-codraft list`)")
                 elif many or sa is not None:
@@ -420,7 +443,16 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port) -> None:
             written.add(out)
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_bytes(r.content)
+            cut = cut_off_of(r)
+            report(doc_id, fmt, ok=True, file=str(out), bytes=len(r.content), cut_off=cut)
+            if as_json:
+                continue
             _ok(f"wrote {out} ({len(r.content)} bytes)")
+            if cut:
+                _warn(f"{doc_id}: {len(cut)} block{'s are' if len(cut) != 1 else ' is'} cut off in {out.name}, so "
+                      "part of the content does not print: "
+                      + ", ".join(f"{c['block_id']} (page {c['page']})" for c in cut)
+                      + ". Give the block more height (or auto height), or shorten it; --strict makes this an error.")
     finally:
         if sa is not None:
             sa.close()

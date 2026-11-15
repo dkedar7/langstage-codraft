@@ -73,6 +73,17 @@ export function Canvas() {
   const blocks = useMemo(() => withVirtual(doc.blocks, doc.suggestions), [doc.blocks, doc.suggestions]);
   const { layout, geo, ctx, measureNode, measured } = useDocLayout(blocks, doc.settings, theme, true);
   const byId = useMemo(() => Object.fromEntries(blocks.map((b) => [b.id, b])), [blocks]);
+  // Content taller than its fixed height or pin box: the Block panel and Export warn about it.
+  const setCutOff = ed.setCutOff;
+  useEffect(() => {
+    const cut: Record<string, { natural: number; box: number }> = {};
+    for (const b of blocks) {
+      const fixed = pinHeight(b) || b.layout.height;
+      const m = measured[b.id];
+      if (!b.virtual && fixed && m && CLIPS.has(b.type) && m.natural > fixed + 1) cut[b.id] = { natural: Math.ceil(m.natural), box: Math.round(fixed) };
+    }
+    setCutOff(cut);
+  }, [blocks, measured, setCutOff]);
   const pageRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const [drag, setDrag] = useState<DragState | null>(null);
   const [drop, setDrop] = useState<DropTarget | null>(null);

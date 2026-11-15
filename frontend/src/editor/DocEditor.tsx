@@ -211,12 +211,16 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
   const me = useMemo(() => ({ id: identity.id, name: identity.name, color: identity.color }),
     [identity.id, identity.name, identity.color]);
 
+  const [cutOff, setCutOffState] = useState<Record<string, { natural: number; box: number }>>({});
+  const setCutOff = useCallback((c: Record<string, { natural: number; box: number }>) => {
+    setCutOffState((prev) => (JSON.stringify(prev) === JSON.stringify(c) ? prev : c));
+  }, []);
   const apiValue: EditorApi | null = useMemo(() => (doc ? {
     doc, cfg, refresh, selected, select: (id) => { select(id); if (id && tab !== "chat" && tab !== "comments") setTab("block"); },
     editing, setEditing, tab, setTab: (t) => { setPanelOpen(true); setTab(t); }, commentFilter, setCommentFilter, ask, run, toast,
-    removeBlock, restoreBlock, reloadConfig,
+    removeBlock, restoreBlock, reloadConfig, cutOff, setCutOff,
     agentRunning: agentRunning || serverRunning, setAgentRunning, zoom, peers, me,
-  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, removeBlock, restoreBlock, agentRunning, serverRunning, zoom, peers, me, reloadConfig]);
+  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, removeBlock, restoreBlock, agentRunning, serverRunning, zoom, peers, me, reloadConfig, cutOff, setCutOff]);
 
   if (err) return <div className="p-8 text-[var(--color-error)]">Could not open the document: {err}</div>;
   if (!doc || !apiValue) return <div className="p-8 text-[var(--color-text-muted)]">Loading…</div>;
@@ -254,6 +258,13 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
       a.download = name;
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      // Blocks cut off by a fixed height don't print in full: say so, and take the author to the first (gh #58).
+      const cut = (r.headers.get("x-codraft-cut-off") || "").split(",").map((p) => p.trim().split("@")).filter((p) => p[0]);
+      if (cut.length) {
+        toast(`Exported, but ${cut.length === 1 ? "one block is" : `${cut.length} blocks are`} cut off by a fixed height`
+          + ` (page ${[...new Set(cut.map((p) => p[1]))].join(", ")}): what doesn't fit is missing from the ${fmt.toUpperCase()}.`,
+          "error", { label: "Show", run: () => { select(cut[0][0]); setPanelOpen(true); setTab("block"); } });
+      }
     } catch (e: any) {
       toast(`Export failed: ${e.message}. Tip: "Print from browser" works without the renderer.`, "error");
     }

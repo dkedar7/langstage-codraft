@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.9.1 — 2026-11-15
+
+- **Fixed: the agent could shorten the exported document without approval (#58).**
+  `set_block_layout(height_px=…)` is styling, so it applied at once, and a small height on one
+  of the author's text blocks left most of that block out of every export, with no suggestion,
+  no version and no warning. The tool now measures the block in the print view and refuses a
+  height, or a pin's box, that would cut off a text, callout, heading, table, row, tiles or
+  references block. The refusal names the height the content needs, nothing is changed, and it
+  points to `propose_edit` for making the text shorter. This holds in every approval mode and
+  for MCP clients and bring-your-own agents, which never saw the built-in prompt's rule.
+  - A restyle of a block the author had already boxed is still allowed; making that box
+    smaller, or a restyle that makes fitting content outgrow its box, is not.
+  - Without a renderer (no Chromium) the tool refuses only a box plainly too small for the
+    block's word count.
+  - `set_typography`, `set_document_style` and `match_upload_style` end with an `OVERFLOW:`
+    line when they leave a fixed-height block cut off.
+  - A pending insert keeps its layout inside the suggestion, as before: the author sees it.
+- **An export says what it cut off.** A block that is cut off on the page is now reported by
+  every way to export:
+  - `langstage-codraft export` prints a `[warn]` line naming the blocks and pages. `--strict`
+    fails that document instead (exit 1, nothing written); `--json` prints one object per
+    export with `file`, `bytes` and `cut_off`.
+  - `GET /api/docs/{id}/export` sets `X-Codraft-Cut-Off: blk_…@page,…`; `?strict=true` answers
+    409 with the list. `GET /api/docs/{id}/layout-check` returns the list on its own, with the
+    height the content needs and the height it has.
+  - `export_document` and `Standalone.export` emit a `CutOffWarning`; `strict=True` raises
+    `ExportError` (status 409). `Standalone.check(doc_id)` returns the list.
+  - A Word export has no warning: Word reflows the text.
+- **The editor tells the author.** The Block panel shows how much of a fixed-height block is
+  cut off, with **Fit the content** and **Auto height**; the Export button's notice names the
+  page and opens the block. Authors can still set any height: it is their text.
+- `Store.set_layout(block_id, layout, replace=True)` sets a layout exactly, without merging.
+
 ## 0.9.0 — 2026-11-14
 
 **Pages without holes, tables that split, references with authors.** From a second real-model

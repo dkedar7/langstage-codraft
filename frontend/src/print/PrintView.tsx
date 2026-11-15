@@ -104,6 +104,8 @@ function PrintPages({ doc, cfg }: { doc: Doc; cfg: AppConfig }) {
             return (
               <div key={`${it.id}-${it.offset}`} className="cd-item" data-block-id={it.id} data-type={b.type} data-fragment={it.fragment ? "1" : "0"}
                 data-overflow={cut ? "1" : "0"}
+                data-natural={cut && fixed && measured[b.id]?.natural ? Math.ceil(measured[b.id].natural) : undefined}
+                data-box={cut && fixed ? Math.round(fixed) : undefined}
                 data-raster={blockFill(b, theme) ? "1" : "0"} style={{ position: "absolute", left: it.x, top: it.y, width: it.w, height: it.h }}>
                 <Fragment item={it}>
                   <BlockView block={b} width={it.w} ctx={pctx} fixedHeight={fixed} pageNo={pageNo} />

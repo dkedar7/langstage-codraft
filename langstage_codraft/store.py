@@ -994,13 +994,15 @@ class Store:
             self._db.commit()
             return self.get_block(block_id)
 
-    def set_layout(self, block_id: str, layout: dict) -> dict:
-        """Layout is styling, not content: it is applied in place, not versioned."""
+    def set_layout(self, block_id: str, layout: dict, *, replace: bool = False) -> dict:
+        """Layout is styling, not content: it is applied in place, not versioned.
+        ``replace`` sets the layout to exactly ``layout`` (putting an earlier one back)
+        instead of merging it into the current one."""
         with self._lock:
             b = self.get_block(block_id)
             cols = self.get_document(b["doc_id"])["settings"]["columns"]
-            merged = _merge(b["layout"], layout)
-            if "pin" in layout and layout["pin"] is None:  # unpinning also stops repeating
+            merged = deepcopy(layout) if replace else _merge(b["layout"], layout)
+            if not replace and "pin" in layout and layout["pin"] is None:  # unpinning also stops repeating
                 merged["pin"] = None
                 merged["repeat"] = None
             lay = validate_layout(merged, cols)

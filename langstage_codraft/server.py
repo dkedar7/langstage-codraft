@@ -42,10 +42,11 @@ from .store import (
     NotFound,
     Store,
     get_store,
+    plain_text,
     set_store,
 )
 from .store import _merge as _store_merge
-from .textutil import extract_text
+from .textutil import excerpt, extract_text
 
 log = logging.getLogger("langstage_codraft")
 STATIC_DIR = Path(__file__).parent / "static"
@@ -747,8 +748,42 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     # ----------------------------------------------------------------- export
+    def _cut_details(doc_id: str, cut: list[dict]) -> list[dict]:
+        """The renderer's cut-off records with a few words of each block, for a person."""
+        out = []
+        for c in cut:
+            try:
+                b = store.get_block(c["block_id"])
+                c = {**c, "type": b["type"], "preview": excerpt(plain_text(b["type"], b["content"]), 60)}
+            except NotFound:
+                pass
+            out.append(c)
+        return out
+
+    @app.get("/api/docs/{doc_id}/layout-check")
+    async def layout_check(doc_id: str) -> dict:
+        """What an export of this document would cut off (gh #58): blocks whose content is
+        taller than the fixed height or the pin's box they were given, or than the page."""
+        try:
+            store.get_document(doc_id)
+        except NotFound as exc:
+            raise HTTPException(404, str(exc)) from exc
+        r = get_renderer()
+        if r is None:
+            raise HTTPException(503, "renderer not running")
+        try:
+            cut = await r.acall(r.cut_off(doc_id))
+        except BrowserMissing as exc:
+            raise HTTPException(503, str(exc)) from exc
+        except RenderFailed as exc:
+            raise HTTPException(500, str(exc)) from exc
+        return {"ok": not cut, "cut_off": _cut_details(doc_id, cut)}
+
     @app.get("/api/docs/{doc_id}/export")
-    async def export(doc_id: str, format: str = "pdf") -> Response:
+    async def export(doc_id: str, format: str = "pdf", strict: bool = False) -> Response:
+        """The document in ``format``. When blocks are cut off in it (see layout-check) the
+        response says so in ``X-Codraft-Cut-Off`` (``blk_…@page``, comma-separated); with
+        ``strict=true`` the export is refused with 409 instead."""
         try:
             doc = store.get_document(doc_id)
         except NotFound as exc:
@@ -758,23 +793,32 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             raise HTTPException(503, "renderer not running")
         stem = _slug(doc["title"])
         fmt = format.lower()
+        info: dict = {}
+
+        def _send(data: bytes, media_type: str, filename: str) -> Response:
+            cut = info.get("cut_off") or []
+            if cut and strict:
+                det = _cut_details(doc_id, cut)
+                return JSONResponse({"detail": cut_off_message(det), "cut_off": det}, status_code=409)
+            headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+            if cut:
+                headers["X-Codraft-Cut-Off"] = ",".join(f"{c['block_id']}@{c['page']}" for c in cut[:40])
+            return Response(data, media_type=media_type, headers=headers)
+
         try:
             if fmt == "pdf":
-                data = await r.acall(r.pdf(doc_id))
-                return Response(data, media_type="application/pdf",
-                                headers={"Content-Disposition": f'attachment; filename="{stem}.pdf"'})
+                data = await r.acall(r.pdf(doc_id, info=info))
+                return _send(data, "application/pdf", f"{stem}.pdf")
             if fmt in ("png", "jpg", "jpeg"):
                 ext = "jpg" if fmt != "png" else "png"
-                imgs = await r.acall(r.page_images(doc_id, fmt=ext))
+                imgs = await r.acall(r.page_images(doc_id, fmt=ext, info=info))
                 if len(imgs) == 1:
-                    return Response(imgs[0][1], media_type=f"image/{'jpeg' if ext == 'jpg' else 'png'}",
-                                    headers={"Content-Disposition": f'attachment; filename="{stem}.{ext}"'})
-                return Response(zip_images(imgs, ext, stem), media_type="application/zip",
-                                headers={"Content-Disposition": f'attachment; filename="{stem}-{ext}.zip"'})
+                    return _send(imgs[0][1], f"image/{'jpeg' if ext == 'jpg' else 'png'}", f"{stem}.{ext}")
+                return _send(zip_images(imgs, ext, stem), "application/zip", f"{stem}-{ext}.zip")
             if fmt in ("docx", "pptx"):
                 from . import exporters
 
-                struct = await r.acall(r.structure(doc_id))
+                struct = await r.acall(r.structure(doc_id, info=info))
                 if fmt == "pptx":
                     struct["theme"] = themes.effective_theme(doc["settings"])
                     data = await asyncio.to_thread(exporters.to_pptx, store, doc_id, struct)
@@ -788,12 +832,13 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                     data = await asyncio.to_thread(exporters.to_docx, store, doc_id, pictures,
                                                    _references(store, doc_id))
                     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                return Response(data, media_type=mime,
-                                headers={"Content-Disposition": f'attachment; filename="{stem}.{fmt}"'})
+                    # Word reflows the text itself, so nothing is cut off in a .docx.
+                    info.pop("cut_off", None)
+                return _send(data, mime, f"{stem}.{fmt}")
             if fmt in ("gif", "mp4"):
                 from . import exporters
 
-                imgs = await r.acall(r.page_images(doc_id, fmt="png", scale=1.0))
+                imgs = await r.acall(r.page_images(doc_id, fmt="png", scale=1.0, info=info))
                 pages = [b for _, b in imgs]
                 if fmt == "gif":
                     data = await asyncio.to_thread(exporters.to_gif, pages)
@@ -804,12 +849,10 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                     except RuntimeError as exc:
                         raise HTTPException(501, str(exc)) from exc
                     mime = "video/mp4"
-                return Response(data, media_type=mime,
-                                headers={"Content-Disposition": f'attachment; filename="{stem}.{fmt}"'})
+                return _send(data, mime, f"{stem}.{fmt}")
             if fmt in ("html", "zip"):
-                data = await r.acall(r.html_zip(doc_id, doc["title"]))
-                return Response(data, media_type="application/zip",
-                                headers={"Content-Disposition": f'attachment; filename="{stem}-html.zip"'})
+                data = await r.acall(r.html_zip(doc_id, doc["title"], info=info))
+                return _send(data, "application/zip", f"{stem}-html.zip")
         except BrowserMissing as exc:
             raise HTTPException(503, str(exc)) from exc
         except RenderFailed as exc:
@@ -996,6 +1039,21 @@ def _human_author(name: object) -> str:
     """A collaborator's display name for a human edit; "agent" is reserved for the agent."""
     n = str(name or "").strip()[:40]
     return "user" if not n or n.lower() in ("agent", "template", "auto") else n
+
+
+def cut_off_message(cut: list[dict]) -> str:
+    """One line for a person: which blocks an export cuts off, and why it matters."""
+    def one(c: dict) -> str:
+        need = (f", needs {c['natural_px']} px, has {c['box_px']} px"
+                if c.get("natural_px") and c.get("box_px") else "")
+        text = f' "{c["preview"]}"' if c.get("preview") else ""
+        return f"{c['block_id']}{text} (page {c['page']}{need})"
+
+    n = len(cut)
+    return (f"{n} block{'s are' if n != 1 else ' is'} cut off in this export, so part of "
+            f"{'their' if n != 1 else 'its'} content does not print: " + "; ".join(one(c) for c in cut[:8])
+            + (f"; and {n - 8} more" if n > 8 else "")
+            + ". Give the block more height (or auto height) in the editor, or shorten its content.")
 
 
 def _references(store: Store, doc_id: str) -> list[dict]:

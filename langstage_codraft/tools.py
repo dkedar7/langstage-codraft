@@ -178,6 +178,97 @@ def _block_word_budget(settings: dict, block: dict) -> int | None:
     return textutil.word_budget(w, h)
 
 
+# ------------------------------------------------------------- cut-off content (gh #58)
+# Block types whose content a fixed height or a pin's box can cut off (the print view's CLIPS).
+_CLIP_TYPES = frozenset({"text", "callout", "row", "stat", "heading", "table", "references"})
+
+
+def _box_px(layout: dict | None) -> float | None:
+    """The height a layout fixes for its block: the pin's box, else ``height``; None = it grows."""
+    lay = layout or {}
+    pin = lay.get("pin") or {}
+    return (pin.get("h") if pin.get("anchor") == "page" else pin.get("height")) or lay.get("height") or None
+
+
+def _has_boxed_text(store: Any, doc_id: str) -> bool:
+    return any(b["type"] in _CLIP_TYPES and _box_px(b["layout"]) for b in store.list_blocks(doc_id))
+
+
+def cut_off_blocks(doc_id: str) -> dict[str, dict] | None:
+    """Blocks whose content the print view cuts off (taller than their fixed height, their
+    pin's box or the page), by block id, as the export would print them. None when no
+    renderer can say (no server and no Chromium)."""
+    from .render import ensure_renderer
+
+    try:
+        r = ensure_renderer()
+        if r is None or not hasattr(r, "cut_off"):
+            return None
+        return {c["block_id"]: c for c in r.call(r.cut_off(doc_id))}
+    except Exception:  # noqa: BLE001 - no browser or a failed render; the caller falls back
+        return None
+
+
+def _cut_line(c: dict) -> str:
+    need = (f": its content needs about {c['natural_px']} px, the box is {c['box_px']} px"
+            if c.get("natural_px") and c.get("box_px") else "")
+    return f"{c['block_id']} (page {c['page']}{need})"
+
+
+def _cut_note(store: Any, doc_id: str) -> str:
+    """After a document-wide style change: which fixed-height blocks the change leaves cut
+    off, so the agent fixes them in the same turn. "" when none (or nothing has a fixed box)."""
+    if not _has_boxed_text(store, doc_id):
+        return ""
+    cut = cut_off_blocks(doc_id)
+    if not cut:
+        return ""
+    return (" OVERFLOW: " + "; ".join(_cut_line(c) for c in list(cut.values())[:6])
+            + ". Content that is cut off does not print: give those blocks room "
+            "(set_block_layout auto_height=True or a larger box) or undo this change. Never leave the "
+            "author's content cut off.")
+
+
+def _layout_cut_check(store: Any, doc_id: str, before: dict, after: dict) -> str | None:
+    """After the agent changed an accepted block's layout: None when the block's content
+    still prints in full, else the reason to refuse the change (the caller puts the old
+    layout back). A layout change must never hide content (gh #58): shortening what the
+    document prints goes through a suggestion the author approves, not through a box."""
+    box = _box_px(after["layout"])
+    if after["type"] not in _CLIP_TYPES or not box or after["layout"] == before["layout"]:
+        return None
+    was = _box_px(before["layout"])
+    bid = after["id"]
+    cut = cut_off_blocks(doc_id)
+    if cut is None:
+        # No renderer to measure with: refuse only what is plainly too small for its words.
+        budget = _block_word_budget(store.get_document(doc_id)["settings"], after)
+        words = _words(after)
+        if budget is None or words <= 2 * budget + 12:
+            return None
+        return (f"REFUSED, nothing changed: a box of {int(box)} px holds about {budget} words and {bid} has "
+                f"{words}, so most of it would not print. A layout change must not hide content: use "
+                "auto_height=True or a taller box; to make the block shorter, propose a tighter text "
+                "(propose_edit) and let the author decide.")
+    c = cut.get(bid)
+    if c is None:
+        return None
+    if was and box >= was - 0.5 and before["layout"].get("pin") == after["layout"].get("pin"):
+        # It already had this box (or a smaller one), the author's own choice. Don't refuse an
+        # unrelated restyle, unless it is this restyle that made the content outgrow the box.
+        store.set_layout(bid, before["layout"], replace=True)
+        earlier = cut_off_blocks(doc_id)
+        still = earlier is None or bid in earlier
+        store.set_layout(bid, after["layout"], replace=True)
+        if still:
+            return None
+    need = f"its content needs about {c['natural_px']} px" if c.get("natural_px") else "its content is taller"
+    return (f"REFUSED, nothing changed: in a box of {int(box)} px {bid} would be cut off ({need}), and what "
+            "is cut off does not print. A layout change must not hide content: use auto_height=True"
+            + (f" or a height of at least {c['natural_px']} px" if c.get("natural_px") else " or a taller box")
+            + "; to make the block shorter, propose a tighter text (propose_edit) and let the author decide.")
+
+
 def parse_content(block_type: str, content: Any) -> dict:
     """Turn the agent's ``content`` argument into a block content dict."""
     if isinstance(content, dict):
@@ -935,7 +1026,9 @@ def set_block_layout(
     flowing block at the foot of its page (a call to action, a closing band, a footer note)
     and later blocks flow above it: use this, never a pin, to put something at the bottom
     of a page; anchor="none" returns it to the flow. full_width spans all
-    columns. height_px fixes its height (auto_height=True clears it). role: flow,
+    columns. height_px fixes its height (auto_height=True clears it); a height or a pin's box
+    that would cut off the block's text, table or cells is refused, because what is cut off
+    does not print: to shorten content, propose a tighter text instead. role: flow,
     cover or back (cover and back pages are exempt from columns). pin_page/pin_top_px
     pin it to a column position so other blocks flow around it; unpin=True releases it.
     page_x_px/page_y_px/page_w_px/page_h_px (with pin_page) instead anchor it to the
@@ -1005,7 +1098,12 @@ def set_block_layout(
                 lay["repeat"] = None
             sg = store.revise_suggestion(pend["id"], layout=lay)
             return f"Layout of your pending insert {block_id} is now {json.dumps(sg['payload'].get('layout'))}"
+        before = _block(store, doc_id, block_id)
         b = store.set_layout(block_id, lay)
+        why = _layout_cut_check(store, doc_id, before, b)
+        if why:
+            store.set_layout(block_id, before["layout"], replace=True)
+            return f"ERROR: {why}"
         return f"Layout of {block_id} is now {json.dumps(b['layout'])}"
     except (Invalid, NotFound, ValueError) as exc:
         return _err(exc)
@@ -1088,7 +1186,7 @@ def set_document_style(
         doc = store.update_document(doc_id, title=title, settings=s or None)
         st = doc["settings"]
         return (f"Style updated: {st['mode']}, {st['page_size']} {st['orientation']}, "
-                f"{st['columns']} col, theme {st['theme']}.")
+                f"{st['columns']} col, theme {st['theme']}." + _cut_note(store, doc_id))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -1662,7 +1760,7 @@ def set_typography(
         if not vals:
             return "Nothing to change: pass at least one value (or reset=True)."
         doc = store.update_document(doc_id, settings={"style": vals})
-        return "Style overrides now: " + json.dumps(doc["settings"]["style"])
+        return "Style overrides now: " + json.dumps(doc["settings"]["style"]) + _cut_note(store, doc_id)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -1775,7 +1873,7 @@ def match_upload_style(upload_id: str, config: RunnableConfig) -> str:
         if not patch:
             return f"Nothing readable in {u['filename']}; look at it with view_upload and style by eye."
         store.update_document(doc_id, settings=patch)
-        return f"Matched {u['filename']}:\n- " + "\n- ".join(changes)
+        return f"Matched {u['filename']}:\n- " + "\n- ".join(changes) + _cut_note(store, doc_id)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

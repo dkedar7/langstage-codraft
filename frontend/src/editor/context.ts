@@ -29,6 +29,10 @@ export interface EditorApi {
   removeBlock: (id: string) => Promise<void>;
   /** Bring a deleted block back where it was. */
   restoreBlock: (id: string) => Promise<void>;
+  /** The checkpoint whose changes the Document tab is showing, if any (gh #61). */
+  checkpointReview: string | null;
+  /** Show what changed since a checkpoint (opens the Document tab), or close that view. */
+  setCheckpointReview: (id: string | null) => void;
   agentRunning: boolean;
   setAgentRunning: (b: boolean) => void;
   zoom: number;

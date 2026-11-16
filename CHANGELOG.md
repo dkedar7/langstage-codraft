@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.11.0 — 2026-11-16
+
+**Checkpoints: see what changed since a point in time, and go back to it (#61).** Every block
+had its own version tree, but nothing tied the blocks together at a moment: "what changed since
+the version legal reviewed?" meant opening every block's history, and an **Accept all** of thirty
+suggestions could only be taken back one block at a time.
+
+- **Checkpoints.** A checkpoint is the document's content at one moment. It copies no text: it
+  records which version of each block was showing and where the block stood, so it is exact
+  even when a block was stepped back or forward (which writes no version).
+  - **Named** checkpoints are yours ("Sent to legal") and are kept until you delete them.
+  - **Automatic** ones are taken before each agent turn that proposes content, before each
+    **Accept all** and before a restore. The newest 100 of a document are kept; naming one keeps
+    it. Checkpoints of the same content are not piled up: the one from before the agent's turn
+    becomes "Before Accept all" when nothing was accepted in between.
+- **Changes since.** For any checkpoint: the blocks edited (with the text before and after, and
+  word counts), added, deleted and moved since. A block moved counts once (swapping two
+  neighbours is one move, not two), and an edit back to the same words is not a change.
+- **Restore, all of it or block by block.** Nothing is overwritten: an edited block checks out
+  the version it had (newer versions stay in its history, one step forward), a deleted block
+  comes back with its history, a block added since goes to Recently deleted, and the order is
+  put back. A restore takes a checkpoint of its own first, so it can be undone. The exported
+  pages after a restore are the checkpoint's pages, pixel for pixel.
+  - Content only. Settings, block layouts and reserved areas stay with Design history (0.10.0).
+  - Pending suggestions stay pending. One written against text that is no longer showing is
+    marked outdated; one on a block the restore removed is closed, as when you delete a block.
+  - A block someone else is editing right now is left alone and reported. A tab that saves
+    late lands on a branch, as with any concurrent edit.
+- **Undo accept all.** The notice after **Accept all** offers **Undo accept all**, and the Review
+  tab keeps the way back afterwards ("Since your last Accept all: 12 edited… **See changes** ·
+  **Undo**"). The suggestions stay decided; their text is one step forward in each block.
+- **Editor.** Document → **Checkpoints**: name one, see how much changed since each, rename or
+  forget one. **N changes since…** opens a review with a card per changed block and the same
+  word diff a suggestion gets, **Revert this block** on each and **Restore all** at the top.
+- **API.** `GET`/`POST /api/docs/{id}/checkpoints`, `PATCH`/`DELETE …/checkpoints/{cid}`,
+  `GET …/checkpoints/{cid}/changes`, `POST …/checkpoints/{cid}/restore` (`{"blocks": [...]}` for
+  some of them). `POST …/suggestions/accept-all` returns `checkpoint`, the one that undoes it.
+  `Store.create_checkpoint`, `list_checkpoints`, `checkpoint_changes`, `restore_checkpoint`,
+  `rename_checkpoint`, `delete_checkpoint`, `auto_checkpoint`; `Store.propose` takes `group` (the
+  agent's turn) and `Store.accept_all` takes `by`.
+- **Agent and MCP.** New read-only tools `list_checkpoints` and `changes_since`: `CODRAFT_TOOLS`
+  has 31 tools. "Write the cover note on what changed since the legal review" now works from
+  the record, with a word diff per block. Going back to a checkpoint changes content, so it
+  stays with the author: the agent has no tool for it and is told to say where it is.
+- A data directory from an earlier version opens as before; its documents have no checkpoints
+  until one is taken.
+- **Fixed: a section moved without its paragraph.** When the agent moved a heading and then
+  the paragraph under it "after the heading", the second move was refused as no change, because
+  the paragraph already follows the heading today. Accepted, the heading arrived alone. A move
+  behind a block that is itself waiting to move is now recorded, and is applied after it.
+
 ## 0.10.0 — 2026-11-15
 
 **The look has a history, so a restyle can be undone (#54).** The agent changes the look without

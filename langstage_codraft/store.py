@@ -22,6 +22,7 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from . import checkpoints as ckpt
 from .design_history import (
     AGENT_FOLD_S,
     AUTHOR_FOLD_S,
@@ -209,6 +210,13 @@ CREATE TABLE IF NOT EXISTS design_history (
   created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS design_history_doc ON design_history (doc_id, seq);
+CREATE TABLE IF NOT EXISTS checkpoints (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, doc_id TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '', group_key TEXT NOT NULL DEFAULT '', actor TEXT NOT NULL,
+  snapshot TEXT NOT NULL, created_at REAL NOT NULL, touched_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS checkpoints_doc ON checkpoints (doc_id, seq);
 """
 
 UPLOAD_PURPOSES = ("reference", "template", "style", "asset")
@@ -1481,6 +1489,362 @@ class Store:
                 return self.checkout(block_id, head["children"][-1])
             raise Invalid("direction must be 'back' or 'forward'")
 
+    # ------------------------------------------------------------ checkpoints
+    #
+    # A checkpoint is the document's content at one moment (gh #61): for every block that
+    # was in it, the version that was its head and its position, in order. It is written
+    # under the lock at that moment, so it is exact (see checkpoints.py for why it is not
+    # worked out from timestamps). Reserved areas (spacers) belong to the design history.
+    def _content_state(self, doc_id: str) -> list[list]:
+        """``[[block_id, head_version, ord], ...]`` for the document's content blocks, in order."""
+        return [[r["id"], r["head"], r["ord"]] for r in self._q(
+            "SELECT id, head, ord FROM blocks WHERE doc_id = ? AND deleted = 0 AND type != 'spacer'"
+            " ORDER BY ord", (doc_id,))]
+
+    @staticmethod
+    def _state_key(snap: list[list]) -> list[tuple]:
+        return [(s[0], s[1]) for s in snap]
+
+    @staticmethod
+    def _checkpoint_dict(r: sqlite3.Row) -> dict:
+        name = r["name"] or ckpt.auto_label(r["reason"], r["detail"])
+        return {"id": r["id"], "doc_id": r["doc_id"], "name": name, "kind": r["kind"], "reason": r["reason"],
+                "detail": r["detail"], "by": r["actor"], "at": r["touched_at"], "created_at": r["created_at"],
+                "blocks": len(json.loads(r["snapshot"]))}
+
+    def _checkpoint_row(self, doc_id: str, cid: str) -> sqlite3.Row:
+        self.get_document(doc_id)
+        r = self._one("SELECT * FROM checkpoints WHERE id = ? AND doc_id = ?", (cid, doc_id))
+        if r is None:
+            raise NotFound(f"no checkpoint {cid} in this document (see its checkpoints)")
+        return r
+
+    def _auto_checkpoint(self, doc_id: str, reason: str, *, by: str = "author", group: str = "",
+                         detail: str = "", snapshot: list[list] | None = None) -> str:
+        """Record the content as it is now (or ``snapshot``, taken earlier under this lock),
+        before something changes a lot of it at once: an agent turn's first proposal, an
+        Accept all, a restore. Called inside the lock. Returns the checkpoint's id.
+
+        It never piles up copies of the same moment. The agent's later proposals in one
+        turn (``group``), or in one burst when it has no turn, keep the turn's first
+        checkpoint. And when the content has not changed since the newest automatic
+        checkpoint, that one is reused and renamed for what is about to happen: "before
+        the agent's turn" and "before Accept all" are the same content when nothing was
+        accepted in between. A restore reuses any checkpoint that already holds the content
+        as it is, as it stands: undoing a restore and redoing it go back and forth between
+        two checkpoints instead of leaving a trail."""
+        now = time.time()
+        snap = self._content_state(doc_id) if snapshot is None else snapshot
+        if reason == "restore":
+            key = self._state_key(snap)
+            for r in self._q("SELECT id, snapshot FROM checkpoints WHERE doc_id = ? ORDER BY seq DESC", (doc_id,)):
+                if self._state_key(json.loads(r["snapshot"])) == key:
+                    return r["id"]
+        last = self._one("SELECT * FROM checkpoints WHERE doc_id = ? ORDER BY seq DESC LIMIT 1", (doc_id,))
+        if last is not None and last["kind"] == "auto":
+            if reason == "turn" and last["reason"] == "turn" and last["actor"] == by and (
+                    (group and last["group_key"] == group)
+                    or (not group and not last["group_key"] and now - last["touched_at"] <= ckpt.AGENT_FOLD_S)):
+                return last["id"]
+            if self._state_key(json.loads(last["snapshot"])) == self._state_key(snap):
+                self._db.execute(
+                    "UPDATE checkpoints SET reason = ?, detail = ?, group_key = ?, actor = ?, snapshot = ?,"
+                    " touched_at = ? WHERE id = ?",
+                    (reason, detail, group or "", by, json.dumps(snap), now, last["id"]))
+                return last["id"]
+        cid = _id("chk")
+        self._db.execute(
+            "INSERT INTO checkpoints (id, doc_id, name, kind, reason, detail, group_key, actor, snapshot,"
+            " created_at, touched_at) VALUES (?,?,'','auto',?,?,?,?,?,?,?)",
+            (cid, doc_id, reason, detail, group or "", by, json.dumps(snap), now, now))
+        # Bounded: keep the newest automatic checkpoints of each document; named ones stay.
+        self._db.execute(
+            "DELETE FROM checkpoints WHERE doc_id = ? AND kind = 'auto' AND seq NOT IN"
+            " (SELECT seq FROM checkpoints WHERE doc_id = ? AND kind = 'auto' ORDER BY seq DESC LIMIT ?)",
+            (doc_id, doc_id, ckpt.AUTO_CAP))
+        return cid
+
+    def auto_checkpoint(self, doc_id: str, reason: str = "turn", *, by: str = "agent", group: str = "",
+                        detail: str = "") -> str:
+        """Take an automatic checkpoint now (see ``_auto_checkpoint``): for a caller about
+        to change content outside ``propose`` and ``accept_all``, which take their own."""
+        if reason not in ckpt.REASONS:
+            raise Invalid(f"reason must be one of {', '.join(ckpt.REASONS)}")
+        with self._lock:
+            self.get_document(doc_id)
+            cid = self._auto_checkpoint(doc_id, reason, by=by, group=group, detail=detail)
+            self._db.commit()
+            return cid
+
+    def create_checkpoint(self, doc_id: str, name: str, *, by: str = "author") -> dict:
+        """Name the document's content as it is now ("Sent to legal"). Kept until deleted."""
+        name = ckpt.clean_name(name)
+        if not name:
+            raise Invalid("a checkpoint needs a name")
+        with self._lock:
+            self.get_document(doc_id)
+            n = self._one("SELECT COUNT(*) AS n FROM checkpoints WHERE doc_id = ? AND kind = 'named'", (doc_id,))["n"]
+            if n >= ckpt.NAMED_CAP:
+                raise Invalid(f"this document already has {n} named checkpoints: delete one you no longer need")
+            cid = _id("chk")
+            now = time.time()
+            self._db.execute(
+                "INSERT INTO checkpoints (id, doc_id, name, kind, actor, snapshot, created_at, touched_at)"
+                " VALUES (?,?,?,'named',?,?,?,?)",
+                (cid, doc_id, name, by or "author", json.dumps(self._content_state(doc_id)), now, now))
+            self._bump(doc_id)
+            self._db.commit()
+            return self.get_checkpoint(doc_id, cid)
+
+    def get_checkpoint(self, doc_id: str, cid: str) -> dict:
+        with self._lock:
+            return self._checkpoint_dict(self._checkpoint_row(doc_id, cid))
+
+    def rename_checkpoint(self, doc_id: str, cid: str, name: str) -> dict:
+        """Rename a checkpoint. Naming an automatic one keeps it: it becomes a named one."""
+        name = ckpt.clean_name(name)
+        if not name:
+            raise Invalid("a checkpoint needs a name")
+        with self._lock:
+            self._checkpoint_row(doc_id, cid)
+            self._db.execute("UPDATE checkpoints SET name = ?, kind = 'named' WHERE id = ?", (name, cid))
+            self._bump(doc_id)
+            self._db.commit()
+            return self.get_checkpoint(doc_id, cid)
+
+    def delete_checkpoint(self, doc_id: str, cid: str) -> None:
+        """Forget a checkpoint. No content is touched: every version stays in its block."""
+        with self._lock:
+            self._checkpoint_row(doc_id, cid)
+            self._db.execute("DELETE FROM checkpoints WHERE id = ?", (cid,))
+            self._bump(doc_id)
+            self._db.commit()
+
+    def _version_body(self, vid: str | None, block_type: str, cache: dict) -> dict | None:
+        """``{"content", "refs"}`` of a version (repaired like a block's), or None."""
+        if vid not in cache:
+            v = self._one("SELECT content, refs FROM versions WHERE id = ?", (vid,)) if vid else None
+            cache[vid] = None if v is None else {
+                "content": repair_content(block_type, json.loads(v["content"])),
+                "refs": _clean_refs(json.loads(v["refs"]))}
+        return cache[vid]
+
+    def _content_rows(self, doc_id: str) -> dict[str, sqlite3.Row]:
+        """Every block of the document by id, deleted ones included, in order."""
+        return {r["id"]: r for r in self._q(
+            "SELECT id, type, head, ord, deleted FROM blocks WHERE doc_id = ? ORDER BY ord", (doc_id,))}
+
+    def _checkpoint_diff(self, snap: list[list], rows: dict[str, sqlite3.Row], cache: dict) -> dict:
+        """How the content differs from a checkpoint's, as block ids: ``edited`` (a different
+        version is showing, and it reads differently), ``added``, ``deleted``, ``moved``, and
+        ``lost`` (a block of the checkpoint that no longer exists at all). ``then`` and
+        ``now`` are the content blocks in order at the checkpoint and at present."""
+        then = [s[0] for s in snap]
+        head_then = {s[0]: s[1] for s in snap}
+        edited, deleted, lost = [], [], []
+        for bid in then:
+            r = rows.get(bid)
+            if r is None:
+                lost.append(bid)
+            elif r["deleted"]:
+                deleted.append(bid)
+            elif r["head"] != head_then[bid] and (
+                    self._version_body(r["head"], r["type"], cache)
+                    != self._version_body(head_then[bid], r["type"], cache)):
+                edited.append(bid)
+        now = [bid for bid, r in rows.items() if not r["deleted"] and r["type"] != "spacer"]
+        here = set(now)
+        return {"edited": edited, "added": [bid for bid in now if bid not in head_then], "deleted": deleted,
+                "lost": lost, "moved": ckpt.moved_ids([b for b in then if b in here], now),
+                "then": then, "now": now}
+
+    def list_checkpoints(self, doc_id: str, *, limit: int = 200) -> list[dict]:
+        """The document's checkpoints, newest first: ``{id, name, kind ("auto" | "named"),
+        reason, by, at, blocks, changes}``. ``changes`` counts what differs now from the
+        checkpoint (``edited``, ``added``, ``deleted``, ``moved``, ``total``)."""
+        with self._lock:
+            self.get_document(doc_id)
+            rows = self._content_rows(doc_id)
+            cache: dict = {}
+            out = []
+            for r in self._q("SELECT * FROM checkpoints WHERE doc_id = ? ORDER BY seq DESC LIMIT ?",
+                             (doc_id, max(1, limit))):
+                d = self._checkpoint_diff(json.loads(r["snapshot"]), rows, cache)
+                n = {k: len(d[k]) for k in ("edited", "added", "deleted", "moved")}
+                out.append({**self._checkpoint_dict(r), "changes": {**n, "total": sum(n.values())}})
+            return out
+
+    def checkpoint_changes(self, doc_id: str, cid: str) -> dict:
+        """What changed in the document's content since a checkpoint.
+
+        ``edited``: ``{block_id, type, from_version, to_version, words_before, words_after,
+        before: {content, refs}, after: {content, refs}, refs_changed}``. ``added`` and
+        ``deleted``: ``{block_id, type, words, preview, content}``. ``moved``: ``{block_id,
+        type, words, preview, was, now, after}`` (1-based positions among the content blocks
+        then and now, and the block it follows now). Blocks are listed in reading order. Layout and settings are not content:
+        see the design history."""
+        with self._lock:
+            row = self._checkpoint_row(doc_id, cid)
+            snap = json.loads(row["snapshot"])
+            head_then = {s[0]: s[1] for s in snap}
+            rows = self._content_rows(doc_id)
+            cache: dict = {}
+            d = self._checkpoint_diff(snap, rows, cache)
+
+            def words(t: str, body: dict | None) -> int:
+                return len(plain_text(t, (body or {}).get("content") or {}).split())
+
+            def brief(bid: str, vid: str | None) -> dict:
+                t = rows[bid]["type"]
+                body = self._version_body(vid, t, cache) or {"content": {}, "refs": []}
+                return {"block_id": bid, "type": t, "words": words(t, body), "content": body["content"],
+                        "preview": " ".join(plain_text(t, body["content"]).split())[:160]}
+
+            order = {bid: i for i, bid in enumerate(d["now"])}
+            was = {bid: i + 1 for i, bid in enumerate(d["then"])}
+            edited = []
+            for bid in sorted(d["edited"], key=lambda b: order.get(b, 0)):
+                t = rows[bid]["type"]
+                before = self._version_body(head_then[bid], t, cache)
+                after = self._version_body(rows[bid]["head"], t, cache)
+                edited.append({"block_id": bid, "type": t, "from_version": head_then[bid],
+                               "to_version": rows[bid]["head"], "words_before": words(t, before),
+                               "words_after": words(t, after), "before": before, "after": after,
+                               "refs_changed": (before or {}).get("refs") != (after or {}).get("refs")})
+            moved = [{**{k: v for k, v in brief(bid, rows[bid]["head"]).items() if k != "content"},
+                      "was": was[bid], "now": order[bid] + 1,
+                      "after": d["now"][order[bid] - 1] if order[bid] else None} for bid in d["moved"]]
+
+            def total(ids: list[str], heads: dict) -> int:
+                return sum(words(rows[b]["type"], self._version_body(heads.get(b), rows[b]["type"], cache))
+                           for b in ids if b in rows)
+
+            n = {k: len(d[k]) for k in ("edited", "added", "deleted", "moved")}
+            return {
+                "checkpoint": self._checkpoint_dict(row),
+                "edited": edited,
+                "added": [brief(bid, rows[bid]["head"]) for bid in d["added"]],
+                "deleted": [brief(bid, head_then[bid]) for bid in d["deleted"]],
+                "moved": moved, "lost": d["lost"],
+                "counts": {**n, "total": sum(n.values())},
+                "words_before": total(d["then"], head_then),
+                "words_after": total(d["now"], {b: rows[b]["head"] for b in d["now"]}),
+            }
+
+    def restore_checkpoint(self, doc_id: str, cid: str, *, blocks: list[str] | None = None,
+                           by: str = "author", skip: dict[str, str] | None = None) -> dict:
+        """Put the document's content back as it was at a checkpoint: all of it, or only
+        ``blocks`` (ids from ``checkpoint_changes``).
+
+        Nothing is overwritten. An edited block checks out the version it had then; the
+        newer versions stay in its tree, so the author can step forward again. A deleted
+        block comes back with its history. A block added since is deleted, which puts it in
+        Recently deleted. The order is put back. Only content changes: never a layout or a
+        setting, and never a reserved area.
+
+        Pending suggestions stay pending. One on a block that goes back to an older version
+        becomes *outdated* (it was written against text no longer showing; gh #37), and one on
+        a block this removes becomes *obsolete* (gh #39), exactly as if the author had made the
+        change by hand.
+
+        ``skip`` maps block ids to a reason they must be left alone (someone else is editing
+        them right now); they are reported in ``skipped`` and can be reverted afterwards.
+        Before anything changes, the content as it is now is checkpointed, and ``undo`` is
+        that checkpoint's id: restoring it undoes this restore.
+
+        Returns ``{"changed", "edited", "restored", "removed", "moved", "skipped": [{block_id,
+        reason}], "undo", "notes"}``."""
+        with self._lock:
+            row = self._checkpoint_row(doc_id, cid)
+            snap = json.loads(row["snapshot"])
+            head_then = {s[0]: s[1] for s in snap}
+            ord_then = {s[0]: s[2] for s in snap}
+            d = self._checkpoint_diff(snap, self._content_rows(doc_id), {})
+            known = set(d["edited"]) | set(d["added"]) | set(d["deleted"]) | set(d["moved"])
+            if blocks is not None:
+                if not isinstance(blocks, list) or not all(isinstance(b, str) for b in blocks):
+                    raise Invalid("blocks must be a list of block ids")
+                unknown = [b for b in blocks if b not in known]
+                if unknown:
+                    raise Invalid(
+                        f"{', '.join(unknown[:5])}: not changed since this checkpoint, so there is nothing to revert")
+            want = set(known) if blocks is None else set(blocks)
+            skip = skip or {}
+            skipped = [{"block_id": b, "reason": skip[b]} for b in sorted(want) if b in skip]
+            want -= set(skip)
+            out: dict[str, Any] = {"changed": False, "edited": 0, "restored": 0, "removed": 0, "moved": 0,
+                                   "skipped": skipped, "undo": None, "notes": []}
+            if d["lost"]:
+                out["notes"].append(f"{len(d['lost'])} block(s) of the checkpoint no longer exist")
+            if not want:
+                return out
+            # What the checkpoint taken now is called: "Before going back to “Sent to legal”",
+            # or, when this restore undoes an earlier one, just "Before undoing a restore".
+            name = "" if row["kind"] == "auto" and row["reason"] == "restore" else (
+                row["name"] or ckpt.auto_label(row["reason"], row["detail"]))
+            out["undo"] = self._auto_checkpoint(doc_id, "restore", by=by, detail=name)
+            waiting = self.list_suggestions(doc_id)
+            pending_before = {x["id"] for x in waiting}
+            stale_before = {x["id"] for x in waiting if x["outdated"]}
+            for bid in d["deleted"]:
+                if bid in want:
+                    self.restore_block(bid)
+                    out["restored"] += 1
+            for bid in d["edited"] + d["deleted"]:
+                if bid not in want:
+                    continue
+                if self._block_row(bid)["head"] == head_then[bid]:
+                    continue
+                if self._one("SELECT id FROM versions WHERE id = ? AND block_id = ?", (head_then[bid], bid)) is None:
+                    skipped.append({"block_id": bid, "reason": "the version it had then no longer exists"})
+                    continue
+                self._db.execute("UPDATE blocks SET head = ? WHERE id = ?", (head_then[bid], bid))
+                if bid in d["edited"]:
+                    out["edited"] += 1
+            for bid in d["added"]:
+                if bid in want:
+                    self.delete_block(bid)
+                    out["removed"] += 1
+            if blocks is None and not skipped:
+                # Everything goes back: each block takes the position it had, exactly.
+                live = {r["id"]: r["ord"] for r in self._q(
+                    "SELECT id, ord FROM blocks WHERE doc_id = ? AND deleted = 0", (doc_id,))}
+                for bid, o in ord_then.items():
+                    if bid in live and live[bid] != o:
+                        self._db.execute("UPDATE blocks SET ord = ? WHERE id = ?", (o, bid))
+                out["moved"] = len(d["moved"])
+            else:
+                # Chosen blocks: each goes back behind the block it followed then (the nearest
+                # one still in the document), or in front of the one it preceded.
+                then = d["then"]
+                for bid in d["moved"]:
+                    if bid not in want:
+                        continue
+                    live = [r["id"] for r in self._q(
+                        "SELECT id FROM blocks WHERE doc_id = ? AND deleted = 0 ORDER BY ord", (doc_id,))]
+                    here = set(live)
+                    i = then.index(bid)
+                    before = next((b for b in reversed(then[:i]) if b in here), None)
+                    if before is None:
+                        nxt = next((b for b in then[i + 1:] if b in here), None)
+                        k = live.index(nxt) if nxt is not None else 0
+                        others = [b for b in live[:k] if b != bid]
+                        before = others[-1] if others else None
+                    self.move_block(bid, before)
+                    out["moved"] += 1
+            out["changed"] = bool(out["edited"] or out["restored"] or out["removed"] or out["moved"])
+            stale = {x["id"] for x in self.list_suggestions(doc_id) if x["outdated"]} - stale_before
+            if stale:
+                out["notes"].append(
+                    f"{len(stale)} pending suggestion(s) were written against text that is no longer showing: "
+                    "they are marked outdated")
+            closed = pending_before - {x["id"] for x in self.list_suggestions(doc_id)}
+            if closed:
+                out["notes"].append(f"{len(closed)} pending suggestion(s) on blocks this removed were closed")
+            self._bump(doc_id)
+            self._db.commit()
+            return out
+
     # --------------------------------------------------------------- comments
     def _comment_dict(self, r: sqlite3.Row) -> dict:
         return {
@@ -1613,9 +1977,14 @@ class Store:
     def propose(
         self, doc_id: str, kind: str, payload: dict, *, block_id: str | None = None,
         comment_id: str | None = None, note: str = "", author: str = "agent", hold: bool = False,
+        group: str = "",
     ) -> dict:
         """Record an agent change. With approval 'auto' it is applied immediately, unless
-        ``hold``: then it waits for the author like any suggestion (removing sources)."""
+        ``hold``: then it waits for the author like any suggestion (removing sources).
+
+        The content as it is before a turn's first proposal is checkpointed (``group`` names
+        the turn; without one, a burst of proposals shares a checkpoint), so the author can
+        see what the turn changed and take all of it back (gh #61)."""
         if kind not in ("edit", "insert", "delete", "move"):
             raise Invalid("kind must be edit, insert, delete or move")
         with self._lock:
@@ -1659,6 +2028,7 @@ class Store:
                     except (TypeError, ValueError, AttributeError) as exc:
                         raise Invalid(f"invalid layout: {exc}") from None
             self._refuse_repeat(doc_id, kind, payload, block_id)
+            self._auto_checkpoint(doc_id, "turn", by=author or "agent", group=group)
             # Supersede an older pending suggestion of the same kind on the same block.
             if block_id is not None and kind in ("edit", "delete", "move"):
                 self._db.execute(
@@ -1830,7 +2200,10 @@ class Store:
                         and rp.get("after_suggestion") == payload.get("after_suggestion")):
                     raise NoChange(f"Already proposed: suggestion {r['id']} moves {block_id} to the same place "
                                    "and is still waiting for the author. Nothing new was recorded.")
-            if not payload.get("after_suggestion"):
+            # "Already right after it" stops being true when the block it follows is itself
+            # waiting to move: a section's paragraph has to follow its heading to the new place.
+            anchor_moving = any(r["kind"] == "move" and r["block_id"] == payload.get("after") for r, _ in pending)
+            if not payload.get("after_suggestion") and not anchor_moving:
                 ids = [b["id"] for b in self.list_blocks(doc_id)]
                 i = ids.index(block_id)
                 if (ids[i - 1] if i else None) == payload.get("after"):
@@ -1914,11 +2287,15 @@ class Store:
             visit(s)
         return out
 
-    def accept_all(self, doc_id: str) -> dict:
+    def accept_all(self, doc_id: str, *, by: str = "author") -> dict:
         """Accept every pending suggestion that can be applied, in a safe order. Nothing is
-        dropped silently: each one left behind is listed with the reason."""
+        dropped silently: each one left behind is listed with the reason.
+
+        ``checkpoint`` in the result is the content as it was just before (None when nothing
+        was accepted): restoring it undoes the whole Accept all (gh #61)."""
         with self._lock:
             self.get_document(doc_id)
+            before = self._content_state(doc_id)
             n, stale, gone, failed = 0, [], [], []
             for s in self.accept_order(self.list_suggestions(doc_id)):
                 cur = self.get_suggestion(s["id"])  # earlier accepts in this loop may have changed it
@@ -1940,8 +2317,12 @@ class Store:
                 except (Invalid, NotFound) as exc:
                     failed.append({"id": s["id"], "kind": s["kind"], "block_id": s["block_id"],
                                    "reason": str(exc.args[0] if exc.args else exc)})
+            cid = None
+            if n:
+                cid = self._auto_checkpoint(doc_id, "accept-all", by=by, detail=str(n), snapshot=before)
+                self._db.commit()
             return {"ok": True, "count": n, "skipped": stale + gone + [f["id"] for f in failed],
-                    "skipped_gone": gone, "failed": failed}
+                    "skipped_gone": gone, "failed": failed, "checkpoint": cid}
 
     def preview(self, doc_id: str) -> dict:
         """The document as it would read if every pending suggestion that can be applied

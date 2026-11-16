@@ -423,7 +423,7 @@ def test_the_next_turn_is_told_the_author_undid_its_styling(store, cfg_for, cloc
 
 def test_the_tools_are_in_the_set_over_mcp_and_in_the_prompt(store):
     names = [t.name for t in CODRAFT_TOOLS]
-    assert "list_design_history" in names and "restore_design" in names and len(names) == 29
+    assert "list_design_history" in names and "restore_design" in names and len(names) == 31
     assert "only" in restore_design.description.lower() and "never on your own initiative" in restore_design.description
     assert "list_design_history" in CODRAFT_PROMPT and "Never\n  restore a look on your own" in CODRAFT_PROMPT
     assert 'anchor="bottom"' in CODRAFT_PROMPT and "backfill=True" in CODRAFT_PROMPT

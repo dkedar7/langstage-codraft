@@ -46,6 +46,10 @@ suggestions could only be taken back one block at a time.
   stays with the author: the agent has no tool for it and is told to say where it is.
 - A data directory from an earlier version opens as before; its documents have no checkpoints
   until one is taken.
+- **Fixed: a section moved without its paragraph.** When the agent moved a heading and then
+  the paragraph under it "after the heading", the second move was refused as no change, because
+  the paragraph already follows the heading today. Accepted, the heading arrived alone. A move
+  behind a block that is itself waiting to move is now recorded, and is applied after it.
 
 ## 0.10.0 — 2026-11-15
 

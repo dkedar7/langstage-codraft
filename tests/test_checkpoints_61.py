@@ -420,6 +420,26 @@ def test_accept_all_after_accepting_some_by_hand_checkpoints_the_content_in_betw
     assert store.get_block(b["id"])["content"]["markdown"] == "Paragraph 1 as first written."
 
 
+def test_a_paragraph_can_follow_its_heading_to_where_the_heading_is_moving(store, cfg_for):
+    """Found with a real model: it moved a section's heading, then its paragraph "after the
+    heading", and the second move was refused as no change because the paragraph follows
+    the heading *today*. Accepted, the heading left without its paragraph."""
+    d = store.create_document("Report")
+    intro, body, risks, timeline, timeline_text = (
+        store.insert_block(d["id"], t, c, author="Dana")["id"] for t, c in (
+            ("heading", {"text": "Summary"}), ("text", {"markdown": "The summary."}), ("heading", {"text": "Risks"}),
+            ("heading", {"text": "Timeline"}), ("text", {"markdown": "Year one covers two depots."})))
+    cfg = cfg_for(d["id"])
+    begin_turn(d["id"], "msg-1")
+    assert "waiting for the author" in propose_move.func(block_id=timeline, after_block_id=body, config=cfg)
+    out = propose_move.func(block_id=timeline_text, after_block_id=timeline, config=cfg)
+    assert "No change" not in out and "waiting for the author" in out
+    assert store.accept_all(d["id"])["count"] == 2
+    assert [b["id"] for b in store.list_blocks(d["id"])] == [intro, body, timeline, timeline_text, risks]
+    # With nothing moving, "it is already there" is still said.
+    assert "No change" in propose_move.func(block_id=timeline_text, after_block_id=timeline, config=cfg)
+
+
 def test_accept_all_with_nothing_to_accept_takes_no_checkpoint(store):
     d, _ = _doc(store)
     assert store.accept_all(d["id"])["checkpoint"] is None and store.list_checkpoints(d["id"]) == []

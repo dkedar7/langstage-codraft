@@ -2200,7 +2200,10 @@ class Store:
                         and rp.get("after_suggestion") == payload.get("after_suggestion")):
                     raise NoChange(f"Already proposed: suggestion {r['id']} moves {block_id} to the same place "
                                    "and is still waiting for the author. Nothing new was recorded.")
-            if not payload.get("after_suggestion"):
+            # "Already right after it" stops being true when the block it follows is itself
+            # waiting to move: a section's paragraph has to follow its heading to the new place.
+            anchor_moving = any(r["kind"] == "move" and r["block_id"] == payload.get("after") for r, _ in pending)
+            if not payload.get("after_suggestion") and not anchor_moving:
                 ids = [b["id"] for b in self.list_blocks(doc_id)]
                 i = ids.index(block_id)
                 if (ids[i - 1] if i else None) == payload.get("after"):

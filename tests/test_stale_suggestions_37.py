@@ -112,6 +112,7 @@ def test_rest_accept_all_skips_outdated_and_reports_them(client):
     client.patch(f"/api/blocks/{a}", json={"content": {"markdown": NEWER}, "base": head})
 
     r = client.post(f"/api/docs/{did}/suggestions/accept-all").json()
+    assert r.pop("checkpoint").startswith("chk_")  # what undoes this Accept all (gh #61)
     assert r == {"ok": True, "count": 1, "skipped": [stale["id"]], "skipped_gone": [], "failed": []}
     blocks = {b["id"]: b["content"]["markdown"] for b in client.get(f"/api/docs/{did}").json()["blocks"]}
     assert blocks == {a: NEWER, c: "Other, edited."}

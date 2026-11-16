@@ -8,6 +8,7 @@ import { useEditorApi } from "./context";
 import { BRIEF_OPTIONS } from "./NewDocDialog";
 import { withBase } from "../base";
 import { AgentName, agentName } from "../branding";
+import { CheckpointReview, Checkpoints } from "./CheckpointsPanel";
 
 export function DocPanel({ identity }: { identity: { name: string; setName: (n: string) => void; managed?: boolean } }) {
   const ed = useEditorApi();
@@ -16,6 +17,9 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
   const set = (patch: Partial<Settings> | Record<string, any>) => ed.run(api.patchDoc(doc.id, { settings: patch }));
   const fileRef = useRef<HTMLInputElement>(null);
   const [purpose, setPurpose] = useState<"reference" | "template" | "style">("reference");
+
+  // Changes since a checkpoint take over the tab until the author goes back (gh #61).
+  if (ed.checkpointReview) return <CheckpointReview id={ed.checkpointReview} />;
 
   return (
     <div className="overflow-auto scroll-thin h-full">
@@ -167,6 +171,8 @@ export function DocPanel({ identity }: { identity: { name: string; setName: (n: 
             }} />
         </div>
       </div>
+
+      <Checkpoints />
 
       <RecentlyDeleted />
 

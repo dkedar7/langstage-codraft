@@ -431,6 +431,67 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         except Exception as exc:  # noqa: BLE001
             raise _json_error(exc) from exc
 
+    # ------------------------------------------------------------ checkpoints
+    @app.get("/api/docs/{doc_id}/checkpoints")
+    def list_checkpoints(doc_id: str) -> dict:
+        """The document's checkpoints, newest first (gh #61): the named ones, and the ones
+        taken automatically before an agent turn, an Accept all and a restore. Each says how
+        much of the content differs from it now."""
+        try:
+            return {"checkpoints": store.list_checkpoints(doc_id)}
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.post("/api/docs/{doc_id}/checkpoints")
+    def create_checkpoint(doc_id: str, request: Request, body: dict = Body(...)) -> dict:
+        """Name the content as it is now: ``{"name": "Sent to legal"}``."""
+        try:
+            return store.create_checkpoint(doc_id, body.get("name", ""), by=human(request, body))
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.patch("/api/docs/{doc_id}/checkpoints/{cid}")
+    def rename_checkpoint(doc_id: str, cid: str, body: dict = Body(...)) -> dict:
+        """Rename a checkpoint. Naming an automatic one keeps it."""
+        try:
+            return store.rename_checkpoint(doc_id, cid, body.get("name", ""))
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.delete("/api/docs/{doc_id}/checkpoints/{cid}")
+    def delete_checkpoint(doc_id: str, cid: str) -> dict:
+        try:
+            store.delete_checkpoint(doc_id, cid)
+            return {"ok": True}
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.get("/api/docs/{doc_id}/checkpoints/{cid}/changes")
+    def checkpoint_changes(doc_id: str, cid: str) -> dict:
+        """What changed in the content since the checkpoint: blocks edited (with the text
+        before and after), added, deleted and moved."""
+        try:
+            return store.checkpoint_changes(doc_id, cid)
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
+    @app.post("/api/docs/{doc_id}/checkpoints/{cid}/restore")
+    def restore_checkpoint(doc_id: str, cid: str, request: Request, body: dict = Body(default={})) -> dict:
+        """Put the content back as it was at the checkpoint: all of it, or ``{"blocks": [...]}``.
+        Nothing is overwritten (a block checks out the version it had; newer versions stay in
+        its history), and the result's ``undo`` is a checkpoint that undoes this restore. A
+        block someone else is editing right now is left alone and listed in ``skipped``."""
+        body = body or {}
+        try:
+            me = str(body.get("client_id") or "")
+            busy = {p["block_id"]: f"{p['name']} is editing it" for p in st.present(doc_id)
+                    if p.get("editing") and p.get("block_id") and p["client_id"] != me}
+            got = store.restore_checkpoint(doc_id, cid, blocks=body.get("blocks"), by=human(request, body),
+                                           skip=busy)
+            return {"result": got, "doc": store.full(doc_id)}
+        except Exception as exc:  # noqa: BLE001
+            raise _json_error(exc) from exc
+
     @app.delete("/api/docs/{doc_id}")
     def delete_doc(doc_id: str) -> dict:
         try:
@@ -626,13 +687,14 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
             raise _json_error(exc) from exc
 
     @app.post("/api/docs/{doc_id}/suggestions/{action}")
-    def bulk(doc_id: str, action: str) -> dict:
+    def bulk(doc_id: str, action: str, request: Request, body: dict = Body(default={})) -> dict:
         if action not in ("accept-all", "reject-all"):
             raise HTTPException(404, "unknown action")
         if action == "accept-all":
-            # In a dependency-safe order; whatever stays behind is listed with its reason.
+            # In a dependency-safe order; whatever stays behind is listed with its reason. The
+            # result's ``checkpoint`` is the content just before: restoring it undoes all of it.
             try:
-                return store.accept_all(doc_id)
+                return store.accept_all(doc_id, by=human(request, body or {}))
             except Exception as exc:  # noqa: BLE001
                 raise _json_error(exc) from exc
         n = 0

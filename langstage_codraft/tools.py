@@ -89,6 +89,12 @@ def _design_group(doc_id: str | None) -> str:
     return f"turn:{key}" if key is not None else ""
 
 
+def _propose(store: Any, doc_id: str, kind: str, payload: dict, **kw: Any) -> dict:
+    """``store.propose`` for the agent's current turn: the store checkpoints the document's
+    content before the turn's first proposal (gh #61)."""
+    return store.propose(doc_id, kind, payload, group=_design_group(doc_id), **kw)
+
+
 def _bump(st: dict, name: str) -> int:
     st["n"][name] = st["n"].get(name, 0) + 1
     return st["n"][name]
@@ -845,11 +851,11 @@ def propose_edit(
         # paragraphs is theirs to structure and is edited whole.
         parts = None if keep_together else _should_split(b["type"], c, b["layout"])
         if parts and len(split_paragraphs(b["content"].get("markdown") or "")) <= 1:
-            first = store.propose(doc_id, "edit", {**payload, "content": {**c, "markdown": parts[0]}},
+            first = _propose(store, doc_id, "edit", {**payload, "content": {**c, "markdown": parts[0]}},
                                   block_id=block_id, comment_id=comment_id, note=note)
             ids, after = [], block_id
             for part in parts[1:]:
-                sg = store.propose(doc_id, "insert", {"type": "text", "content": {"markdown": part}, "after": after,
+                sg = _propose(store, doc_id, "insert", {"type": "text", "content": {"markdown": part}, "after": after,
                                                       "layout": {"span": b["layout"].get("span", "column")}},
                                    comment_id=comment_id, note=note or "Next paragraph")
                 after = (sg["payload"].get("result") or {}).get("block_id") or sg["id"]
@@ -858,7 +864,7 @@ def propose_edit(
                     f"per paragraph: {block_id} holds the first and the rest follow it in order as "
                     f"{', '.join(ids)}. The author approves and comments on each separately. (keep_together=True "
                     "keeps a draft in one block; use it only when the paragraphs must not be separated.)")
-        sg = store.propose(doc_id, "edit", payload, block_id=block_id, comment_id=comment_id, note=note)
+        sg = _propose(store, doc_id, "edit", payload, block_id=block_id, comment_id=comment_id, note=note)
         res = _sugg_result(sg) + _chart_note(b["type"], c)
         if b["type"] in ("text", "callout"):
             # From what the store kept, so a value it repaired (a list of paragraphs) counts too.
@@ -920,7 +926,7 @@ def propose_insert(
                 {"blocks": [{"type": "text", "content": c, "layout": payload["layout"],
                              **({"references": references} if references else {})}],
                  "after_block_id": after_block_id, "note": note}, config=config)
-        return (_sugg_result(store.propose(doc_id, "insert", payload, comment_id=comment_id, note=note))
+        return (_sugg_result(_propose(store, doc_id, "insert", payload, comment_id=comment_id, note=note))
                 + _chart_note(block_type, c))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -946,7 +952,7 @@ def propose_delete(block_id: str, config: RunnableConfig, note: str = "",
         # Sources are the one thing an unattended run must not lose: the reference list and
         # any block that cites something stay until the author says so, in either mode.
         sources = b["type"] == "references" or bool(b["refs"])
-        sg = store.propose(doc_id, "delete", {}, block_id=block_id, comment_id=comment_id, note=note,
+        sg = _propose(store, doc_id, "delete", {}, block_id=block_id, comment_id=comment_id, note=note,
                            hold=sources)
         if sources and sg["status"] == "pending":
             what = "the reference list" if b["type"] == "references" else f"a block that cites {len(b['refs'])} source(s)"
@@ -972,7 +978,7 @@ def propose_move(block_id: str, config: RunnableConfig, after_block_id: str | No
         store = get_store()
         doc_id = _doc_id(config)
         _block(store, doc_id, block_id)
-        return _sugg_result(store.propose(doc_id, "move", {"after": after_block_id},
+        return _sugg_result(_propose(store, doc_id, "move", {"after": after_block_id},
                                           block_id=block_id, comment_id=comment_id, note=note))
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -1007,6 +1013,7 @@ def restore_block(block_id: str, config: RunnableConfig) -> str:
         if block_id not in {r["id"] for r in store.deleted_blocks(doc_id, limit=100000)}:
             _block(store, doc_id, block_id)  # a wrong kind of id, another document's block: say so
             return f"Block {block_id} is not deleted, so there is nothing to restore."
+        store.auto_checkpoint(doc_id, "turn", by=_AGENT, group=_design_group(doc_id))
         b = store.restore_block(block_id)
         text = plain_text(b["type"], b["content"])
         return (f"Restored {b['type']} block {b['id']} where it was, with its history"
@@ -1580,10 +1587,10 @@ def _draw_figure(
                 if b["type"] != "image":
                     return (f"ERROR: {block_id} is a {b['type']} block; draw into an image block or insert a "
                             "new one", None)
-                s = store.propose(doc_id, "edit", {"content": content, "layout": variant}, block_id=block_id,
+                s = _propose(store, doc_id, "edit", {"content": content, "layout": variant}, block_id=block_id,
                                   comment_id=comment_id, note=note or f"Figure: {title or label}")
             else:
-                s = store.propose(doc_id, "insert", {
+                s = _propose(store, doc_id, "insert", {
                     "type": "image", "content": content, "after": after_block_id or "__end__",
                     "layout": {"span": "full" if full_width else "column", **variant}},
                     comment_id=comment_id, note=note or f"Figure: {title or label}")
@@ -1689,7 +1696,7 @@ def insert_blocks(blocks: list[dict], config: RunnableConfig, after_block_id: st
             if item.get("references"):
                 payload["refs"] = item["references"]
             try:
-                sg = store.propose(doc_id, "insert", payload, note=note or f"Insert {t}")
+                sg = _propose(store, doc_id, "insert", payload, note=note or f"Insert {t}")
             except NoChange as exc:
                 out.append(f"{i}: not inserted. {exc.args[0] if exc.args else exc}")
                 continue
@@ -1901,6 +1908,107 @@ def match_upload_style(upload_id: str, config: RunnableConfig) -> str:
             return f"Nothing readable in {u['filename']}; look at it with view_upload and style by eye."
         store.update_document(doc_id, settings=patch, by=_AGENT, group=_design_group(doc_id))
         return f"Matched {u['filename']}:\n- " + "\n- ".join(changes) + _cut_note(store, doc_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------- checkpoints (gh #61)
+def _changes_line(n: dict) -> str:
+    parts = [f"{n[k]} {k}" for k in ("edited", "added", "deleted", "moved") if n.get(k)]
+    return ", ".join(parts) or "no changes"
+
+
+def _find_checkpoint(store: Any, doc_id: str, ref: str) -> dict:
+    """A checkpoint by id, or by name (any case; the newest one of that name)."""
+    rows = store.list_checkpoints(doc_id)
+    ref = (ref or "").strip().strip('"“”')
+    got = next((c for c in rows if c["id"] == ref), None) or next(
+        (c for c in rows if c["name"].lower() == ref.lower()), None) or next(
+        (c for c in rows if ref and ref.lower() in c["name"].lower()), None)
+    if got is None:
+        if not rows:
+            raise Invalid("This document has no checkpoints yet. The author names one in Document -> "
+                          "Checkpoints; one is also taken before each of your turns and each Accept all.")
+        raise Invalid(f"No checkpoint {ref!r} in this document. Call list_checkpoints for the ids and names.")
+    return got
+
+
+@tool
+def list_checkpoints(config: RunnableConfig, limit: int = 15) -> str:
+    """List the document's checkpoints, newest first: points in time its content can be
+    compared with. The author names some ("Sent to legal"); others are taken automatically
+    before each of your turns that proposes content, before each Accept all and before a
+    restore. Each line gives the id, the name, when, and how much of the content differs
+    from it now. Use it when the author asks what changed since a version or a date, then
+    call changes_since with the checkpoint's id."""
+    try:
+        from .design_history import age
+
+        store = get_store()
+        rows = store.list_checkpoints(_doc_id(config), limit=max(1, min(int(limit), 60)))
+        if not rows:
+            return ("This document has no checkpoints yet. The author names one in Document -> Checkpoints; "
+                    "one is also taken before each of your turns that proposes content and before each Accept all.")
+        now = time.time()
+        return ("Checkpoints, newest first (changes_since(checkpoint) says what changed since one):\n" + "\n".join(
+            f"{c['id']}  {'named' if c['kind'] == 'named' else 'auto '}  \"{c['name']}\"  {age(now - c['at'])}"
+            f"  — since then: {_changes_line(c['changes'])}" for c in rows))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@tool
+def changes_since(checkpoint: str, config: RunnableConfig) -> str:
+    """What changed in the document's content since a checkpoint (its id from
+    list_checkpoints, or its name): each block edited (a word diff, removed words as [-…-]
+    and added ones as {+…+}), added, deleted or moved, with word counts. Read-only. Use it
+    to answer "what changed since the version legal reviewed?", or to write a cover note or
+    a summary of changes: report what it lists, and read a block (read_blocks) when you
+    need its full text. It covers content only; the look has list_design_history. Going
+    back to a checkpoint is the author's to do (Document -> Checkpoints): you cannot
+    restore one, so never say you did."""
+    try:
+        from .checkpoints import word_diff
+        from .design_history import age
+
+        store = get_store()
+        doc_id = _doc_id(config)
+        ck = _find_checkpoint(store, doc_id, checkpoint)
+        ch = store.checkpoint_changes(doc_id, ck["id"])
+        head = (f'Changes since checkpoint {ck["id"]} "{ck["name"]}" ({age(time.time() - ck["at"])}): '
+                f'{_changes_line(ch["counts"])}. The document was {ch["words_before"]} words then and is '
+                f'{ch["words_after"]} now.')
+        if not ch["counts"]["total"]:
+            return head.replace(": no changes.", ": nothing. The content is exactly as it was then.")
+        lines = [head]
+        budget = max(160, min(520, (_MAX_READ - 600) // max(1, ch["counts"]["total"])))
+        if ch["edited"]:
+            lines.append("EDITED")
+            for e in ch["edited"]:
+                t = e["type"]
+                diff = word_diff(plain_text(t, (e["before"] or {}).get("content") or {}),
+                                 plain_text(t, (e["after"] or {}).get("content") or {}), budget=budget)
+                if not diff:
+                    diff = ("its sources changed" if e["refs_changed"] else
+                            "changed in a way that is not text (a table's cells, a chart's data or an image): "
+                            "read the block")
+                elif e["refs_changed"]:
+                    diff += "  (its sources changed too)"
+                lines.append(f"- [{e['block_id']}] {t}, {e['words_before']} -> {e['words_after']} words: {diff}")
+        for key, title in (("added", "ADDED"), ("deleted", "DELETED (in Recently deleted; the author can restore it)")):
+            if ch[key]:
+                lines.append(title)
+                lines += [f"- [{b['block_id']}] {b['type']}, {b['words']} words"
+                          + (f" — {textutil.excerpt(b['preview'], min(budget, 160))}" if b["preview"] else "")
+                          for b in ch[key]]
+        if ch["moved"]:
+            lines.append("MOVED")
+            lines += [f"- [{b['block_id']}] {b['type']}, moved {'up' if b['now'] < b['was'] else 'down'}: now "
+                      + (f"after [{b['after']}]" if b["after"] else "the first block")
+                      + (f" — {textutil.excerpt(b['preview'], 90)}" if b["preview"] else "") for b in ch["moved"]]
+        lines.append("Content only (styling is in list_design_history). Only the author can go back to a "
+                     "checkpoint, in Document -> Checkpoints.")
+        return "\n".join(lines)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -2151,6 +2259,8 @@ CODRAFT_TOOLS = [
     match_upload_style,
     list_design_history,
     restore_design,
+    list_checkpoints,
+    changes_since,
     compile_references,
     view_pages,
     view_sketch,

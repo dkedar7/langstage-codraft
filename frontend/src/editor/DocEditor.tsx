@@ -85,6 +85,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
   const [editing, setEditing] = useState<string | null>(null);
   const [tab, setTab] = useState<PanelTab>(cfg.ui?.features?.chat === false ? "comments" : "chat");
   const [commentFilter, setCommentFilter] = useState<string | null>(null);
+  const [checkpointReview, setCheckpointReviewState] = useState<string | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; msg: string; kind: string; action?: { label: string; run: () => void } }[]>([]);
   const [zoom, setZoom] = useState(1);
@@ -195,6 +196,11 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
     if (done) toast("Block deleted.", "info", { label: "Undo", run: () => { restoreBlock(id); } });
   }, [run, toast, restoreBlock]);
 
+  const setCheckpointReview = useCallback((id: string | null) => {
+    setCheckpointReviewState(id);
+    if (id) { setPanelOpen(true); setTab("document"); }
+  }, []);
+
   const ask = useCallback((message: string) => {
     setPanelOpen(true);
     setTab("chat");
@@ -247,9 +253,9 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
   const apiValue: EditorApi | null = useMemo(() => (doc ? {
     doc, cfg, refresh, selected, select: (id) => { select(id); if (id && tab !== "chat" && tab !== "comments") setTab("block"); },
     editing, setEditing, tab, setTab: (t) => { setPanelOpen(true); setTab(t); }, commentFilter, setCommentFilter, ask, run, toast,
-    removeBlock, restoreBlock, reloadConfig, cutOff, setCutOff,
+    removeBlock, restoreBlock, reloadConfig, cutOff, setCutOff, checkpointReview, setCheckpointReview,
     agentRunning: agentRunning || serverRunning, setAgentRunning, zoom, peers, me,
-  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, removeBlock, restoreBlock, agentRunning, serverRunning, zoom, peers, me, reloadConfig, cutOff, setCutOff]);
+  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, removeBlock, restoreBlock, agentRunning, serverRunning, zoom, peers, me, reloadConfig, cutOff, setCutOff, checkpointReview, setCheckpointReview]);
 
   if (err) return <div className="p-8 text-[var(--color-error)]">Could not open the document: {err}</div>;
   if (!doc || !apiValue) return <div className="p-8 text-[var(--color-text-muted)]">Loading…</div>;

@@ -18,6 +18,32 @@ export interface DesignRestore {
   changed: boolean; step: string | null; settings: boolean; blocks: number;
   areas_removed: number; areas_restored: number; kept: number; skipped: number; notes: string[];
 }
+/** The document's text at a point in time (gh #61): named by the author, or taken
+ *  automatically before an agent turn, an Accept all or a restore. */
+export interface Checkpoint {
+  id: string; name: string; kind: "auto" | "named"; reason: "" | "turn" | "accept-all" | "restore"; detail: string;
+  by: string; at: number; created_at: number; blocks: number;
+  /** how much of the text differs from it now */
+  changes?: { edited: number; added: number; deleted: number; moved: number; total: number };
+}
+export interface CheckpointBlock { block_id: string; type: string; words: number; preview: string; content?: Record<string, any> }
+export interface CheckpointChanges {
+  checkpoint: Checkpoint;
+  edited: { block_id: string; type: string; from_version: string; to_version: string; words_before: number; words_after: number;
+    before: { content: Record<string, any>; refs: any[] } | null; after: { content: Record<string, any>; refs: any[] } | null;
+    refs_changed: boolean }[];
+  added: CheckpointBlock[]; deleted: CheckpointBlock[];
+  moved: (CheckpointBlock & { was: number; now: number; after: string | null })[];
+  lost: string[];
+  counts: { edited: number; added: number; deleted: number; moved: number; total: number };
+  words_before: number; words_after: number;
+}
+export interface CheckpointRestore {
+  changed: boolean; edited: number; restored: number; removed: number; moved: number;
+  skipped: { block_id: string; reason: string }[];
+  /** a checkpoint of the text just before this restore: restoring it undoes the restore */
+  undo: string | null; notes: string[];
+}
 export interface ImportReport { blocks: number; images: number; notes: string[] }
 
 /** The collaborator's display name, sent with human changes (the server prefers a trusted
@@ -84,6 +110,17 @@ export const api = {
   /** Undo one step (`only`), or put the look back to how it was before the step. Never touches content. */
   restoreDesign: (id: string, stepId: string, only: boolean) =>
     req<{ result: DesignRestore; doc: Doc }>("POST", `/api/docs/${id}/design-history/${stepId}/restore`, { only, author }),
+  /** Checkpoints of the document's text, newest first, each with how much changed since. */
+  checkpoints: (id: string) => req<{ checkpoints: Checkpoint[] }>("GET", `/api/docs/${id}/checkpoints`),
+  createCheckpoint: (id: string, name: string) => req<Checkpoint>("POST", `/api/docs/${id}/checkpoints`, { name, author }),
+  /** Renaming an automatic checkpoint keeps it. */
+  renameCheckpoint: (id: string, cid: string, name: string) => req<Checkpoint>("PATCH", `/api/docs/${id}/checkpoints/${cid}`, { name }),
+  deleteCheckpoint: (id: string, cid: string) => req<{ ok: boolean }>("DELETE", `/api/docs/${id}/checkpoints/${cid}`),
+  checkpointChanges: (id: string, cid: string) => req<CheckpointChanges>("GET", `/api/docs/${id}/checkpoints/${cid}/changes`),
+  /** Put the text back as it was at the checkpoint: all of it, or only `blocks`. Nothing is overwritten. */
+  restoreCheckpoint: (id: string, cid: string, clientId: string, blocks?: string[]) =>
+    req<{ result: CheckpointRestore; doc: Doc }>("POST", `/api/docs/${id}/checkpoints/${cid}/restore`,
+      { author, client_id: clientId, ...(blocks ? { blocks } : {}) }),
   deleteDoc: (id: string) => req("DELETE", `/api/docs/${id}`),
   duplicateDoc: (id: string) => req<Doc>("POST", `/api/docs/${id}/duplicate`),
   reportLayout: (id: string, body: any) => req("POST", `/api/docs/${id}/layout`, body),
@@ -113,7 +150,9 @@ export const api = {
     req<Suggestion>("POST", `/api/suggestions/${id}/accept`, force ? { payload, force } : { payload }),
   reject: (id: string, reason = "") => req<Suggestion>("POST", `/api/suggestions/${id}/reject`, { reason }),
   bulk: (docId: string, action: "accept-all" | "reject-all") =>
-    req<{ ok: boolean; count: number; skipped?: string[]; skipped_gone?: string[]; failed?: { id: string; kind: string; reason: string }[] }>("POST", `/api/docs/${docId}/suggestions/${action}`),
+    req<{ ok: boolean; count: number; skipped?: string[]; skipped_gone?: string[]; failed?: { id: string; kind: string; reason: string }[];
+      /** the text just before an Accept all: restoring it undoes all of it */
+      checkpoint?: string | null }>("POST", `/api/docs/${docId}/suggestions/${action}`, { author }),
 
   upload: (docId: string, file: File, purpose: string) => {
     const fd = new FormData();

@@ -129,7 +129,7 @@ def test_rest_issue_repro_delete_then_review(client):
     assert client.delete(f"/api/blocks/{blk['id']}").status_code == 200
     assert client.get(f"/api/docs/{D}").json()["suggestions"] == []
     r = client.post(f"/api/docs/{D}/suggestions/accept-all")
-    assert r.json() == {"ok": True, "count": 0, "skipped": [], "skipped_gone": [], "failed": []}
+    assert r.json() == {"ok": True, "count": 0, "skipped": [], "skipped_gone": [], "failed": [], "checkpoint": None}
 
 
 def test_rest_accept_all_reports_stored_orphans_and_accept_is_a_400(client):

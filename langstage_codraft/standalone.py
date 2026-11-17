@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import atexit
 import copy
+import logging
 import secrets
 import socket
 import threading
@@ -26,6 +27,8 @@ from pathlib import Path
 from typing import Any
 
 from .config import CodraftConfig
+
+log = logging.getLogger("langstage_codraft")
 
 EXPORT_FORMATS = ("pdf", "docx", "pptx", "png", "jpg", "html", "gif", "mp4")
 
@@ -312,25 +315,49 @@ def export_document(data_dir: str | Path | None, doc_id: str, fmt: str = "pdf",
 
 
 # ------------------------------------------------------------- lazy renderer
-_lazy_lock = threading.Lock()
+# Re-entrant: `langstage-codraft mcp` closes the app from a signal handler, which runs
+# in the main thread wherever that thread happens to be.
+_lazy_lock = threading.RLock()
 _lazy: Standalone | None = None
+_lazy_at_exit = False
 
 
 def lazy_renderer(cfg: CodraftConfig) -> Any:
     """A factory for ``render.set_renderer_factory``: on first use it starts the in-process
     app over the store this process already has open (the stdio MCP server's) and returns
-    its renderer. The app lives until the process exits."""
+    its renderer. The app lives until :func:`close_lazy_renderer`, which whoever set the
+    factory calls when it is done (``langstage-codraft mcp`` does, as its server returns)."""
 
     def factory() -> Any:
-        global _lazy
+        global _lazy, _lazy_at_exit
         from .store import get_store
 
         with _lazy_lock:
             if _lazy is None:
                 sa = Standalone(cfg=cfg, store=get_store())
                 sa.start()
-                atexit.register(sa.close)
+                if not _lazy_at_exit:
+                    # A last resort only. By the time atexit runs the interpreter has shut
+                    # its thread pools down, so the app is stopped with less to work with
+                    # (gh #63): the owner should have called close_lazy_renderer() already.
+                    atexit.register(close_lazy_renderer)
+                    _lazy_at_exit = True
                 _lazy = sa
             return _lazy.renderer()
 
     return factory
+
+
+def close_lazy_renderer() -> None:
+    """Stop the in-process app :func:`lazy_renderer` started, if it started one: Chromium
+    and the app's own shutdown. Safe to call when nothing was started, more than once, and
+    at interpreter exit; it never raises. A later render starts a fresh app."""
+    global _lazy
+    with _lazy_lock:
+        sa, _lazy = _lazy, None
+    if sa is None:
+        return
+    try:
+        sa.close()
+    except Exception:  # noqa: BLE001 - there is nobody left to tell, and exit must stay quiet
+        log.debug("closing the in-process renderer failed", exc_info=True)

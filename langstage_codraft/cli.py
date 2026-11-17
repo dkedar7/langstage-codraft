@@ -495,8 +495,56 @@ def mcp(data_dir, port) -> None:
 
         set_renderer_factory(lazy_renderer(cfg))
     from .server import house_defaults
+    from .standalone import close_lazy_renderer
 
-    build_mcp_server(cfg, house_defaults()).run("stdio")
+    server = build_mcp_server(cfg, house_defaults())
+    restore = _close_on_signal(close_lazy_renderer)
+    try:
+        server.run("stdio")
+    finally:
+        # However the server stopped (the client closed stdin, an error), stop the
+        # in-process renderer now, while the interpreter can still do it cleanly. Left to
+        # atexit, its shutdown printed a traceback on every exit (gh #63).
+        close_lazy_renderer()
+        restore()
+
+
+def _close_on_signal(cleanup):
+    """On SIGTERM or Ctrl+C, run ``cleanup`` and then let the signal end the process the
+    way it would have without a handler. Returns a function that puts the previous
+    handlers back; does nothing where handlers can't be set (not the main thread).
+
+    The signal is not turned into an exception for ``finally`` to see: the stdio server
+    reads stdin with a blocking read in a thread, which nothing can interrupt, so unwinding
+    through its event loop waits for the client to close stdin. A client that sends
+    SIGTERM has stopped waiting for that.
+    """
+    import os
+    import signal
+
+    previous: dict = {}
+
+    def on_signal(signum, _frame):
+        for s in previous:  # a second signal while cleaning up ends the process at once
+            signal.signal(s, signal.SIG_DFL)
+        cleanup()
+        os.kill(os.getpid(), signum)
+        os._exit(128 + signum)  # only where the signal above isn't delivered before kill() returns
+
+    def restore() -> None:
+        for s, handler in previous.items():
+            try:
+                signal.signal(s, handler)
+            except (ValueError, OSError, TypeError):
+                pass
+        previous.clear()
+
+    try:
+        for s in (signal.SIGTERM, signal.SIGINT):
+            previous[s] = signal.signal(s, on_signal)
+    except (ValueError, OSError):
+        restore()
+    return restore
 
 
 @main.command("install-browser")

@@ -484,7 +484,9 @@ and `view_sketch`, which return images.
 
 Over stdio, `view_pages` works on its own: it uses the server on the configured port if one is
 running, and otherwise starts a private in-process renderer the first time the tool is called
-(the first call takes a few seconds; it needs `langstage-codraft install-browser` once).
+(the first call takes a few seconds; it needs `langstage-codraft install-browser` once). The
+renderer is stopped when the client disconnects, and on SIGTERM or Ctrl+C, so nothing is left
+running and nothing is printed on the way out.
 
 ## For deployers
 

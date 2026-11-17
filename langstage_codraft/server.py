@@ -285,8 +285,26 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                 pass
         r = get_renderer()
         if r is not None:
-            await asyncio.to_thread(r.close)
-            set_renderer(None)
+            ran: list[bool] = []
+
+            def close_renderer() -> None:
+                ran.append(True)
+                r.close()
+
+            try:
+                try:
+                    await asyncio.to_thread(close_renderer)
+                except RuntimeError:
+                    if ran:
+                        raise
+                    # It never ran: there is no thread pool to run it on, because the
+                    # interpreter is exiting (a close from atexit, gh #63). Nothing else is
+                    # being served by now, so close Chromium right here.
+                    r.close()
+            except Exception:  # noqa: BLE001 - the checkpointer below still has to be closed
+                log.debug("closing the renderer failed", exc_info=True)
+            finally:
+                set_renderer(None)
         if st.saver_cm is not None:
             try:
                 await st.saver_cm.__aexit__(None, None, None)

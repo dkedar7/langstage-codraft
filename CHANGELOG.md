@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.11.1 — 2026-11-17
+
+**`langstage-codraft mcp` (stdio) exits quietly after it rendered a page (#63).** Once a tool had
+started the in-process renderer (`view_pages`, `draw_figure`, a `set_block_layout` height check),
+every exit printed a traceback ending `cannot schedule new futures after interpreter shutdown`
+and `Application shutdown failed`, which MCP clients show in their server logs. The renderer was
+only stopped by an exit hook, which runs after Python has shut its thread pools down, so the
+app's shutdown failed halfway and skipped the rest of its cleanup.
+
+- **The stdio server stops its renderer itself**, as soon as the client disconnects or the
+  server fails, while the interpreter is still whole. The exit hook stays as a last resort and
+  can no longer raise.
+- **SIGTERM and Ctrl+C stop the renderer first, then end the process at once.** Ctrl+C used to
+  hang until the client closed stdin (the server's stdin read can't be interrupted), and SIGTERM
+  killed the process without closing Chromium. The exit status is the signal's own, as before.
+- **The app's shutdown always reaches the checkpointer.** A renderer that fails to close, or
+  can't be handed to a thread, no longer stops the agent's SQLite checkpointer from being
+  closed. This applies to `langstage-codraft run` too.
+- **A slow Chromium close is left to finish.** If closing the browser takes longer than 15
+  seconds (a machine under heavy load), the wait still ends there, but the close carries on in
+  the background instead of being cut off, which printed `Task was destroyed but it is pending`
+  and unclosed-pipe warnings at exit.
+- For embedders: `langstage_codraft.standalone.close_lazy_renderer()` stops what
+  `lazy_renderer()` started. It is safe to call twice or when nothing was started.
+
 ## 0.11.0 — 2026-11-16
 
 **Checkpoints: see what changed since a point in time, and go back to it (#61).** Every block

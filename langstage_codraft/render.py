@@ -99,6 +99,7 @@ class Renderer:
         self._pw = None
         self._browser = None
         self._lock: asyncio.Lock | None = None
+        self._closed = False
 
     # ------------------------------------------------------------- plumbing
     def call(self, coro, timeout: float = 120) -> Any:
@@ -136,17 +137,26 @@ class Renderer:
             return False
 
     def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
         async def _close():
             if self._browser is not None:
                 await self._browser.close()
             if self._pw is not None:
                 await self._pw.stop()
 
+        fut = asyncio.run_coroutine_threadsafe(_close(), self._loop)
         try:
-            self.call(_close(), timeout=15)
+            fut.result(15)
         except Exception:  # noqa: BLE001
             pass
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        # Stop the loop when the close has finished, not before. One that ran out of time
+        # (a machine under load) carries on in the background: stopping the loop under it
+        # leaves Playwright's pipes half closed, and the interpreter complains about each
+        # of them on its way out (gh #63).
+        fut.add_done_callback(lambda _f: self._loop.call_soon_threadsafe(self._loop.stop))
 
     async def _open(self, doc_id: str, *, scale: float = 1.0, preview: bool = False):
         browser = await self._browser_ready()

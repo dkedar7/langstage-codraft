@@ -883,14 +883,35 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         return {"ok": not cut, "cut_off": _cut_details(doc_id, cut)}
 
     @app.get("/api/docs/{doc_id}/export")
-    async def export(doc_id: str, format: str = "pdf", strict: bool = False) -> Response:
+    async def export(doc_id: str, format: str = "pdf", strict: bool = False, since: str | None = None,
+                     pending: bool = False) -> Response:
         """The document in ``format``. When blocks are cut off in it (see layout-check) the
         response says so in ``X-Codraft-Cut-Off`` (``blk_…@page``, comma-separated); with
-        ``strict=true`` the export is refused with 409 instead."""
+        ``strict=true`` the export is refused with 409 instead.
+
+        A Word export can be a redline (gh #65): ``since=<checkpoint id or name>`` writes
+        what changed since that checkpoint as Word tracked changes, ``pending=true`` the
+        pending suggestions."""
         try:
             doc = store.get_document(doc_id)
         except NotFound as exc:
             raise HTTPException(404, str(exc)) from exc
+        plan = None
+        redline = ""
+        if since is not None or pending:
+            if format.lower() != "docx":
+                raise HTTPException(400, "since and pending make a redline, which is a Word export: use format=docx")
+            if since is not None and pending:
+                raise HTTPException(400, "pass since (changes since a checkpoint) or pending (the pending "
+                                         "suggestions), not both")
+            try:
+                if pending:
+                    plan, redline = store.redline_pending(doc_id), "suggestions"
+                else:
+                    cp = store.find_checkpoint(doc_id, since or "")
+                    plan, redline = store.redline_since(doc_id, cp["id"]), "redline"
+            except NotFound as exc:
+                raise HTTPException(404, str(exc)) from exc
         r = get_renderer()
         if r is None:
             raise HTTPException(503, "renderer not running")
@@ -932,12 +953,14 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                         for it in p["items"]:
                             if it.get("png") and not it["fragment"] and it["id"] not in pictures:
                                 pictures[it["id"]] = it["png"]
-                    data = await asyncio.to_thread(exporters.to_docx, store, doc_id, pictures,
-                                                   _references(store, doc_id))
+                    shown = st.ui.get("agent_name")
+                    data = await asyncio.to_thread(
+                        exporters.to_docx, store, doc_id, pictures, _references(store, doc_id), plan,
+                        shown if shown not in (None, "", "Co-author") else "Agent")
                     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     # Word reflows the text itself, so nothing is cut off in a .docx.
                     info.pop("cut_off", None)
-                return _send(data, mime, f"{stem}.{fmt}")
+                return _send(data, mime, f"{stem}-{redline}.{fmt}" if redline else f"{stem}.{fmt}")
             if fmt in ("gif", "mp4"):
                 from . import exporters
 

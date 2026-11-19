@@ -39,6 +39,9 @@ export interface EditorApi {
   /** other people in this document right now */
   peers: Peer[];
   me: { id: string; name: string; color: string };
+  /** Download an export; ``extra`` adds query parameters, e.g. a Word redline's
+   *  ``{since: checkpointId}`` or ``{pending: "true"}`` (gh #65). */
+  exportDoc: (fmt: string, extra?: Record<string, string>) => Promise<void>;
   /** Re-read the app config (after saving or deleting a theme). */
   reloadConfig?: () => Promise<void>;
 }

@@ -41,6 +41,9 @@ you ask it to.
 - **Checkpoints.** Name the text as it is now ("Sent to legal"); later, see what changed since,
   block by block, and go back: all of it or one block. One is taken before each agent turn and
   each **Accept all**, so accepting thirty suggestions at once has an **Undo**.
+- **Redlines for reviewers in Word.** Export what changed since a checkpoint, or the pending
+  suggestions, as a Word file with real tracked changes, so legal can accept or reject them in
+  Word without opening Codraft. See [Redline Word export](#redline-word-export).
 - **The look has a history too.** The agent restyles without asking, so every change to the
   look is a step you can undo: **Design → History**, or **Undo** on the notice after a
   restyling turn. One agent turn is one step, and undoing it never touches your text.
@@ -420,6 +423,48 @@ httpx.post(f"{base}/api/docs/{doc_id}/checkpoints/{got['undo']}/restore", json={
 Python: `Store.create_checkpoint(doc_id, name)`, `Store.list_checkpoints(doc_id)`,
 `Store.checkpoint_changes(doc_id, checkpoint_id)` and
 `Store.restore_checkpoint(doc_id, checkpoint_id, blocks=None)`.
+
+### Redline Word export
+
+A reviewer who works in Word can't see **Changes since…** inside Codraft, and a plain Word
+export is a clean copy. A **redline** is the Word export with the changes written as Word's own
+tracked changes, so the reviewer gets Word's **Accept** and **Reject**:
+
+- **Changes since a checkpoint.** Under **Document → Checkpoints**, the file icon next to
+  "N changes since…" (or **Export redline** in the changes view) downloads `<title>-redline.docx`.
+  The Export menu's **Word: changes since…** takes you there.
+- **The pending suggestions.** **Export → Word with suggestions** downloads
+  `<title>-suggestions.docx`: each pending suggestion is a tracked change by the agent, where
+  accepting it would put it.
+
+```bash
+langstage-codraft export DOC_ID -f docx --since "Sent to legal" -o redline.docx   # a checkpoint's name or id
+langstage-codraft export DOC_ID -f docx --pending -o suggestions.docx
+```
+
+How each change is written:
+
+| Change | In Word |
+|---|---|
+| Edited text, heading or callout | word by word: the removed words deleted, the new ones inserted; bold, italic and the rest kept |
+| A paragraph added to or removed from a block | the whole paragraph inserted or deleted |
+| Added block | inserted where it is now |
+| Deleted block | deleted where it was |
+| Moved block | deleted where it was, inserted where it is now |
+| Edited table, row, stat tiles, chart or image | the old block deleted and the new one inserted |
+
+Each change is attributed to whoever made it, from the block's version records: a collaborator's
+name, the agent's name (`[ui] agent_name` or the graph's name), or "Author" when the editor gave
+no name. Accept every change in Word and the text reads as the document does now (or with the
+suggestions accepted); reject every one and it reads as it did at the checkpoint (or as it is
+now). A chart or image as it was, or one not yet accepted, has no picture to show, so the
+redline names it (`[chart]`) next to its caption. Citation numbers follow the document as it is
+now; a citation whose source went with a deleted block prints `[?]`.
+
+`GET /api/docs/{id}/export?format=docx&since=<checkpoint id or name>` and `&pending=true` serve
+the same files. In Python: `export_document(data_dir, doc_id, "docx", since="Sent to legal")`,
+`export_document(..., pending=True)` and `Standalone.export(doc_id, "docx", since=...)`.
+Reviewers' tracked changes don't come back into Codraft: answer them in Codraft or with the agent.
 
 ### Design history: undo a restyle
 

@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.12.0 — 2026-11-19
+
+**Redline Word export: the changes as Word tracked changes, for reviewers who work in Word (#65).**
+You name a checkpoint "Sent to legal", keep editing with the agent, and legal asks for a redline
+against what they reviewed. **Changes since…** showed it inside Codraft, but every Word export
+was a clean copy. Now a Word export can be a redline:
+
+- **Since a checkpoint:** `langstage-codraft export DOC_ID -f docx --since "Sent to legal"` (a
+  checkpoint's name or id), `GET /api/docs/{id}/export?format=docx&since=…`, or in the editor
+  the file icon next to a checkpoint's "N changes since…" and **Export redline** in its changes
+  view. The Export menu's **Word: changes since…** takes you to the checkpoints.
+- **The pending suggestions:** `--pending`, `&pending=true`, or **Export → Word with
+  suggestions**. Each suggestion is a tracked change by the agent, where accepting it would put
+  it, including inserts that follow other pending inserts and moves.
+- **What's written:** edited text, headings and callouts word by word on the formatted runs
+  (bold, italic, links kept); paragraphs added to or removed from a block whole; added and
+  deleted blocks whole; a moved block deleted where it was and inserted where it is; an edited
+  table, row, stat, chart or image as the old block deleted and the new one inserted.
+- **Who and when:** each change carries its author and date from the version records (a
+  collaborator's name, the agent's name, or "Author"), and for accepted deletes and moves from
+  the suggestion that made them.
+- **Checked in Word:** accepting every change reads exactly as the document does now, and
+  rejecting every one exactly as it did at the checkpoint (the tests check the same round trip
+  on the XML).
+- Python: `export_document(..., since=..., pending=...)`, `Standalone.export(..., since=...,
+  pending=...)`, `Store.find_checkpoint(doc_id, id_or_name)`, `Store.redline_since(doc_id,
+  checkpoint_id)` and `Store.redline_pending(doc_id)`; `exporters.to_docx` takes the plan.
+- Not in this release: a moved block is a delete and an insert, not Word's move marks; a chart
+  or image as it was is named (`[chart]`), not pictured; reviewers' tracked changes are not
+  imported back as suggestions.
+
 ## 0.11.1 — 2026-11-17
 
 **`langstage-codraft mcp` (stdio) exits quietly after it rendered a page (#63).** Once a tool had

@@ -1,4 +1,4 @@
-import { ArrowLeft, Bookmark, Check, History, Pencil, RotateCcw, Trash2, X } from "lucide-react";
+import { ArrowLeft, Bookmark, Check, FileDown, History, Pencil, RotateCcw, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, type Checkpoint, type CheckpointChanges, type CheckpointRestore } from "../api";
 import { AgentName } from "../branding";
@@ -111,8 +111,13 @@ export function Checkpoints() {
                 <span className="text-[var(--color-text-muted)] truncate">{who(c)} · {ago(c.at)}</span>
                 <span className="ml-auto flex-none">
                   {n > 0 ? (
-                    <button className="btn btn-ghost text-[11.5px]" data-testid="checkpoint-changes" title={changeSummary(c.changes!)}
-                      onClick={() => ed.setCheckpointReview(c.id)}>{plural(n, "change")} since…</button>
+                    <span className="inline-flex items-center">
+                      <button className="btn btn-ghost text-[11.5px]" data-testid="checkpoint-changes" title={changeSummary(c.changes!)}
+                        onClick={() => ed.setCheckpointReview(c.id)}>{plural(n, "change")} since…</button>
+                      <button className="btn btn-ghost btn-icon" data-testid="checkpoint-redline"
+                        title="Export redline: a Word file with these changes as tracked changes"
+                        onClick={() => ed.exportDoc("docx", { since: c.id })}><FileDown size={13} /></button>
+                    </span>
                   ) : <span className="text-[11.5px] text-[var(--color-text-muted)]" data-testid="checkpoint-unchanged">no changes since</span>}
                 </span>
               </div>
@@ -205,9 +210,14 @@ export function CheckpointReview({ id }: { id: string }) {
           Text only; the look has its own history under Design. Going back overwrites nothing: newer text stays in each block's history.
         </div>
         {ch.counts.total > 0 && (
-          <button className="btn btn-primary mt-2" data-testid="checkpoint-restore-all"
-            onClick={() => restore(c.id, undefined, "Restored")}>
-            <RotateCcw size={13} /> Restore all {ch.counts.total > 1 ? ch.counts.total : ""}</button>
+          <div className="flex items-center gap-2 mt-2">
+            <button className="btn btn-primary" data-testid="checkpoint-restore-all"
+              onClick={() => restore(c.id, undefined, "Restored")}>
+              <RotateCcw size={13} /> Restore all {ch.counts.total > 1 ? ch.counts.total : ""}</button>
+            <button className="btn" data-testid="checkpoint-review-redline"
+              title="A Word file with these changes as tracked changes, for a reviewer who works in Word"
+              onClick={() => ed.exportDoc("docx", { since: c.id })}><FileDown size={13} /> Export redline</button>
+          </div>
         )}
       </div>
       <div className="flex-1 overflow-auto scroll-thin">

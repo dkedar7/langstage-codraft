@@ -1731,6 +1731,96 @@ class Store:
                 "words_after": total(d["now"], {b: rows[b]["head"] for b in d["now"]}),
             }
 
+    # -- redline: the changes as Word tracked changes (gh #65) --------------------
+    def find_checkpoint(self, doc_id: str, ref: str) -> dict:
+        """A checkpoint by its id or by its name ("Sent to legal"; any case, the newest of
+        that name). Raises NotFound naming what was asked for."""
+        ref = str(ref or "").strip()
+        with self._lock:
+            self.get_document(doc_id)
+            r = self._one("SELECT * FROM checkpoints WHERE id = ? AND doc_id = ?", (ref, doc_id)) if ref else None
+            if r is None and ref:
+                want = ckpt.clean_name(ref).lower()
+                for row in self._q("SELECT * FROM checkpoints WHERE doc_id = ? ORDER BY seq DESC", (doc_id,)):
+                    if self._checkpoint_dict(row)["name"].lower() == want:
+                        r = row
+                        break
+            if r is None:
+                raise NotFound(f"no checkpoint {ref!r} in this document: give a checkpoint's id or its name "
+                               "(see the document's checkpoints)")
+            return self._checkpoint_dict(r)
+
+    def redline_since(self, doc_id: str, cid: str) -> list[dict]:
+        """The content as it is now with what changed since a checkpoint marked, in reading
+        order, for a redline export. Items are ``{"op", "block", "before", "author", "at"}``:
+        ``op`` is ``same``; ``edit`` (``before`` is the content then); ``ins`` (a block added
+        since, or a moved block at its new place); or ``del`` (a block deleted since, or a
+        moved block at its old place, with the content it had then). ``author`` is who made
+        the change as the records have it ("" when they don't say) and ``at`` when."""
+        with self._lock:
+            row = self._checkpoint_row(doc_id, cid)
+            since = row["touched_at"]
+            snap = json.loads(row["snapshot"])
+            head_then = {s[0]: s[1] for s in snap}
+            rows = self._content_rows(doc_id)
+            cache: dict = {}
+            d = self._checkpoint_diff(snap, rows, cache)
+            edited, moved, deleted = set(d["edited"]), set(d["moved"]), set(d["deleted"])
+            then = [b for b in d["then"] if b in rows]
+            now = d["now"]
+            stable = (set(then) & set(now)) - moved
+            current = {b["id"]: b for b in self.list_blocks(doc_id)}
+
+            def version(vid: str | None) -> tuple[str, float]:
+                v = self._one("SELECT author, created_at FROM versions WHERE id = ?", (vid,)) if vid else None
+                return (v["author"], v["created_at"]) if v else ("", time.time())
+
+            def decided(bid: str, kind: str, default_at: float) -> tuple[str, float]:
+                """Who accepted-into-being a delete or move of the block since the checkpoint."""
+                s = self._one("SELECT author, decided_at FROM suggestions WHERE block_id = ? AND kind = ?"
+                              " AND status IN ('accepted', 'applied') AND decided_at >= ?"
+                              " ORDER BY decided_at DESC LIMIT 1", (bid, kind, since))
+                return (s["author"], s["decided_at"]) if s else ("", default_at)
+
+            def old(bid: str) -> dict:
+                full = self._one("SELECT * FROM blocks WHERE id = ?", (bid,))
+                body = self._version_body(head_then[bid], full["type"], cache) or {"content": {}, "refs": []}
+                return {**self._block_dict(full), **body}
+
+            out: list[dict] = []
+
+            def put(op: str, block: dict, who: tuple[str, float], before: dict | None = None) -> None:
+                out.append({"op": op, "block": block, "before": before, "author": who[0], "at": who[1]})
+
+            i = j = 0
+            while i < len(then) or j < len(now):
+                while i < len(then) and then[i] not in stable:
+                    bid = then[i]
+                    i += 1
+                    if bid in deleted:
+                        gone = self._one("SELECT deleted_at FROM blocks WHERE id = ?", (bid,))["deleted_at"]
+                        put("del", old(bid), decided(bid, "delete", gone or time.time()))
+                    elif bid in moved:
+                        put("del", old(bid), decided(bid, "move", time.time()))
+                while j < len(now) and now[j] not in stable:
+                    bid = now[j]
+                    j += 1
+                    b = current[bid]
+                    who = version(b["head"])
+                    if bid in moved and bid not in edited:
+                        who = decided(bid, "move", who[1])
+                    put("ins", b, who)
+                if i < len(then) and j < len(now):
+                    bid = now[j]
+                    b = current[bid]
+                    if bid in edited:
+                        put("edit", b, version(b["head"]), old(bid)["content"])
+                    else:
+                        put("same", b, ("", 0.0))
+                    i += 1
+                    j += 1
+            return out
+
     def restore_checkpoint(self, doc_id: str, cid: str, *, blocks: list[str] | None = None,
                            by: str = "author", skip: dict[str, str] | None = None) -> dict:
         """Put the document's content back as it was at a checkpoint: all of it, or only
@@ -2489,6 +2579,83 @@ class Store:
                     (doc_id, status),
                 )
             return [self._sugg_dict(r) for r in rows]
+
+    def redline_pending(self, doc_id: str) -> list[dict]:
+        """The content as it is now with the pending suggestions marked where accepting them
+        would change it, in reading order, for a redline export (gh #65). Items are like
+        :meth:`redline_since`'s: an edit is ``edit`` (``block`` carries the suggested
+        content, ``before`` the current one), an insert is ``ins`` where it would land, a
+        delete is ``del``, and a move is ``del`` here and ``ins`` where it would go.
+        ``author`` is the suggestion's author and ``at`` when it was made. Suggestions that
+        can no longer be applied are left out."""
+        with self._lock:
+            blocks = self.list_blocks(doc_id)
+            sugs = [s for s in self.list_suggestions(doc_id) if not s.get("gone")]
+        here = {b["id"]: b for b in blocks}
+
+        def role(layout: Any) -> str:
+            return ((layout if isinstance(layout, dict) else {}).get("role") or "flow")
+
+        def key(after: Any, r: str) -> tuple:
+            return ("start", r) if after is None else ("end", r) if after == "__end__" else ("blk", after)
+
+        on: dict[tuple, dict] = {}            # (block id, kind) -> the pending suggestion
+        follow: dict[tuple, list[dict]] = {}  # anchor -> inserts and moves that land after it
+        for s in sugs:
+            p = s["payload"] if isinstance(s["payload"], dict) else {}
+            if s["kind"] in ("edit", "delete", "move") and s["block_id"] in here:
+                on[(s["block_id"], s["kind"])] = s
+            if s["kind"] == "insert":
+                k = (("sug", p["after_suggestion"]) if p.get("after_suggestion")
+                     else key(p.get("after", "__end__"), role(p.get("layout"))))
+                follow.setdefault(k, []).append(s)
+            elif s["kind"] == "move" and s["block_id"] in here:
+                follow.setdefault(key(p.get("after"), role(here[s["block_id"]]["layout"])), []).append(s)
+
+        def edited(b: dict) -> dict | None:
+            e = on.get((b["id"], "edit"))
+            c = e["payload"].get("content") if e else None
+            return c if isinstance(c, dict) and c != b["content"] else None
+
+        out: list[dict] = []
+        placed: set[str] = set()
+
+        def put(op: str, block: dict, s: dict | None, before: dict | None = None) -> None:
+            out.append({"op": op, "block": block, "before": before,
+                        "author": s["author"] if s else "", "at": s["created_at"] if s else 0.0})
+
+        def landing(k: tuple) -> None:
+            for s in follow.get(k, []):
+                if s["id"] in placed:
+                    continue
+                placed.add(s["id"])
+                p = s["payload"]
+                if s["kind"] == "insert":
+                    lay = p.get("layout") if isinstance(p.get("layout"), dict) else {}
+                    put("ins", {"id": s["id"], "type": p.get("type", "text"), "content": p.get("content") or {},
+                                "layout": lay, "refs": p.get("refs") or []}, s)
+                    landing(("sug", s["id"]))
+                elif (s["block_id"], "delete") not in on:
+                    b = here[s["block_id"]]
+                    put("ins", {**b, "content": edited(b) or b["content"]}, s)
+
+        for r in ("cover", "flow", "back"):
+            landing(("start", r))
+            for b in blocks:
+                if role(b["layout"]) != r:
+                    continue
+                if b["type"] != "spacer":
+                    gone = on.get((b["id"], "delete")) or on.get((b["id"], "move"))
+                    new = edited(b)
+                    if gone:
+                        put("del", b, gone)
+                    elif new is not None:
+                        put("edit", {**b, "content": new}, on[(b["id"], "edit")], b["content"])
+                    else:
+                        put("same", b, None)
+                landing(("blk", b["id"]))
+            landing(("end", r))
+        return out
 
     def accept_suggestion(self, sid: str, *, payload_override: dict | None = None,
                           decided_by: str = "user", force: bool = False) -> dict:

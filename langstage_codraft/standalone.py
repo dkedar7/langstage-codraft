@@ -229,22 +229,28 @@ class Standalone:
         self.close()
 
     # --------------------------------------------------------------- output
-    def get(self, doc_id: str, fmt: str = "pdf", *, strict: bool = False) -> Any:
+    def get(self, doc_id: str, fmt: str = "pdf", *, strict: bool = False, since: str | None = None,
+            pending: bool = False) -> Any:
         """The raw response of the app's export route (status, headers, bytes)."""
         import httpx
 
         self.start()
-        params = {"format": fmt, **({"strict": "true"} if strict else {})}
+        params = export_params(fmt, strict=strict, since=since, pending=pending)
         return httpx.get(f"{self.base_url}/api/docs/{doc_id}/export", params=params,
                          headers=self.headers, timeout=600)
 
-    def export(self, doc_id: str, fmt: str = "pdf", *, strict: bool = False) -> bytes:
+    def export(self, doc_id: str, fmt: str = "pdf", *, strict: bool = False, since: str | None = None,
+               pending: bool = False) -> bytes:
         """The exported bytes. PDF, DOCX, PPTX, GIF and MP4 are the file itself. PNG and JPG
         are the image when the document has one page and a zip of page images otherwise;
         HTML is always a zip (``index.html`` plus assets). Blocks that are cut off in the
         export raise a :class:`CutOffWarning`; with ``strict`` they raise
-        :class:`ExportError` (status 409) instead."""
-        return _checked(self.get(doc_id, fmt, strict=strict), doc_id).content
+        :class:`ExportError` (status 409) instead.
+
+        A DOCX can be a redline, with the changes as Word tracked changes: ``since`` (a
+        checkpoint's id or name) for what changed since then, ``pending=True`` for the
+        pending suggestions."""
+        return _checked(self.get(doc_id, fmt, strict=strict, since=since, pending=pending), doc_id).content
 
     def check(self, doc_id: str) -> list[dict]:
         """The blocks an export of this document would cut off (empty when none):
@@ -265,6 +271,24 @@ class Standalone:
         return get_renderer()
 
 
+def redline_kw(since: str | None, pending: bool) -> dict[str, Any]:
+    """``since`` / ``pending`` for :meth:`Standalone.get`, only when asked for."""
+    return {**({"since": since} if since is not None else {}), **({"pending": True} if pending else {})}
+
+
+def export_params(fmt: str, *, strict: bool = False, since: str | None = None,
+                  pending: bool = False) -> dict[str, str]:
+    """The export route's query parameters."""
+    params = {"format": fmt}
+    if strict:
+        params["strict"] = "true"
+    if since is not None:
+        params["since"] = since
+    if pending:
+        params["pending"] = "true"
+    return params
+
+
 def _checked(r: Any, doc_id: str) -> Any:
     """The export response, or ExportError; warns when the export cut blocks off."""
     if r.status_code != 200:
@@ -281,7 +305,7 @@ def _checked(r: Any, doc_id: str) -> Any:
 
 def export_document(data_dir: str | Path | None, doc_id: str, fmt: str = "pdf",
                     output: str | Path | None = None, *, cfg: CodraftConfig | None = None,
-                    strict: bool = False) -> bytes | Path:
+                    strict: bool = False, since: str | None = None, pending: bool = False) -> bytes | Path:
     """Export one document straight from a data directory; no server needs to be running.
 
     ::
@@ -303,9 +327,13 @@ def export_document(data_dir: str | Path | None, doc_id: str, fmt: str = "pdf",
     export (content taller than the fixed height it was given) it emits a
     :class:`CutOffWarning` naming them; ``strict=True`` raises :class:`ExportError` with
     status 409 instead and writes nothing.
+
+    A DOCX can be a redline for a reviewer who works in Word: ``since`` (a checkpoint's id
+    or name, such as "Sent to legal") writes what changed since then as tracked changes,
+    and ``pending=True`` writes the pending suggestions that way.
     """
     with Standalone(data_dir, cfg=cfg) as codraft:
-        r = _checked(codraft.get(doc_id, fmt, strict=strict), doc_id)
+        r = _checked(codraft.get(doc_id, fmt, strict=strict, **redline_kw(since, pending)), doc_id)
         if output is None:
             return r.content
         out = output_path(r, Path(output))

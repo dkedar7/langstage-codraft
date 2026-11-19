@@ -332,7 +332,12 @@ EXPORT_FORMATS = ["pdf", "docx", "pptx", "png", "jpg", "html", "gif", "mp4"]
               help="Fail (exit 1, nothing written) when a block is cut off in the export.")
 @click.option("--json", "as_json", is_flag=True,
               help="Print one JSON object per export (file, bytes, cut_off) instead of the status lines.")
-def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_json) -> None:
+@click.option("--since", "since", metavar="CHECKPOINT", default=None,
+              help="Word only: a redline of what changed since this checkpoint (its name or id), "
+                   "as tracked changes.")
+@click.option("--pending", is_flag=True,
+              help="Word only: the pending suggestions as tracked changes.")
+def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_json, since, pending) -> None:
     """Export documents: PDF, DOCX, PPTX, PNG, JPG, HTML, GIF or MP4.
 
     With --port or --url it exports through that running server. With --data-dir or
@@ -346,16 +351,35 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_js
 
     A block whose content is taller than the fixed height it was given is cut off in the
     export. That gets a [warn] line naming the block; --strict makes it an error.
+
+    A Word export can be a redline for a reviewer who works in Word, with the changes as
+    tracked changes they can accept or reject:
+
+        langstage-codraft export DOC_ID -f docx --since "Sent to legal" -o redline.docx
+        langstage-codraft export DOC_ID -f docx --pending -o suggestions.docx
     """
     import httpx
 
     from .render import auth_headers
-    from .standalone import NoData, Standalone, _detail, cut_off_of, export_filename, output_path
+    from .standalone import (
+        NoData,
+        Standalone,
+        _detail,
+        cut_off_of,
+        export_filename,
+        export_params,
+        output_path,
+        redline_kw,
+    )
 
     def _fail(msg: str) -> None:  # with --json, stdout carries only the JSON lines
         _echo(f"[fail] {msg}", **({"file": sys.stderr} if as_json else {}))
 
     fmts = list(dict.fromkeys(fmts)) or ["pdf"]
+    if since is not None and pending:
+        raise click.UsageError("--since and --pending make two different redlines; pass one")
+    if (since is not None or pending) and fmts != ["docx"]:
+        raise click.UsageError("--since and --pending make a Word redline: use -f docx (alone)")
     live = url is not None or port is not None
     if live and (data_dir is not None or standalone):
         raise click.UsageError("--data-dir / --standalone render in-process; --port / --url export through a "
@@ -391,10 +415,10 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_js
 
     def fetch(doc_id: str, fmt: str):
         if sa is not None:
-            return sa.get(doc_id, fmt, **({"strict": True} if strict else {}))
+            return sa.get(doc_id, fmt, **({"strict": True} if strict else {}), **redline_kw(since, pending))
         # The configured password / proxy secret, as the server checks them on loopback too (gh #2).
         return httpx.get(f"{base}/api/docs/{doc_id}/export",
-                         params={"format": fmt, **({"strict": "true"} if strict else {})},
+                         params=export_params(fmt, strict=strict, since=since, pending=pending),
                          headers=auth_headers(cfg), timeout=180)
 
     def report(doc_id: str, fmt: str, **fields) -> None:

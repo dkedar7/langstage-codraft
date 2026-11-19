@@ -162,8 +162,108 @@ def plain(md: str) -> str:
     return " ".join(t for t, _ in md_runs(md))
 
 
+# ----------------------------------------------------------- tracked changes (gh #65)
+# A redline is the Word export with the changes written as Word's own tracked changes
+# (``w:ins`` / ``w:del``), so a reviewer outside Codraft gets Word's Accept / Reject.
+# Paragraph-like Markdown is diffed word by word on the formatted runs; anything else
+# (a table, a chart, a row of cells) is shown as the old block deleted and the new one
+# inserted.
+
+# The Markdown blocks diffed word by word (anything else is replaced whole).
+_DIFF_KINDS = ("p", "ul", "ol", "quote", "h1", "h2", "h3")
+# Authors that name a person only as "whoever was editing": shown as "Author".
+_ANON = ("", "user", "author", "human", "template", "auto")
+
+
+def redline_author(who: str | None, agent_name: str = "Agent") -> str:
+    """The name a tracked change is attributed to in Word."""
+    w = str(who or "").strip()
+    if w.lower() == "agent":
+        return agent_name or "Agent"
+    return "Author" if w.lower() in _ANON else w[:60]
+
+
+def _word_date(at: float | None) -> str:
+    import time
+
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(at if at else time.time()))
+
+
+class _Revisions:
+    """Writes revision marks. Every mark gets its own ``w:id``."""
+
+    def __init__(self) -> None:
+        self.n = 100
+
+    def mark(self, op: str, author: str, date: str) -> Any:
+        from docx.oxml import OxmlElement
+
+        self.n += 1
+        el = OxmlElement(f"w:{op}")
+        el.set(qn("w:id"), str(self.n))
+        el.set(qn("w:author"), author)
+        el.set(qn("w:date"), date)
+        return el
+
+    def run(self, r: Any, op: str, author: str, date: str) -> None:
+        """Wrap one ``w:r`` in ``w:ins`` / ``w:del`` (deleted text becomes ``w:delText``)."""
+        parent = r.getparent()
+        if parent is None or parent.tag in (qn("w:ins"), qn("w:del")):
+            return
+        wrap = self.mark(op, author, date)
+        parent.insert(parent.index(r), wrap)
+        wrap.append(r)
+        if op == "del":
+            for t in r.iter(qn("w:t")):
+                t.tag = qn("w:delText")
+            for t in r.iter(qn("w:instrText")):
+                t.tag = qn("w:delInstrText")
+
+    def paragraph_mark(self, p: Any, op: str, author: str, date: str) -> None:
+        """Mark a paragraph's end as inserted or deleted, so the whole paragraph is."""
+        from docx.oxml import OxmlElement
+
+        ppr = p.get_or_add_pPr()
+        rpr = ppr.find(qn("w:rPr"))
+        if rpr is None:
+            rpr = OxmlElement("w:rPr")
+            later = [c for c in ppr if c.tag in (qn("w:sectPr"), qn("w:pPrChange"))]
+            if later:
+                later[0].addprevious(rpr)
+            else:
+                ppr.append(rpr)
+        rpr.insert(0, self.mark(op, author, date))
+
+    def elements(self, els: list, op: str, author: str, date: str) -> None:
+        """Mark whole body elements (paragraphs, tables) as inserted or deleted."""
+        for el in els:
+            for r in list(el.iter(qn("w:r"))):
+                self.run(r, op, author, date)
+            if el.tag == qn("w:p"):
+                self.paragraph_mark(el, op, author, date)
+            for tr in el.iter(qn("w:tr")):
+                tr.get_or_add_trPr().append(self.mark(op, author, date))
+
+
+def _tokens(runs: list[tuple[str, dict]]) -> list[tuple[tuple, str, dict]]:
+    """Formatted runs as words (with the space after each): ``(key, text, style)``. The key
+    leaves the space out, so "brief" at the end of a heading matches "brief " before an
+    added word."""
+    out = []
+    for text, st in runs:
+        style = tuple(sorted((k, str(v)) for k, v in st.items()))
+        for tok in re.findall(r"\S+\s*|\s+", text):
+            out.append(((tok.strip() or tok, style), tok, st))
+    return out
+
+
 # -------------------------------------------------------------------------- DOCX
-def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: list[dict]) -> bytes:
+def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: list[dict],
+            plan: list[dict] | None = None, agent_name: str = "Agent") -> bytes:
+    """The document as Word. With ``plan`` (``Store.redline_since`` /
+    ``Store.redline_pending``) it is a redline: the changes are Word tracked changes."""
+    from difflib import SequenceMatcher
+
     import docx
     from docx.enum.section import WD_ORIENT
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_BREAK
@@ -204,21 +304,22 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
 
     def add_runs(par, text: str, base: dict | None = None):
         for t, st in md_runs(text):
-            r = par.add_run(t)
-            st = {**(base or {}), **st}
-            r.bold = st.get("bold") or None
-            r.italic = st.get("italic") or None
-            if st.get("strike"):
-                r.font.strike = True
-            if st.get("sup"):
-                r.font.superscript = True
-            if st.get("sub"):
-                r.font.subscript = True
-            if st.get("code"):
-                r.font.name = "Consolas"
-            if st.get("link"):
-                r.font.color.rgb = _rgb(theme.get("color_accent")) or RGBColor(0x1A, 0x4D, 0x8F)
-                r.underline = True
+            style_run(par.add_run(t), {**(base or {}), **st})
+
+    def style_run(r, st: dict):
+        r.bold = st.get("bold") or None
+        r.italic = st.get("italic") or None
+        if st.get("strike"):
+            r.font.strike = True
+        if st.get("sup"):
+            r.font.superscript = True
+        if st.get("sub"):
+            r.font.subscript = True
+        if st.get("code"):
+            r.font.name = "Consolas"
+        if st.get("link"):
+            r.font.color.rgb = _rgb(theme.get("color_accent")) or RGBColor(0x1A, 0x4D, 0x8F)
+            r.underline = True
 
     def add_table(rows: list, align: list | None = None, header: bool = True, total: bool = False):
         """A Word table: bold header row (and total row), each column aligned as the document
@@ -246,25 +347,36 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
 
     def add_markdown(md: str, style_quote=False):
         for kind, text in md_blocks(cited(md)):
-            if kind == "table":
-                add_table(*md_table(text))
-            elif kind.startswith("h"):
-                d.add_heading(text, level=min(3, int(kind[1]) + 1))
-            elif kind == "ul":
-                add_runs(d.add_paragraph(style="List Bullet"), text)
-            elif kind == "ol":
-                add_runs(d.add_paragraph(style="List Number"), text)
-            elif kind == "quote" or style_quote:
-                add_runs(d.add_paragraph(style="Quote"), text)
-            elif kind == "code":
-                p = d.add_paragraph()
-                r = p.add_run(text)
-                r.font.name = "Consolas"
-                r.font.size = Pt(9)
-            elif kind == "hr":
-                d.add_paragraph("―" * 20)
-            else:
-                add_runs(d.add_paragraph(), text)
+            add_md_block(kind, text, style_quote)
+
+    def md_paragraph(kind: str, style_quote: bool):
+        """An empty paragraph styled for one of the ``_DIFF_KINDS``."""
+        if kind.startswith("h"):
+            return d.add_heading("", level=min(3, int(kind[1]) + 1))
+        if kind == "ul":
+            return d.add_paragraph(style="List Bullet")
+        if kind == "ol":
+            return d.add_paragraph(style="List Number")
+        if kind == "quote" or style_quote:
+            return d.add_paragraph(style="Quote")
+        return d.add_paragraph()
+
+    def add_md_block(kind: str, text: str, style_quote=False):
+        if kind == "table":
+            add_table(*md_table(text))
+        elif kind.startswith("h"):
+            d.add_heading(text, level=min(3, int(kind[1]) + 1))
+        elif kind in ("ul", "ol") or kind == "quote" or style_quote:
+            add_runs(md_paragraph(kind, style_quote), text)
+        elif kind == "code":
+            p = d.add_paragraph()
+            r = p.add_run(text)
+            r.font.name = "Consolas"
+            r.font.size = Pt(9)
+        elif kind == "hr":
+            d.add_paragraph("―" * 20)
+        else:
+            add_runs(d.add_paragraph(), text)
 
     def hex6(color: str | None) -> str | None:
         """A colour as Word wants it (RRGGBB), or None when it isn't a hex colour."""
@@ -285,7 +397,10 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
         pr.append(shd)
 
     def ink(par, dark: bool):
-        for r in par.runs:
+        from docx.text.run import Run
+
+        # Every run, tracked ones (inside w:ins / w:del) included.
+        for r in (Run(el, par) for el in par._p.iter(qn("w:r"))):
             r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF) if dark else RGBColor(0x1D, 0x1D, 0x1F)
 
     def shade_new(before: list, fill: tuple[str, bool] | None):
@@ -375,27 +490,38 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
                 shade(cell._tc.get_or_add_tcPr(), fill[0])
         d.add_paragraph()
 
-    def picture(bid: str, caption: str):
-        data = pictures.get(bid)
+    def picture(bid: str, caption: str, kind: str = "image", old: bool = False):
+        data = None if old else pictures.get(bid)
         if data:
             d.add_picture(io.BytesIO(data), width=Mm(min(content_w_mm, 170 if s.get("columns", 1) == 1 else content_w_mm / s["columns"])))
+        elif plan is not None:
+            # A redline has no picture of a block as it was, or of one not yet accepted: say what it is.
+            d.add_paragraph(f"[{kind}]")
         if caption:
             p = d.add_paragraph(caption)
             p.style = d.styles["Caption"]
 
     columns = int(s.get("columns", 1)) if s.get("mode") == "paged" else 1
-    cover = [b for b in blocks if b["layout"].get("role") == "cover"]
-    flow = [b for b in blocks if b["layout"].get("role", "flow") == "flow"]
-    back = [b for b in blocks if b["layout"].get("role") == "back"]
+    segments = plan if plan is not None else [{"op": "same", "block": b} for b in blocks]
+    cover = [g for g in segments if g["block"]["layout"].get("role") == "cover"]
+    flow = [g for g in segments if g["block"]["layout"].get("role", "flow") == "flow"]
+    back = [g for g in segments if g["block"]["layout"].get("role") == "back"]
 
-    def emit(b: dict):
+    def heading_level(b: dict) -> int:
+        if b["layout"].get("role") == "cover":
+            return 0
+        return max(0, min(3, int(b["content"].get("level", 1))))
+
+    def band(par, b: dict):
+        fill = block_fill(b)
+        if fill:  # a band: the strip behind the heading, and text that reads on it
+            shade(par._p.get_or_add_pPr(), fill[0])
+            ink(par, fill[1])
+
+    def emit(b: dict, old: bool = False):
         c, t = b["content"], b["type"]
         if t == "heading":
-            par = d.add_heading(c.get("text", ""), level=max(0, min(3, int(c.get("level", 1)))) if b["layout"].get("role") != "cover" else 0)
-            fill = block_fill(b)
-            if fill:  # a band: the strip behind the heading, and text that reads on it
-                shade(par._p.get_or_add_pPr(), fill[0])
-                ink(par, fill[1])
+            band(d.add_heading(c.get("text", ""), level=heading_level(b)), b)
         elif t == "text":
             add_markdown(c.get("markdown", ""))
         elif t == "callout":
@@ -412,7 +538,7 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
             if c.get("caption"):
                 d.add_paragraph(c["caption"]).style = d.styles["Caption"]
         elif t in ("image", "chart", "video"):
-            picture(b["id"], c.get("caption", ""))
+            picture(b["id"], c.get("caption", ""), t, old)
         elif t == "divider":
             d.add_paragraph("―" * 20)
         elif t == "references":
@@ -424,9 +550,110 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
         elif t == "page-break":
             d.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
 
+    revs = _Revisions()
+
+    def added_since(before: list) -> list:
+        seen = {id(el) for el in before}
+        return [el for el in list(d.element.body) if id(el) not in seen and el.tag != qn("w:sectPr")]
+
+    def whole(b: dict, op: str, who: tuple[str, str], old: bool = False):
+        """The block, all of it inserted or deleted."""
+        before = list(d.element.body)
+        emit(b, old=old)
+        revs.elements(added_since(before), op, *who)
+
+    def diff_par(par, a: list, b: list) -> list:
+        """Runs into ``par``: the words of ``a`` (formatted runs) changed into those of ``b``.
+        Returns the runs to mark, as ``(w:r, op)``."""
+        ta, tb = _tokens(a), _tokens(b)
+        marks = []
+
+        def put(toks, op):
+            i = 0
+            while i < len(toks):
+                j = i
+                while j + 1 < len(toks) and toks[j + 1][0][1] == toks[i][0][1]:
+                    j += 1
+                r = par.add_run("".join(t[1] for t in toks[i:j + 1]))
+                style_run(r, toks[i][2])
+                if op:
+                    marks.append((r._r, op))
+                i = j + 1
+
+        sm = SequenceMatcher(None, [t[0] for t in ta], [t[0] for t in tb], autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                put(tb[j1:j2], None)
+                continue
+            put(ta[i1:i2], "del")
+            put(tb[j1:j2], "ins")
+        return marks
+
+    def md_runs_of(kind: str, text: str) -> list:
+        return [(text, {})] if kind.startswith("h") else md_runs(text)
+
+    def edit_markdown(old_md: str, new_md: str, quote: bool, who: tuple[str, str]):
+        """A text or callout block's Markdown, changed: paragraphs that stayed are plain,
+        paragraphs of the same kind are diffed word by word, the rest inserted or deleted."""
+        a, b = md_blocks(cited(old_md)), md_blocks(cited(new_md))
+
+        def one(kind, text, op):
+            before = list(d.element.body)
+            add_md_block(kind, text, quote)
+            if op:
+                revs.elements(added_since(before), op, *who)
+
+        sm = SequenceMatcher(None, a, b, autojunk=False)
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                for kind, text in b[j1:j2]:
+                    one(kind, text, None)
+                continue
+            olds, news = a[i1:i2], b[j1:j2]
+            for k in range(max(len(olds), len(news))):
+                o = olds[k] if k < len(olds) else None
+                n = news[k] if k < len(news) else None
+                if o and n and o[0] == n[0] and o[0] in _DIFF_KINDS:
+                    par = md_paragraph(n[0], quote)
+                    for r, op in diff_par(par, md_runs_of(*o), md_runs_of(*n)):
+                        revs.run(r, op, *who)
+                    continue
+                if o:
+                    one(*o, "del")
+                if n:
+                    one(*n, "ins")
+
+    def put_segment(g: dict):
+        b, op = g["block"], g.get("op", "same")
+        if op == "same":
+            emit(b)
+            return
+        who = (redline_author(g.get("author"), agent_name), _word_date(g.get("at")))
+        if op in ("ins", "del"):
+            whole(b, op, who, old=op == "del")
+            return
+        then = {**b, "content": g.get("before") or {}}
+        t = b["type"]
+        if t == "heading" and heading_level(then) == heading_level(b):
+            par = d.add_heading("", level=heading_level(b))
+            marks = diff_par(par, [(str(then["content"].get("text", "")), {})],
+                             [(str(b["content"].get("text", "")), {})])
+            band(par, b)
+            for r, mop in marks:
+                revs.run(r, mop, *who)
+        elif t in ("text", "callout"):
+            before = list(d.element.body)
+            edit_markdown(str(then["content"].get("markdown", "")), str(b["content"].get("markdown", "")),
+                          t == "callout", who)
+            if t == "callout":
+                shade_new(before, block_fill(b))
+        else:
+            whole(then, "del", who, old=True)
+            whole(b, "ins", who)
+
     separate_cover = bool(cover) and (s.get("cover") or {}).get("enabled", True)
-    for b in cover:
-        emit(b)
+    for g in cover:
+        put_segment(g)
     if separate_cover:
         d.add_section()  # new page; flow section gets the columns
     if columns > 1:
@@ -435,16 +662,16 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
     if separate_cover:
         _clear_header_footer(d.sections[0])
     _header_footer(flow_section, s, doc["title"], content_w_mm)
-    for b in flow:
-        emit(b)
+    for g in flow:
+        put_segment(g)
     if back:
         from docx.enum.section import WD_SECTION
 
         sec_back = d.add_section(WD_SECTION.NEW_PAGE)
         set_columns(sec_back, 1)
         _clear_header_footer(sec_back, unlink=True)
-        for b in back:
-            emit(b)
+        for g in back:
+            put_segment(g)
     buf = io.BytesIO()
     d.save(buf)
     return buf.getvalue()

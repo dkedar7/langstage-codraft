@@ -250,12 +250,46 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
     }).catch(() => {});
     return () => { alive = false; };
   }, [running, rev, docId]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Download an export. ``extra`` adds query parameters: a Word redline is
+   *  ``{since: checkpointId}`` or ``{pending: "true"}`` (gh #65). */
+  const exportDoc = useCallback(async (fmt: string, extra?: Record<string, string>) => {
+    const redline = !!(extra && (extra.since || extra.pending));
+    toast(redline ? "Writing the Word redline…" : `Rendering ${fmt.toUpperCase()}…`);
+    try {
+      const qs = new URLSearchParams({ format: fmt, ...(extra || {}) });
+      const r = await fetch(withBase(`/api/docs/${docId}/export?${qs}`));
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({ detail: r.statusText }));
+        throw new Error(j.detail);
+      }
+      const blob = await r.blob();
+      const disp = r.headers.get("content-disposition") || "";
+      const name = disp.match(/filename="([^"]+)"/)?.[1] || `document.${fmt}`;
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      // Blocks cut off by a fixed height don't print in full: say so, and take the author to the first (gh #58).
+      const cut = (r.headers.get("x-codraft-cut-off") || "").split(",").map((p) => p.trim().split("@")).filter((p) => p[0]);
+      if (cut.length) {
+        toast(`Exported, but ${cut.length === 1 ? "one block is" : `${cut.length} blocks are`} cut off by a fixed height`
+          + ` (page ${[...new Set(cut.map((p) => p[1]))].join(", ")}): what doesn't fit is missing from the ${fmt.toUpperCase()}.`,
+          "error", { label: "Show", run: () => { select(cut[0][0]); setPanelOpen(true); setTab("block"); } });
+      } else if (redline) {
+        toast(`Saved ${name}: the changes are Word tracked changes, ready to accept or reject.`, "info");
+      }
+    } catch (e: any) {
+      toast(`Export failed: ${e.message}. Tip: "Print from browser" works without the renderer.`, "error");
+    }
+  }, [docId, toast]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const apiValue: EditorApi | null = useMemo(() => (doc ? {
     doc, cfg, refresh, selected, select: (id) => { select(id); if (id && tab !== "chat" && tab !== "comments") setTab("block"); },
     editing, setEditing, tab, setTab: (t) => { setPanelOpen(true); setTab(t); }, commentFilter, setCommentFilter, ask, run, toast,
     removeBlock, restoreBlock, reloadConfig, cutOff, setCutOff, checkpointReview, setCheckpointReview,
-    agentRunning: agentRunning || serverRunning, setAgentRunning, zoom, peers, me,
-  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, removeBlock, restoreBlock, agentRunning, serverRunning, zoom, peers, me, reloadConfig, cutOff, setCutOff, checkpointReview, setCheckpointReview]);
+    agentRunning: agentRunning || serverRunning, setAgentRunning, zoom, peers, me, exportDoc,
+  } : null), [doc, cfg, refresh, selected, editing, tab, commentFilter, ask, run, toast, removeBlock, restoreBlock, agentRunning, serverRunning, zoom, peers, me, reloadConfig, cutOff, setCutOff, checkpointReview, setCheckpointReview, exportDoc]);
 
   if (err) return <div className="p-8 text-[var(--color-error)]">Could not open the document: {err}</div>;
   if (!doc || !apiValue) return <div className="p-8 text-[var(--color-text-muted)]">Loading…</div>;
@@ -276,33 +310,9 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
     }
   };
 
-  const doExport = async (fmt: string) => {
+  const doExport = (fmt: string, extra?: Record<string, string>) => {
     setExportOpen(false);
-    toast(`Rendering ${fmt.toUpperCase()}…`);
-    try {
-      const r = await fetch(withBase(`/api/docs/${doc.id}/export?format=${fmt}`));
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({ detail: r.statusText }));
-        throw new Error(j.detail);
-      }
-      const blob = await r.blob();
-      const disp = r.headers.get("content-disposition") || "";
-      const name = disp.match(/filename="([^"]+)"/)?.[1] || `document.${fmt}`;
-      const a = document.createElement("a");
-      a.href = URL.createObjectURL(blob);
-      a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
-      // Blocks cut off by a fixed height don't print in full: say so, and take the author to the first (gh #58).
-      const cut = (r.headers.get("x-codraft-cut-off") || "").split(",").map((p) => p.trim().split("@")).filter((p) => p[0]);
-      if (cut.length) {
-        toast(`Exported, but ${cut.length === 1 ? "one block is" : `${cut.length} blocks are`} cut off by a fixed height`
-          + ` (page ${[...new Set(cut.map((p) => p[1]))].join(", ")}): what doesn't fit is missing from the ${fmt.toUpperCase()}.`,
-          "error", { label: "Show", run: () => { select(cut[0][0]); setPanelOpen(true); setTab("block"); } });
-      }
-    } catch (e: any) {
-      toast(`Export failed: ${e.message}. Tip: "Print from browser" works without the renderer.`, "error");
-    }
+    exportDoc(fmt, extra);
   };
 
   const pending = doc.suggestions.filter((s) => s.status === "pending").length;
@@ -347,6 +357,18 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
                     <button key={f} data-testid={`export-${f}`} className="menu-item justify-between" onClick={() => doExport(f)}>
                       <span>{l}</span><span className="text-[11px] text-[var(--color-text-muted)]">{hint}</span></button>
                   ))}
+                  {/* Redlines: Word tracked changes for a reviewer who works in Word (gh #65). */}
+                  <div className="border-t border-[var(--color-border)] mt-1 pt-1" />
+                  <button data-testid="export-docx-pending" className="menu-item justify-between" disabled={!pending}
+                    title={pending ? "The pending suggestions as Word tracked changes" : "No pending suggestions"}
+                    onClick={() => doExport("docx", { pending: "true" })}>
+                    <span>Word with suggestions</span><span className="text-[11px] text-[var(--color-text-muted)]">
+                      {pending ? `${pending} as tracked changes` : "none pending"}</span></button>
+                  <button data-testid="export-docx-since" className="menu-item justify-between"
+                    title="Pick a checkpoint, then Export redline"
+                    onClick={() => { setExportOpen(false); setCheckpointReview(null); setPanelOpen(true); setTab("document");
+                      toast("Pick a checkpoint under Checkpoints, then Export redline.", "info"); }}>
+                    <span>Word: changes since…</span><span className="text-[11px] text-[var(--color-text-muted)]">a checkpoint, as a redline</span></button>
                   <button className="menu-item border-t border-[var(--color-border)] mt-1 rounded-none"
                     onClick={() => { setExportOpen(false); window.open(withBase(`/print/${doc.id}?autoprint=1`), "_blank"); }}>Print from browser…</button>
                 </div>

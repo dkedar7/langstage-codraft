@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.12.1 — 2026-11-19
+
+**A moved block is a Word move in a redline (follow-up to #65).** 0.12.0 wrote a moved block as
+a deletion where it was and an insertion where it is. A reviewer saw the paragraph twice and
+had to accept or reject the two halves separately. Now both redlines (`--since` and
+`--pending`) write it as Word's move marks: `w:moveFrom` at the old place and `w:moveTo` at the
+new one, joined by a shared range name. Word shows it as **Moved**, and Accept or Reject takes
+both places at once.
+
+- **Moved and edited too:** the move marks stay. Inside the new place the edit is word by word:
+  kept words moved, new words inserted, removed words deleted. That is how Word writes a move
+  that was edited afterwards, so rejecting brings the old text back in its old place. The
+  edit's author is on its words and the mover's on the move.
+- **Tables:** Word has no move marks for tables, so a moved table, or a text block containing a
+  Markdown table, is still deleted where it was and inserted where it is.
+- **Checked in Word:** for a move, a move plus an edit, two moves, a move beside a deletion, a
+  pending move with a pending edit, and 0.12.0's mixed redlines, Word reports one moved-from and
+  one moved-to revision per move. Accept All reads as the document now and Reject All as it was.
+- `Store.redline_since` and `Store.redline_pending` items for a move also carry `move`
+  (`from` / `to`) and `move_id`.
+
 ## 0.12.0 — 2026-11-19
 
 **Redline Word export: the changes as Word tracked changes, for reviewers who work in Word (#65).**

@@ -53,10 +53,21 @@ def words(data: bytes, keep: str) -> list[str]:
     """The document's words with every change accepted (``keep="ins"``) or rejected
     (``keep="del"``)."""
     out = []
-    for t in body(data).iter(q("t"), q("delText")):
-        if keep == "ins" and (t.tag == q("delText") or inside(t, "del")):
+    # A move's two places are ranges (w:moveFromRangeStart .. End, w:moveToRangeStart ..
+    # End): accepting drops everything in the from-range, rejecting everything in the
+    # to-range, deletions inside it included, the way Word does.
+    skip, open_ = ("moveFrom" if keep == "ins" else "moveTo"), set()
+    for el in body(data).iter():
+        if el.tag == q(f"{skip}RangeStart"):
+            open_.add(el.get(q("id")))
+        elif el.tag == q(f"{skip}RangeEnd"):
+            open_.discard(el.get(q("id")))
+        if el.tag not in (q("t"), q("delText")) or open_:
             continue
-        if keep == "del" and inside(t, "ins"):
+        t = el
+        if keep == "ins" and (t.tag == q("delText") or inside(t, "del") or inside(t, "moveFrom")):
+            continue
+        if keep == "del" and (inside(t, "ins") or inside(t, "moveTo")):
             continue
         out.append(t.text or "")
     return "".join(f"{w} " for w in out).split()
@@ -67,7 +78,8 @@ def plain_words(data: bytes) -> list[str]:
 
 
 def tracked(data: bytes, op: str) -> list[str]:
-    """The text of each ``w:ins`` / ``w:del`` run wrapper, in order."""
+    """The text of each ``w:ins`` / ``w:del`` / ``w:moveFrom`` / ``w:moveTo`` run wrapper,
+    in order."""
     tag = "delText" if op == "del" else "t"
     return ["".join(t.text or "" for t in el.iter(q(tag))) for el in body(data).iter(q(op))
             if el.getparent().tag != q("rPr") and el.getparent().tag != q("trPr")]
@@ -77,7 +89,7 @@ def check_well_formed(data: bytes) -> None:
     """What Word needs to open a document with revisions: unique revision ids, an author
     and date on each, no live text inside a deletion and no deleted text outside one."""
     b = body(data)
-    marks = list(b.iter(q("ins"), q("del")))
+    marks = list(b.iter(q("ins"), q("del"), q("moveFrom"), q("moveTo")))
     ids = [m.get(q("id")) for m in marks]
     assert len(ids) == len(set(ids)), "revision ids must be unique"
     for m in marks:
@@ -86,6 +98,16 @@ def check_well_formed(data: bytes) -> None:
         assert not inside(t, "del"), "w:t inside a deletion"
     for t in b.iter(q("delText")):
         assert inside(t, "del"), "w:delText outside a deletion"
+    # Each move: a moveFrom range and a moveTo range with the same name, each closed, and
+    # range ids unique alongside the revision ids.
+    starts = {k: [m for m in b.iter(q(f"{k}RangeStart"))] for k in ("moveFrom", "moveTo")}
+    names = {k: [m.get(q("name")) for m in v] for k, v in starts.items()}
+    assert sorted(names["moveFrom"]) == sorted(names["moveTo"]) and len(set(names["moveTo"])) == len(names["moveTo"])
+    for k, v in starts.items():
+        ends = {m.get(q("id")) for m in b.iter(q(f"{k}RangeEnd"))}
+        assert {m.get(q("id")) for m in v} == ends
+    rids = ids + [m.get(q("id")) for v in starts.values() for m in v]
+    assert len(rids) == len(set(rids)), "range ids must not reuse revision ids"
     # Revision runs wrap w:r only, and a paragraph mark's revision is the first child of its rPr.
     for m in marks:
         parent = m.getparent()
@@ -158,8 +180,10 @@ def test_each_kind_of_change_is_marked_as_word_expects(store):
     assert any("Clause 2 says" in x for x in dels)
     # Added block.
     assert "A brand new closing paragraph." in ins
-    # Moved block: deleted where it was, inserted where it is.
-    assert sum("Clause 4 says" in x for x in dels) == 1 and sum("Clause 4 says" in x for x in ins) == 1
+    # Moved block: Word's move marks, from where it was to where it is (0.12.1).
+    assert not any("Clause 4 says" in x for x in dels + ins)
+    assert sum("Clause 4 says" in x for x in tracked(red, "moveFrom")) == 1
+    assert sum("Clause 4 says" in x for x in tracked(red, "moveTo")) == 1
     b = body(red)
     first = "".join(t.text or "" for t in b.find(q("p")).iter(q("t")))
     assert first.startswith("Clause 4 says")  # its new place is first

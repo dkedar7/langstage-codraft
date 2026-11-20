@@ -208,7 +208,7 @@ class _Revisions:
     def run(self, r: Any, op: str, author: str, date: str) -> None:
         """Wrap one ``w:r`` in ``w:ins`` / ``w:del`` (deleted text becomes ``w:delText``)."""
         parent = r.getparent()
-        if parent is None or parent.tag in (qn("w:ins"), qn("w:del")):
+        if parent is None or parent.tag in (qn("w:ins"), qn("w:del"), qn("w:moveFrom"), qn("w:moveTo")):
             return
         wrap = self.mark(op, author, date)
         parent.insert(parent.index(r), wrap)
@@ -234,6 +234,58 @@ class _Revisions:
                 ppr.append(rpr)
         rpr.insert(0, self.mark(op, author, date))
 
+    def _range(self, els: list, kind: str, name: str, author: str, date: str) -> None:
+        """``w:<kind>RangeStart`` before the first paragraph and ``RangeEnd`` after the last,
+        in the body as Word writes them, so the paragraph marks move too. The two places of
+        one move share the name."""
+        from docx.oxml import OxmlElement
+
+        self.n += 1
+        start, end = OxmlElement(f"w:{kind}RangeStart"), OxmlElement(f"w:{kind}RangeEnd")
+        for k, v in (("id", str(self.n)), ("author", author), ("date", date), ("name", name)):
+            start.set(qn(f"w:{k}"), v)
+        end.set(qn("w:id"), str(self.n))
+        els[0].addprevious(start)
+        els[-1].addnext(end)
+
+    @staticmethod
+    def _by(m: Any, tag: str, author: str, date: str) -> None:
+        m.tag = qn(tag)
+        m.set(qn("w:author"), author)
+        m.set(qn("w:date"), date)
+
+    def move_from(self, els: list, name: str, author: str, date: str) -> None:
+        """Paragraphs drawn as deleted become the place a move came from."""
+        for el in els:
+            for m in list(el.iter(qn("w:del"))):
+                self._by(m, "w:moveFrom", author, date)
+            for t in el.iter(qn("w:delText")):
+                t.tag = qn("w:t")
+            for t in el.iter(qn("w:delInstrText")):
+                t.tag = qn("w:instrText")
+        self._range(els, "moveFrom", name, author, date)
+
+    def move_to(self, els: list, name: str, author: str, date: str, edited: bool = False) -> None:
+        """Paragraphs drawn as inserted (or, for a block edited as well as moved, as the
+        word diff) become the place a move went to. In a diff the words left unmarked are
+        the moved ones and become ``w:moveTo``. Inserted words stay ``w:ins`` and deleted
+        ones ``w:del``, as Word writes a move that was edited afterwards: rejecting the move
+        carries this place's words back, deleted ones included."""
+        for el in els:
+            if edited:
+                for r in list(el.iter(qn("w:r"))):
+                    self.run(r, "moveTo", author, date)  # skips runs already marked
+            else:
+                for m in list(el.iter(qn("w:ins"))):
+                    if m.getparent().tag != qn("w:rPr"):
+                        self._by(m, "w:moveTo", author, date)
+            pm = _mark_of(el, "ins")
+            if pm is not None and not edited:
+                self._by(pm, "w:moveTo", author, date)
+            elif pm is None and _mark_of(el, "moveTo") is None and _mark_of(el, "del") is None:
+                self.paragraph_mark(el, "moveTo", author, date)
+        self._range(els, "moveTo", name, author, date)
+
     def elements(self, els: list, op: str, author: str, date: str) -> None:
         """Mark whole body elements (paragraphs, tables) as inserted or deleted."""
         for el in els:
@@ -243,6 +295,13 @@ class _Revisions:
                 self.paragraph_mark(el, op, author, date)
             for tr in el.iter(qn("w:tr")):
                 tr.get_or_add_trPr().append(self.mark(op, author, date))
+
+
+def _mark_of(p: Any, op: str) -> Any:
+    """The revision on a paragraph's mark (``w:pPr/w:rPr/w:<op>``), or None."""
+    ppr = p.find(qn("w:pPr"))
+    rpr = ppr.find(qn("w:rPr")) if ppr is not None else None
+    return rpr.find(qn(f"w:{op}")) if rpr is not None else None
 
 
 def _tokens(runs: list[tuple[str, dict]]) -> list[tuple[tuple, str, dict]]:
@@ -623,33 +682,94 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
                 if n:
                     one(*n, "ins")
 
-    def put_segment(g: dict):
-        b, op = g["block"], g.get("op", "same")
-        if op == "same":
-            emit(b)
-            return
-        who = (redline_author(g.get("author"), agent_name), _word_date(g.get("at")))
-        if op in ("ins", "del"):
-            whole(b, op, who, old=op == "del")
-            return
-        then = {**b, "content": g.get("before") or {}}
+    def word_diffable(then: dict, b: dict) -> bool:
         t = b["type"]
-        if t == "heading" and heading_level(then) == heading_level(b):
+        return t in ("text", "callout") or (t == "heading" and heading_level(then) == heading_level(b))
+
+    def edit(b: dict, before_content: dict, who: tuple[str, str]):
+        then = {**b, "content": before_content or {}}
+        t = b["type"]
+        if not word_diffable(then, b):
+            whole(then, "del", who, old=True)
+            whole(b, "ins", who)
+        elif t == "heading":
             par = d.add_heading("", level=heading_level(b))
             marks = diff_par(par, [(str(then["content"].get("text", "")), {})],
                              [(str(b["content"].get("text", "")), {})])
             band(par, b)
             for r, mop in marks:
                 revs.run(r, mop, *who)
-        elif t in ("text", "callout"):
+        else:
             before = list(d.element.body)
             edit_markdown(str(then["content"].get("markdown", "")), str(b["content"].get("markdown", "")),
                           t == "callout", who)
             if t == "callout":
                 shade_new(before, block_fill(b))
-        else:
-            whole(then, "del", who, old=True)
+
+    # A moved block is written as Word's move marks (w:moveFrom where it was, w:moveTo where
+    # it is now), so Word shows it as moved. Both places are drawn first as a deletion and
+    # an insertion (or, if it was edited too, as the word diff), then converted once the
+    # whole document is drawn and both places are known.
+    moves: dict[str, dict] = {}
+
+    def put_move(g: dict, who: tuple[str, str]):
+        b, side = g["block"], g["move"]
+        rec = moves.setdefault(str(g.get("move_id") or b["id"]), {})
+        before = list(d.element.body)
+        if side == "from":
+            whole(b, "del", who, old=True)
+            rec["from"] = (added_since(before), who)
+            return
+        then = g.get("before")
+        if then is None or then == b["content"]:
             whole(b, "ins", who)
+            mode = "ins"
+        elif word_diffable({**b, "content": then}, b):
+            edit(b, then, who)
+            mode = "edit"
+        else:  # edited past a word diff: a deletion there and an insertion here
+            whole(b, "ins", who)
+            mode = "replaced"
+        rec["to"] = (added_since(before), who, mode, b)
+
+    def put_segment(g: dict):
+        b, op = g["block"], g.get("op", "same")
+        if op == "same":
+            emit(b)
+            return
+        who = (redline_author(g.get("author"), agent_name), _word_date(g.get("at")))
+        if g.get("move") in ("from", "to") and op in ("ins", "del"):
+            put_move(g, who)
+            return
+        if op in ("ins", "del"):
+            whole(b, op, who, old=op == "del")
+            return
+        edit(b, g.get("before") or {}, who)
+
+    def finish_moves():
+        n = 0
+        for rec in moves.values():
+            if "from" not in rec or "to" not in rec:
+                continue
+            fr, mover = rec["from"]
+            to, editor, mode, b = rec["to"]
+            if mode == "replaced" or not fr or not to:
+                continue
+            if any(el.tag != qn("w:p") or el.find(".//" + qn("w:tbl")) is not None for el in fr + to):
+                # Tables have no move marks, so this move stays a deletion and an insertion.
+                # A diff here would bring the old words back twice on Reject: redraw it whole.
+                if mode == "edit":
+                    before = list(d.element.body)
+                    whole(b, "ins", editor)
+                    for el in added_since(before):
+                        to[0].addprevious(el)
+                    for el in to:
+                        el.getparent().remove(el)
+                continue
+            n += 1
+            name = f"move{n}"
+            revs.move_from(fr, name, *mover)
+            revs.move_to(to, name, *mover, edited=mode == "edit")
 
     separate_cover = bool(cover) and (s.get("cover") or {}).get("enabled", True)
     for g in cover:
@@ -672,6 +792,7 @@ def to_docx(store: Store, doc_id: str, pictures: dict[str, bytes], references: l
         _clear_header_footer(sec_back, unlink=True)
         for g in back:
             put_segment(g)
+    finish_moves()
     buf = io.BytesIO()
     d.save(buf)
     return buf.getvalue()

@@ -450,7 +450,7 @@ How each change is written:
 | A paragraph added to or removed from a block | the whole paragraph inserted or deleted |
 | Added block | inserted where it is now |
 | Deleted block | deleted where it was |
-| Moved block | deleted where it was, inserted where it is now |
+| Moved block | Word's move marks: **Moved** from where it was to where it is now, accepted or rejected as one. Moved and edited too: the move, with the edit's words inserted and deleted inside it. A table (or text containing one) has no move marks, so it is deleted where it was and inserted where it is |
 | Edited table, row, stat tiles, chart or image | the old block deleted and the new one inserted |
 
 Each change is attributed to whoever made it, from the block's version records: a collaborator's

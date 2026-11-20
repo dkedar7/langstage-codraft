@@ -1756,7 +1756,10 @@ class Store:
         ``op`` is ``same``; ``edit`` (``before`` is the content then); ``ins`` (a block added
         since, or a moved block at its new place); or ``del`` (a block deleted since, or a
         moved block at its old place, with the content it had then). ``author`` is who made
-        the change as the records have it ("" when they don't say) and ``at`` when."""
+        the change as the records have it ("" when they don't say) and ``at`` when. A moved
+        block's two items also carry ``move`` (``from`` at its old place, ``to`` at its new
+        one) and ``move_id`` (its block id); when it was edited as well, the ``to`` item's
+        ``before`` is its content at the checkpoint."""
         with self._lock:
             row = self._checkpoint_row(doc_id, cid)
             since = row["touched_at"]
@@ -1789,8 +1792,11 @@ class Store:
 
             out: list[dict] = []
 
-            def put(op: str, block: dict, who: tuple[str, float], before: dict | None = None) -> None:
+            def put(op: str, block: dict, who: tuple[str, float], before: dict | None = None,
+                    move: str | None = None) -> None:
                 out.append({"op": op, "block": block, "before": before, "author": who[0], "at": who[1]})
+                if move:
+                    out[-1].update(move=move, move_id=block["id"])
 
             i = j = 0
             while i < len(then) or j < len(now):
@@ -1801,7 +1807,7 @@ class Store:
                         gone = self._one("SELECT deleted_at FROM blocks WHERE id = ?", (bid,))["deleted_at"]
                         put("del", old(bid), decided(bid, "delete", gone or time.time()))
                     elif bid in moved:
-                        put("del", old(bid), decided(bid, "move", time.time()))
+                        put("del", old(bid), decided(bid, "move", time.time()), move="from")
                 while j < len(now) and now[j] not in stable:
                     bid = now[j]
                     j += 1
@@ -1809,7 +1815,10 @@ class Store:
                     who = version(b["head"])
                     if bid in moved and bid not in edited:
                         who = decided(bid, "move", who[1])
-                    put("ins", b, who)
+                    if bid in moved:
+                        put("ins", b, who, old(bid)["content"] if bid in edited else None, move="to")
+                    else:
+                        put("ins", b, who)
                 if i < len(then) and j < len(now):
                     bid = now[j]
                     b = current[bid]
@@ -2585,7 +2594,9 @@ class Store:
         would change it, in reading order, for a redline export (gh #65). Items are like
         :meth:`redline_since`'s: an edit is ``edit`` (``block`` carries the suggested
         content, ``before`` the current one), an insert is ``ins`` where it would land, a
-        delete is ``del``, and a move is ``del`` here and ``ins`` where it would go.
+        delete is ``del``, and a move is ``del`` here and ``ins`` where it would go (both
+        with ``move`` and ``move_id``, as there; a moved block with a pending edit too has
+        the edit's author, and its current content as ``before``).
         ``author`` is the suggestion's author and ``at`` when it was made. Suggestions that
         can no longer be applied are left out."""
         with self._lock:
@@ -2620,9 +2631,12 @@ class Store:
         out: list[dict] = []
         placed: set[str] = set()
 
-        def put(op: str, block: dict, s: dict | None, before: dict | None = None) -> None:
+        def put(op: str, block: dict, s: dict | None, before: dict | None = None,
+                move: str | None = None) -> None:
             out.append({"op": op, "block": block, "before": before,
                         "author": s["author"] if s else "", "at": s["created_at"] if s else 0.0})
+            if move:
+                out[-1].update(move=move, move_id=block["id"])
 
         def landing(k: tuple) -> None:
             for s in follow.get(k, []):
@@ -2637,7 +2651,11 @@ class Store:
                     landing(("sug", s["id"]))
                 elif (s["block_id"], "delete") not in on:
                     b = here[s["block_id"]]
-                    put("ins", {**b, "content": edited(b) or b["content"]}, s)
+                    new = edited(b)
+                    if new is None:
+                        put("ins", b, s, move="to")
+                    else:
+                        put("ins", {**b, "content": new}, on[(b["id"], "edit")], b["content"], move="to")
 
         for r in ("cover", "flow", "back"):
             landing(("start", r))
@@ -2648,7 +2666,7 @@ class Store:
                     gone = on.get((b["id"], "delete")) or on.get((b["id"], "move"))
                     new = edited(b)
                     if gone:
-                        put("del", b, gone)
+                        put("del", b, gone, move="from" if gone["kind"] == "move" else None)
                     elif new is not None:
                         put("edit", {**b, "content": new}, on[(b["id"], "edit")], b["content"])
                     else:

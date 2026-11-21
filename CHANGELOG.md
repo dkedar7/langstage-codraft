@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.2 — 2026-11-21
+
+**`export --since` with a checkpoint that doesn't exist says so (#68).** Exporting in-process
+(`--data-dir`, `--standalone`, or no server running) read every "not found" answer as a missing
+document. A typo in `--since` therefore printed `DOC: not found in <data dir> (see
+langstage-codraft list)`, although the document was there. It now prints the real reason,
+`DOC: no checkpoint 'Sent to legl' in this document: …`, and keeps the `list` hint for a
+document that really is missing. The export route's error text also loses the stray quotes it
+had around it.
+
 ## 0.12.1 — 2026-11-19
 
 **A moved block is a Word move in a redline (follow-up to #65).** 0.12.0 wrote a moved block as

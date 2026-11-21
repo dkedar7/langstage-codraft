@@ -895,7 +895,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         try:
             doc = store.get_document(doc_id)
         except NotFound as exc:
-            raise HTTPException(404, str(exc)) from exc
+            raise _json_error(exc) from exc
         plan = None
         redline = ""
         if since is not None or pending:
@@ -911,7 +911,8 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                     cp = store.find_checkpoint(doc_id, since or "")
                     plan, redline = store.redline_since(doc_id, cp["id"]), "redline"
             except NotFound as exc:
-                raise HTTPException(404, str(exc)) from exc
+                # _json_error drops the quotes str(KeyError) adds (gh #68).
+                raise _json_error(exc) from exc
         r = get_renderer()
         if r is None:
             raise HTTPException(503, "renderer not running")

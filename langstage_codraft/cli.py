@@ -34,6 +34,18 @@ def _warn(msg: str) -> None:
     _echo(f"[warn] {msg}")
 
 
+
+def _is_missing_document(response: object, doc_id: str) -> bool:
+    """Whether an export's 404 means the document itself doesn't exist (gh #68).
+
+    The route also answers 404 for an unknown ``since`` checkpoint, and that one must
+    not be reported as a missing document.
+    """
+    from langstage_codraft.standalone import _detail
+
+    detail = _detail(response).strip().strip("'\"")
+    return detail in ("", "Not Found") or detail == f"document {doc_id} not found"
+
 def _fail(msg: str) -> None:
     _echo(f"[fail] {msg}")
 
@@ -449,8 +461,12 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_js
                 continue
             if r.status_code != 200:
                 report(doc_id, fmt, ok=False, file=None, cut_off=[], error=f"{r.status_code}: {_detail(r)[:300]}")
-                if sa is not None and r.status_code == 404:
+                if sa is not None and r.status_code == 404 and _is_missing_document(r, doc_id):
                     _fail(f"{doc_id}: not found in {Path(cfg.data_dir).resolve()} (see `langstage-codraft list`)")
+                elif sa is not None and r.status_code == 404:
+                    # Another 404, such as an unknown --since checkpoint: say what's
+                    # missing, not that the document is (gh #68).
+                    _fail(f"{doc_id}: {_detail(r)[:300]}")
                 elif many or sa is not None:
                     _fail(f"{doc_id} ({fmt}): {r.status_code}: {_detail(r)[:300]}")
                 else:

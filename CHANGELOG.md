@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.3 — 2026-11-22
+
+**`export` with one document and `-o` a directory writes into it (#70).** Only an export of
+several documents or formats treated `-o` as a directory. A single export to one that exists
+(`-o out/`, `-o .`) crashed with `IsADirectoryError`, and `-o newdir/` wrote a file called
+`newdir`. Now `-o` is a directory whenever it is one or ends in `/`, so a single export writes
+`out/<title>.pdf`, creating the directory if needed, as a batch export does. A path ending in
+`/` that is already a file is a usage error. This works with or without a running server.
+
 ## 0.12.2 — 2026-11-21
 
 **`export --since` with a checkpoint that doesn't exist says so (#68).** Exporting in-process

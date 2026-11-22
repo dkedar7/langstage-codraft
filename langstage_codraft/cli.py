@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import webbrowser
 from pathlib import Path
@@ -324,6 +325,9 @@ def import_cmd(file, title, template, theme, split, data_dir, as_json) -> None:
     _echo(doc["id"])
 
 
+# What ends a directory path on this OS: "/" everywhere, "\\" on Windows too.
+_SEPARATORS = tuple(c for c in (os.sep, os.altsep) if c)
+
 # Every format GET /api/docs/{id}/export serves (the README's CLI list).
 EXPORT_FORMATS = ["pdf", "docx", "pptx", "png", "jpg", "html", "gif", "mp4"]
 
@@ -332,8 +336,9 @@ EXPORT_FORMATS = ["pdf", "docx", "pptx", "png", "jpg", "html", "gif", "mp4"]
 @click.argument("doc_ids", nargs=-1, required=True, metavar="DOC_ID...")
 @click.option("-f", "--format", "fmts", type=click.Choice(EXPORT_FORMATS), multiple=True,
               help="Output format (default pdf). Repeat for several: -f pdf -f png.")
-@click.option("-o", "--output", type=click.Path(path_type=Path),
-              help="Output file; a directory when exporting several documents or formats.")
+@click.option("-o", "--output", type=click.Path(),
+              help="Output file, or a directory (one that exists, or a path ending in /) to write "
+                   "<title>.<ext> into. Always a directory when exporting several documents or formats.")
 @click.option("--data-dir", type=click.Path(path_type=Path),
               help="Render this data directory in-process; no server needed.")
 @click.option("--standalone", is_flag=True,
@@ -398,8 +403,13 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_js
                                "running server. Pass one or the other.")
     jobs = [(d, f) for d in dict.fromkeys(doc_ids) for f in fmts]
     many = len(jobs) > 1
-    if many and output is not None and output.is_file():
-        raise click.UsageError(f"-o {output} is a file; with several documents or formats it must be a directory")
+    # -o names a directory when it is one, or ends in a separator (`-o out/`, `-o .`); pathlib
+    # drops the trailing slash, so look at the raw text (gh #70).
+    into_dir = many or (output is not None and (output.endswith(_SEPARATORS) or Path(output).is_dir()))
+    output = Path(output) if output is not None else None
+    if into_dir and output is not None and output.is_file():
+        raise click.UsageError(f"-o {output} is a file; with several documents or formats it must be a directory"
+                               if many else f"-o names a directory, but {output} is a file")
 
     cfg = _cfg(port=port, data_dir=data_dir)
     base = url or f"http://{cfg.host}:{cfg.port}"
@@ -440,7 +450,7 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_js
     failed = 0
     written: set[Path] = set()
     try:
-        if many and output is not None:
+        if into_dir and output is not None:
             output.mkdir(parents=True, exist_ok=True)
         for doc_id, fmt in jobs:
             try:
@@ -474,7 +484,7 @@ def export(doc_ids, fmts, output, data_dir, standalone, url, port, strict, as_js
                 failed += 1
                 continue
             name = export_filename(r, doc_id, fmt)
-            if many:
+            if into_dir:
                 out = (output or Path(".")) / name
                 if out in written:  # two documents with the same title
                     out = out.with_name(f"{doc_id}-{name}")

@@ -232,6 +232,14 @@ class Renderer:
         finally:
             await ctx.close()
 
+    async def body_page_count(self, doc_id: str) -> int:
+        """Body pages only (not the cover or back page): the pages ``pin_page`` counts."""
+        ctx, page = await self._open(doc_id)
+        try:
+            return len(await page.query_selector_all(".cd-page.cd-page-body"))
+        finally:
+            await ctx.close()
+
     async def screenshot_pages(self, doc_id: str, *, pages: list[int] | None = None,
                                max_pages: int = 4, preview: bool = False) -> list[dict]:
         """JPEG screenshots for the agent's eyes, saved under out_dir/vision. Each shot

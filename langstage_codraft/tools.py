@@ -286,6 +286,64 @@ def _layout_cut_check(store: Any, doc_id: str, before: dict, after: dict) -> str
             + "; to make the block shorter, propose a tighter text (propose_edit) and let the author decide.")
 
 
+def _body_pages(doc_id: str) -> int | None:
+    """How many body pages the document prints now (not cover or back pages); None when no
+    renderer can say."""
+    from .render import ensure_renderer
+
+    try:
+        r = ensure_renderer()
+        if r is None or not hasattr(r, "body_page_count"):
+            return None
+        return int(r.call(r.body_page_count(doc_id)))
+    except Exception:  # noqa: BLE001 - no browser or a failed render: don't assert a count
+        return None
+
+
+def _pin_place_check(store: Any, doc_id: str, block: dict, before: dict | None, after: dict) -> str | None:
+    """None when a changed pin keeps the block on a printed page, else the reason to refuse
+    it (gh #72). A pin past the page's edges, or on a page the document doesn't have, hides
+    the block as surely as a box too small for it (gh #58): text-bearing blocks must sit
+    wholly on the page; an image or shape may bleed past an edge with at least half of it on
+    the page. ``before`` is the old layout (None for a new pending insert)."""
+    pin = after.get("pin") or None
+    if not pin or (before is not None and (before.get("pin") or None) == pin):
+        return None
+    bid = block.get("id", "the block")
+    settings = store.get_document(doc_id)["settings"]
+    if pin.get("anchor") == "page":
+        W, H = page_px(settings)
+        x, y = float(pin.get("x") or 0), float(pin.get("y") or 0)
+        w, h = float(pin.get("w") or 0), float(pin.get("h") or 0)
+        rng = (f"The page is {int(W)} x {int(H)} px: page_x_px + page_w_px must stay within 0-{int(W)} and "
+               f"page_y_px + page_h_px within 0-{int(H)}.")
+        if block.get("type") in _CLIP_TYPES:
+            if x < -0.5 or y < -0.5 or x + w > W + 0.5 or y + h > H + 0.5:
+                return (f"REFUSED, nothing changed: that pin puts {bid} (partly) off the page "
+                        f"(x {int(x)}..{int(x + w)}, y {int(y)}..{int(y + h)}), and what is off the page "
+                        f"does not print. {rng} A layout change must not hide content; to drop the "
+                        "block, propose deleting it (propose_delete) and let the author decide.")
+        else:
+            ow = max(0.0, min(x + w, W) - max(x, 0.0))
+            oh = max(0.0, min(y + h, H) - max(y, 0.0))
+            if w > 0 and h > 0 and ow * oh < w * h / 2:
+                return (f"REFUSED, nothing changed: that pin puts most of {bid} off the page, and what is "
+                        f"off the page does not print. An image or shape may bleed past an edge, but at "
+                        f"least half of it must be on the page. {rng}")
+    if (after.get("role") or "flow") == "flow":
+        page = int(pin.get("page") or 1)
+        if page < 1:
+            return f"REFUSED, nothing changed: pin_page must be 1 or more (got {page})."
+        old = int(((before or {}).get("pin") or {}).get("page") or 1)
+        if page > 1 and page != old:
+            n = _body_pages(doc_id)
+            if n is not None and page > max(n, old):
+                return (f"REFUSED, nothing changed: the document has {n} page{'s' if n != 1 else ''}, so "
+                        f"pin_page {page} would add empty pages just to hold {bid}. Pin it to a page "
+                        f"from 1 to {n}.")
+    return None
+
+
 def parse_content(block_type: str, content: Any) -> dict:
     """Turn the agent's ``content`` argument into a block content dict."""
     if isinstance(content, dict):
@@ -1126,9 +1184,16 @@ def set_block_layout(
         if pend is not None:
             if lay.get("pin") is None and "pin" in lay:
                 lay["repeat"] = None
+            why = _pin_place_check(store, doc_id, {"id": block_id, "type": pend["payload"].get("type", "text")},
+                                   cur_layout, {**cur_layout, **lay})
+            if why:
+                return f"ERROR: {why}"
             sg = store.revise_suggestion(pend["id"], layout=lay)
             return f"Layout of your pending insert {block_id} is now {json.dumps(sg['payload'].get('layout'))}"
         before = _block(store, doc_id, block_id)
+        why = _pin_place_check(store, doc_id, before, before["layout"], {**before["layout"], **lay})
+        if why:
+            return f"ERROR: {why}"
         b = store.set_layout(block_id, lay, log=False)
         why = _layout_cut_check(store, doc_id, before, b)
         if why:

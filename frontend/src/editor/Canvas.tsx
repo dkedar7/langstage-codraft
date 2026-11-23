@@ -347,8 +347,9 @@ export function Canvas() {
             )}
             {it.pinned && <span className="ed-badge" title={b.layout.repeat ? `Repeats: ${JSON.stringify(b.layout.repeat)}` : "Pinned"}><Pin size={10} /></span>}
             {(it.overflow || contentOverflow) && (
-              <span className="ed-badge warn" title={contentOverflow ? "Content is taller than the fixed height" : "Taller than the page"}>
-                <TriangleAlert size={10} /> overflow</span>
+              <span className="ed-badge warn" title={it.offPage ? "Pinned off the page: it doesn't print"
+                : contentOverflow ? "Content is taller than the fixed height" : "Taller than the page"}>
+                <TriangleAlert size={10} /> {it.offPage ? "off page" : "overflow"}</span>
             )}
           </div>
         )}
@@ -376,6 +377,17 @@ export function Canvas() {
                 {numbering.map[p.number] != null && numbering.map[p.number] !== p.number ? ` · printed as ${numbering.map[p.number]}` : ""}
                 {numbering.map[p.number] == null && p.kind === "body" ? " · unnumbered" : ""}
                 {doc.settings.mode === "pageless" ? " (pageless)" : ""}
+                {(() => {
+                  // A block pinned off the page is out of sight on the canvas: say so here (gh #72).
+                  const off = p.items.filter((x) => x.offPage && !x.repeated);
+                  return off.length > 0 && (
+                    <button className="ed-page-action warn" data-testid="offpage-warning"
+                      title="Pinned (partly) off the page, so it doesn't print. Select it, then move it or unpin it."
+                      onClick={() => ed.select(off[0].id)}>
+                      <TriangleAlert size={10} /> {off.length} block{off.length === 1 ? "" : "s"} off the page
+                    </button>
+                  );
+                })()}
                 {p.kind === "cover" && (
                   <>
                     <button className="ed-page-action" data-testid="cover-add" onClick={() => addTo("cover")}>+ Add to cover</button>

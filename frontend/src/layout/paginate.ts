@@ -59,6 +59,9 @@ export interface MeasuredBlock {
   /** The content's own height when the block has a fixed one: a pinned block whose content
    *  is taller than its box is flagged as overflow. */
   natural?: number;
+  /** Text-bearing content (text, a table, cells…) that must print in full: a pin of it may
+   *  not leave the page at all. Without it (an image, a shape) a pin may bleed (gh #72). */
+  clips?: boolean;
 }
 
 export interface Geometry {
@@ -91,6 +94,8 @@ export interface Placed {
   pinned: boolean;
   repeated: boolean;
   overflow: boolean;
+  /** A pin placed (partly) off the page, so (part of) it doesn't print (gh #72). */
+  offPage?: boolean;
   /** A continued table piece: this much of the block's top (its header row) is drawn again
    *  above the piece. Only set when it applies. */
   head?: number;
@@ -159,6 +164,23 @@ function repeatsOn(rep: MeasuredBlock["repeat"], page: number, pinPage: number):
   if (rep === "odd") return page % 2 === 1;
   if (rep === "even") return page % 2 === 0;
   return rep.includes(page);
+}
+
+/**
+ * A pin's rect (content-box coordinates) that leaves the printed page (gh #72). Text-bearing
+ * blocks must sit wholly on the page; an image or shape may bleed past the edge (hero art,
+ * an edge-to-edge strip) as long as at least half of it is on the page.
+ */
+export function pinOffPage(r: Rect, geo: Geometry, clips: boolean): boolean {
+  const left = -geo.margin.left, top = -geo.margin.top;
+  const right = geo.pageW - geo.margin.left, bottom = geo.pageH - geo.margin.top;
+  if (clips) {
+    return r.x < left - EPS || r.y < top - EPS || r.x + r.w > right + EPS || r.y + r.h > bottom + EPS;
+  }
+  const ow = Math.max(0, Math.min(r.x + r.w, right) - Math.max(r.x, left));
+  const oh = Math.max(0, Math.min(r.y + r.h, bottom) - Math.max(r.y, top));
+  const area = Math.max(r.w, 0) * Math.max(r.h, 0);
+  return area > 0 && ow * oh < area / 2 - EPS;
 }
 
 function pinRect(b: MeasuredBlock, geo: Geometry): Rect {
@@ -271,8 +293,9 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
     for (const b of list.filter((x) => x.pin)) {
       const p = b.pin!;
       const r = p.anchor === "page" ? pinRect(b, geo) : { x: 0, y: p.top, w: contentW, h: p.height || b.height };
+      const off = pinOffPage(r, geo, !!b.clips);
       items.push({ id: b.id, x: r.x, y: r.y, w: r.w, h: r.h, offset: 0, fragment: false, continued: false,
-        pinned: true, repeated: false, overflow: false });
+        pinned: true, repeated: false, overflow: off, offPage: off || undefined });
       note(b.id, number);
       if (r.h >= contentH * 0.6) continue; // a backdrop: the stack sits on top of it
       if (r.y + r.h / 2 < contentH / 2) top = Math.max(top, r.y + r.h + geo.blockGap);
@@ -308,11 +331,14 @@ export function paginate(blocks: MeasuredBlock[], geo: Geometry): LayoutResult {
       if (repeatsOn(b.repeat ?? null, bodyIndex, b.pin!.page)) {
         const r = pinRect(b, geo);
         pb.reserved.push(r);
+        // A page-anchored pin may bleed into the margin, so it is cut off only where it leaves the
+        // page itself, on any side (gh #72); an image may bleed past the edge, but not mostly off it.
+        const off = pinOffPage(r, geo, !!b.clips);
         pb.items.push({ id: b.id, x: r.x, y: r.y, w: r.w, h: r.h, offset: 0, fragment: false, continued: false,
           pinned: true, repeated: !!b.repeat && bodyIndex !== b.pin!.page,
-          // A page-anchored pin may bleed into the margin: it overflows only past the page's edge.
-          overflow: r.y + r.h > contentH + (b.pin!.anchor === "page" ? geo.margin.bottom : 0) + EPS
-            || (b.natural != null && b.natural > r.h + 1) });
+          overflow: off || (b.pin!.anchor !== "page" && r.y + r.h > contentH + EPS)
+            || (b.natural != null && b.natural > r.h + 1),
+          offPage: off || undefined });
         note(b.id, pb.number);
       }
     }

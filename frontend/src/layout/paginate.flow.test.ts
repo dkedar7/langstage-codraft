@@ -201,8 +201,33 @@ describe("paginate: a pinned block whose content is taller than its box", () => 
 
   it("a page-anchored pin may bleed into the bottom margin; past the page edge it overflows", () => {
     const pin = (top: number) => ({ anchor: "page" as const, page: 1, top, x: 50, w: 300, column: 0, span: 1, height: 100 });
-    const r = paginate([atom("bleed", 100, { pin: pin(380) }), atom("off", 100, { pin: pin(420) })], geo());
+    const r = paginate([atom("bleed", 100, { pin: pin(380), clips: true }), atom("off", 100, { pin: pin(420), clips: true })], geo());
     expect(r.pages[0].items.find((i) => i.id === "bleed")!.overflow).toBe(false);   // ends at 480 of a 500px page
     expect(r.pages[0].items.find((i) => i.id === "off")!.overflow).toBe(true);      // ends at 520
+  });
+
+  it("a text pin past any edge of the page is off the page (gh #72)", () => {
+    const g = geo();
+    const at = (x: number, top: number) => ({ anchor: "page" as const, page: 1, top, x, w: 100, column: 0, span: 1, height: 50 });
+    const r = paginate([
+      atom("left", 50, { pin: at(-2000, 100), clips: true }),
+      atom("top", 50, { pin: at(50, -2000), clips: true }),
+      atom("right", 50, { pin: at(g.pageW - 50, 100), clips: true }),
+      atom("inside", 50, { pin: at(0, 0), clips: true }),
+    ], g);
+    const it = (id: string) => r.pages[0].items.find((i) => i.id === id)!;
+    for (const id of ["left", "top", "right"]) {
+      expect(it(id).overflow).toBe(true);
+      expect(it(id).offPage).toBe(true);
+    }
+    expect(it("inside").overflow).toBe(false);
+    expect(it("inside").offPage).toBeFalsy();
+  });
+
+  it("an image pin may bleed past the edge while at least half of it is on the page (gh #72)", () => {
+    const at = (x: number) => ({ anchor: "page" as const, page: 1, top: 100, x, w: 100, column: 0, span: 1, height: 50 });
+    const r = paginate([atom("bleed", 50, { pin: at(-20) }), atom("mostly-off", 50, { pin: at(-80) })], geo());
+    expect(r.pages[0].items.find((i) => i.id === "bleed")!.overflow).toBe(false);
+    expect(r.pages[0].items.find((i) => i.id === "mostly-off")!.offPage).toBe(true);
   });
 });

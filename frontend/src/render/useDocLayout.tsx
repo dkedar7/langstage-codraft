@@ -137,6 +137,7 @@ export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>, o
       float: !!opts.backfill && flows && FLOATS.has(b.type) && b.layout.anchor !== "bottom",
       anchor: flows && b.layout.anchor === "bottom" ? "bottom" : null,
       natural: fixed && CLIPS.has(b.type) ? meas.natural : undefined,
+      clips: CLIPS.has(b.type),
       pin: b.layout.pin
         ? b.layout.pin.anchor === "page"
           ? { anchor: "page" as const, page: b.layout.pin.page, top: b.layout.pin.y ?? 0, x: b.layout.pin.x ?? 0,

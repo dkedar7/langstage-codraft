@@ -222,9 +222,13 @@ comment on each (`keep_together` keeps a draft whole).
 A layout change can't hide content either. `set_block_layout` refuses a height, or a pin's box,
 that would cut off a block's text, table or cells, and says how much room the content needs:
 what is cut off doesn't print, so shortening a block is a content change, and that is a
-suggestion you approve. The check is in the tool, so an MCP client and a bring-your-own agent
-get it too. You can still give a block any height in the Block panel; the panel then says how
-much is cut off and offers **Fit the content**.
+suggestion you approve. It also refuses a pin that would put such a block (partly) off the page,
+or on a page the document doesn't have. An image or shape may bleed past an edge, as long as at
+least half of it stays on the page. The check is in the tool, so an MCP client and a
+bring-your-own agent get it too. You can still give a block any height in the Block panel; the
+panel then says how much is cut off and offers **Fit the content**. A block pinned off the page
+(by hand, or by an older version) counts as cut off: the editor names it above the page, and
+`export` and `layout-check` report it.
 
 **Research tools of the built-in agent.** `fetch_url` reads a page or a PDF. `web_search` is part
 of the default install (the `ddgs` package). If it can't be imported, `langstage-codraft check`

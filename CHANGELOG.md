@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.12.4 — 2026-11-23
+
+**A pin can't take a block off the page (#72).** `set_block_layout` checked a pin's size but not
+its position, so an agent (or an MCP client) could pin an author's paragraph at
+`page_x_px=-2000` and it vanished from every export with no warning, while `export --strict`
+passed. Now the tool refuses a page-anchored pin that puts a text-bearing block (text, a table,
+cells, a heading…) even partly off the page, and gives the page's size in px. An image or shape
+may still bleed past an edge, but at least half of it must stay on the page. It also refuses a
+`pin_page` past the document's last page, which used to add empty pages. A block already pinned
+off the page counts as cut off: `X-Codraft-Cut-Off`, `layout-check`, `export`'s warning and
+`--strict`, and `view_pages`' OVERFLOW note now report it, on any side of the page, not only past
+the bottom. The editor marks it "off page" and names it above the page, where a click selects it.
+
 ## 0.12.3 — 2026-11-22
 
 **`export` with one document and `-o` a directory writes into it (#70).** Only an export of

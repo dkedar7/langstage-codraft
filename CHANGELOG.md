@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.5 — 2026-11-25
+
+**A forwarded prefix is only ever a URL path (#75, security).** With `proxy_secret` set, a
+request carrying the secret had its `X-Forwarded-Prefix` written into the app page as-is. A
+prefix containing `</script>` closed the page's inline script and ran its own, and `//host`
+made `<base href>` point at another host, so the browser loaded Codraft's JavaScript from
+there. Proxies such as nginx and Caddy pass a client's own headers through by default, so a
+client could supply the prefix next to the proxy's secret, and a shared cache could serve that
+page to everyone. Now the prefix must be a plain path: a single leading `/`, path characters
+only, no `.` or `..` segments. Anything else is ignored, as an untrusted header is, and the page
+falls back to `base_path` or the mount path. `base_path` and the mount path go through the same
+check (`base_path = "write"` still means `/write`). The inline script also escapes `<`, `>`, `&`
+and the JS line separators, so no value can end it.
+
 ## 0.12.4 — 2026-11-23
 
 **A pin can't take a block off the page (#72).** `set_block_layout` checked a pin's size but not

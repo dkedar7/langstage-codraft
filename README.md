@@ -669,7 +669,9 @@ mount(app, "/write", create_app(
 
 `mount` runs Codraft's startup and shutdown inside your app's lifespan. The page works under any
 URL prefix. If a proxy serves it under a different public path, it sends that path as
-`X-Forwarded-Prefix`, which is honoured only alongside the proxy secret. `?embed=1` turns on
+`X-Forwarded-Prefix`, which is honoured only alongside the proxy secret and only when it is a
+plain path such as `/tools/write` (no `//host`, `..` or markup). Have the proxy set the header
+itself rather than pass on a client's. `?embed=1` turns on
 embedded mode for one page, for example in an `<iframe>`. `doc_themes` adds document themes
 (the same keys as `[codraft.themes.*]`) and `doc_defaults` sets what new documents start with
 (as `[codraft.doc_defaults]`). A theme can use any bundled font or Google Fonts family; Codraft

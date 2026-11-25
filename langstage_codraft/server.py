@@ -1079,28 +1079,62 @@ def _display_name(user: str) -> str:
     return user
 
 
+_PATH_PREFIX = re.compile(r"(?:/[A-Za-z0-9._~!$&'()*+,;=:@%-]+)+")
+
+
+def _safe_prefix(value: str) -> str | None:
+    """``value`` as a URL path prefix without its trailing ``/`` ("" for the root), or None
+    when it isn't a plain path: it must start with a single ``/`` (not ``//`` or a backslash,
+    which a browser reads as another host), use only path characters, and have no
+    ``.``/``..`` segments (gh #75)."""
+    v = (value or "").strip().rstrip("/")
+    if not v:
+        return ""
+    if not _PATH_PREFIX.fullmatch(v) or v.startswith("//"):
+        return None
+    if any(seg in (".", "..") for seg in v.split("/")[1:]):
+        return None
+    return v
+
+
 def _public_base(request: Request, cfg: CodraftConfig) -> str:
     """The URL prefix the browser uses: a trusted proxy's X-Forwarded-Prefix (only with the
     proxy secret); else the mount path for requests from this machine (the export renderer);
-    else ``base_path``, then the mount path."""
-    root = (request.scope.get("root_path") or "").rstrip("/")
+    else ``base_path``, then the mount path. Each candidate must be a plain URL path
+    (:func:`_safe_prefix`); one that isn't is ignored, as an untrusted header is (gh #75)."""
+    root = _safe_prefix(request.scope.get("root_path") or "") or ""
     fwd = request.headers.get("x-forwarded-prefix", "")
     if fwd and cfg.proxy_secret and _secrets_equal(request.headers.get("x-codraft-proxy-secret", ""), cfg.proxy_secret):
-        return fwd.rstrip("/")
+        safe = _safe_prefix(fwd)
+        if safe is not None:
+            return safe
     client = (request.client.host if request.client else "") or ""
     if client in ("127.0.0.1", "::1"):
         return root
-    return (cfg.base_path or root).rstrip("/")
+    bp = (cfg.base_path or "").strip()
+    if bp and not bp.startswith("/"):
+        bp = "/" + bp  # "write" in langstage.toml means /write
+    return _safe_prefix(bp) or root
+
+
+def _script_json(value) -> str:
+    """JSON that is safe inside an inline ``<script>``: no ``</script>``, ``<!--``, ``&``
+    or JS line separator can end or change the script (gh #75)."""
+    return json.dumps(value).translate(_SCRIPT_ESCAPES)
+
+
+# Each character that could end or alter an inline script, as its JSON escape.
+_SCRIPT_ESCAPES = {ord(c): "\\u" + format(ord(c), "04x") for c in ("<", ">", "&", chr(0x2028), chr(0x2029))}
 
 
 def _index_html(index: Path, base: str) -> str:
     html = index.read_text(encoding="utf-8")
-    inject = (f'<base href="{_attr(base)}/"><script>window.__CODRAFT__={json.dumps({"base": base})};</script>')
+    inject = (f'<base href="{_attr(base)}/"><script>window.__CODRAFT__={_script_json({"base": base})};</script>')
     return html.replace("<head>", "<head>" + inject, 1)
 
 
 def _attr(s: str) -> str:
-    return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+    return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
 
 
 def mount(host: FastAPI, path: str, app: FastAPI) -> FastAPI:

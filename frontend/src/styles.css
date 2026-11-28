@@ -284,7 +284,9 @@ body { background: var(--color-surface); color: var(--color-text); font-size: 13
 .ed-page-label { position: absolute; top: -20px; left: 0; font-size: 11px; color: var(--color-text-muted); font-family: Inter, sans-serif; white-space: nowrap; }
 .ed-page-action { margin-left: 12px; background: none; border: 0; padding: 0; font: inherit; color: var(--ui-accent); cursor: pointer; }
 .ed-page-action:hover { text-decoration: underline; }
-.ed-sugg-bar { position: absolute; left: 0; bottom: -30px; display: flex; gap: 4px; z-index: 6; }
+/* Inside the room the layout keeps below a suggested block (SUGGESTION_BAR_ROOM), never on the next block (gh #78). */
+.ed-sugg-bar { position: absolute; left: 0; bottom: 3px; display: flex; gap: 4px; z-index: 6; }
+.ed-sugg-bar.below { bottom: -30px; }
 
 .diff-add { background: #dcfce7; color: #14532d; text-decoration: none; border-radius: 2px; }
 .diff-del { background: #fee2e2; color: #7f1d1d; text-decoration: line-through; border-radius: 2px; }

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.12.6 — 2026-11-28
+
+**A suggested block's Accept / Reject bar no longer covers the next block (#78).** The bar hung
+30px below a pending insert, over whatever came next, so a paragraph the agent drafted under one
+heading hid the start of the following heading until you decided. The editor now keeps room for
+the bar below a suggested block, and the bar sits in it. The room is editor chrome only: exported
+pages never contain a pending insert, and nothing else moves. A suggested block with a fixed
+height or a pin keeps its box, so its bar hangs below as before.
+
 ## 0.12.5 — 2026-11-25
 
 **A forwarded prefix is only ever a URL path (#75, security).** With `proxy_secret` set, a

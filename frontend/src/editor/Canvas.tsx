@@ -8,7 +8,7 @@ import { BlockView } from "../render/BlockView";
 import { useDocFonts } from "../fonts";
 import { Fragment, Page, PageFurniture } from "../render/Page";
 import { effectiveTheme, pageDesign, themeVars } from "../render/theme";
-import { CLIPS, langCode, pinHeight, useDocLayout } from "../render/useDocLayout";
+import { CLIPS, langCode, pinHeight, SUGGESTION_BAR_ROOM, useDocLayout } from "../render/useDocLayout";
 import { pageNumbers, usesPageToken } from "../layout/numbering";
 import type { Block, Suggestion } from "../types";
 import { useEditorApi } from "./context";
@@ -278,6 +278,10 @@ export function Canvas() {
     const cls = ["ed-item", sel && "selected", pend.length && "has-suggestion", isVirtual && "virtual",
       (it.overflow || contentOverflow) && "overflow", it.pinned && "pinned"].filter(Boolean).join(" ");
     const showChrome = !it.continued && !it.repeated;
+    // A suggested block's Accept / Reject bar sits in the room kept below its last piece (gh #78).
+    // A fixed-height or pinned suggestion gets no room (its box is the author's), so its bar hangs below.
+    const roomy = isVirtual && !fixed && !b.layout.pin;
+    const lastPiece = !it.fragment || !meas || it.offset + it.h >= meas.height + (roomy ? SUGGESTION_BAR_ROOM : 0) - 1;
     return (
       <div key={`${it.id}-${it.offset}-${page.number}`} className={cls} data-testid={`block-${b.type}`}
         data-block-id={b.id}
@@ -353,7 +357,7 @@ export function Canvas() {
             )}
           </div>
         )}
-        {isVirtual && showChrome && <SuggestionBar suggestionId={b.virtual!.suggestionId} />}
+        {isVirtual && lastPiece && !it.repeated && <SuggestionBar suggestionId={b.virtual!.suggestionId} inside={roomy} />}
         {!isVirtual && pend.map((s) => openSugg === s.id && (
           <SuggestionPopover key={s.id} s={s} block={b} onClose={() => setOpenSugg(null)} />
         ))}
@@ -503,10 +507,10 @@ function HeadingInput({ block, base }: { block: Block; base: string }) {
   );
 }
 
-function SuggestionBar({ suggestionId }: { suggestionId: string }) {
+function SuggestionBar({ suggestionId, inside }: { suggestionId: string; inside: boolean }) {
   const ed = useEditorApi();
   return (
-    <div className="ed-sugg-bar" onClick={(e) => e.stopPropagation()}>
+    <div className={inside ? "ed-sugg-bar" : "ed-sugg-bar below"} data-testid="suggestion-bar" onClick={(e) => e.stopPropagation()}>
       <button className="btn btn-agent" data-testid="accept-insert" onClick={() => ed.run(api.accept(suggestionId))}>Accept</button>
       <button className="btn" onClick={() => ed.run(api.reject(suggestionId))}>Reject</button>
     </div>

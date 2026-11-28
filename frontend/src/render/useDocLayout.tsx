@@ -121,17 +121,23 @@ const FLOATS = new Set(["image", "video", "chart", "row", "stat"]);
 /** Blocks whose content can be taller than a fixed height (and is then cut off). */
 export const CLIPS = new Set(["text", "callout", "row", "stat", "heading", "table", "references"]);
 
+/** Room the editor keeps below a suggested (pending insert) block for its Accept / Reject bar,
+ *  so the bar never sits on the next block (gh #78). Editor only: a pending insert is not in
+ *  the exported pages, which never lay out a suggested block. */
+export const SUGGESTION_BAR_ROOM = 34;
+
 export function toMeasuredBlocks(blocks: Block[], m: Record<string, Measured>, opts: { backfill?: boolean } = {}): MeasuredBlock[] {
   return blocks.map((b) => {
     const meas = m[b.id] || { height: 24, natural: 24, splits: [] };
     const fixed = pinHeight(b) || b.layout.height;
     const flows = (b.layout.role || "flow") === "flow" && !b.layout.pin;
+    const room = b.virtual && !fixed && !b.layout.pin ? SUGGESTION_BAR_ROOM : 0;
     return {
       id: b.id,
       kind: b.type === "page-break" ? "break" : SPLITS.has(b.type) && !fixed && !b.layout.pin ? "text" : "atomic",
       role: b.layout.role || "flow",
       full: b.layout.span === "full",
-      height: fixed || meas.height,
+      height: fixed || meas.height + room,
       splits: meas.splits,
       head: meas.head || 0,
       float: !!opts.backfill && flows && FLOATS.has(b.type) && b.layout.anchor !== "bottom",

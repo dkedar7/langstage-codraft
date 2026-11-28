@@ -77,9 +77,12 @@ def _detail(response: Any) -> str:
 
 
 def export_filename(response: Any, doc_id: str, fmt: str) -> str:
-    """The file name the server suggests (``<title>.pdf``, ``<title>-png.zip``)."""
-    disp = response.headers.get("content-disposition", "")
-    return disp.split("filename=")[-1].strip('"') if "filename=" in disp else f"{doc_id}.{fmt}"
+    """The file name the server suggests (``<title>.pdf``, ``<title>-png.zip``): its
+    ``filename*`` when it sends one, so a title in any script keeps its letters (gh #79).
+    Never a path: separators and characters a file system can't take are replaced."""
+    from .filenames import filename_from_disposition
+
+    return filename_from_disposition(response.headers.get("content-disposition", "")) or f"{doc_id}.{fmt}"
 
 
 def output_path(response: Any, out: Path) -> Path:

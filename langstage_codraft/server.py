@@ -22,7 +22,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, Request, UploadFil
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
-from . import fonts, stylematch, themes
+from . import filenames, fonts, stylematch, themes
 from . import templates as tpl
 from .config import CodraftConfig, codraft_toml_table, is_css_path
 from .render import (
@@ -916,16 +916,18 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         r = get_renderer()
         if r is None:
             raise HTTPException(503, "renderer not running")
-        stem = _slug(doc["title"])
+        # Named after the title in any script: an ASCII filename= plus filename*= (gh #79).
+        stem = filenames.export_stem(doc["title"])
         fmt = format.lower()
         info: dict = {}
 
-        def _send(data: bytes, media_type: str, filename: str) -> Response:
+        def _send(data: bytes, media_type: str, tail: str) -> Response:
+            """``tail`` follows the title's stem in the file name: ``.pdf``, ``-redline.docx``."""
             cut = info.get("cut_off") or []
             if cut and strict:
                 det = _cut_details(doc_id, cut)
                 return JSONResponse({"detail": cut_off_message(det), "cut_off": det}, status_code=409)
-            headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+            headers = {"Content-Disposition": filenames.content_disposition(doc["title"], tail)}
             if cut:
                 headers["X-Codraft-Cut-Off"] = ",".join(f"{c['block_id']}@{c['page']}" for c in cut[:40])
             return Response(data, media_type=media_type, headers=headers)
@@ -933,13 +935,13 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
         try:
             if fmt == "pdf":
                 data = await r.acall(r.pdf(doc_id, info=info))
-                return _send(data, "application/pdf", f"{stem}.pdf")
+                return _send(data, "application/pdf", ".pdf")
             if fmt in ("png", "jpg", "jpeg"):
                 ext = "jpg" if fmt != "png" else "png"
                 imgs = await r.acall(r.page_images(doc_id, fmt=ext, info=info))
                 if len(imgs) == 1:
-                    return _send(imgs[0][1], f"image/{'jpeg' if ext == 'jpg' else 'png'}", f"{stem}.{ext}")
-                return _send(zip_images(imgs, ext, stem), "application/zip", f"{stem}-{ext}.zip")
+                    return _send(imgs[0][1], f"image/{'jpeg' if ext == 'jpg' else 'png'}", f".{ext}")
+                return _send(zip_images(imgs, ext, stem), "application/zip", f"-{ext}.zip")
             if fmt in ("docx", "pptx"):
                 from . import exporters
 
@@ -961,7 +963,7 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                     # Word reflows the text itself, so nothing is cut off in a .docx.
                     info.pop("cut_off", None)
-                return _send(data, mime, f"{stem}-{redline}.{fmt}" if redline else f"{stem}.{fmt}")
+                return _send(data, mime, f"-{redline}.{fmt}" if redline else f".{fmt}")
             if fmt in ("gif", "mp4"):
                 from . import exporters
 
@@ -976,10 +978,10 @@ def create_app(cfg: CodraftConfig, graph: Any = None, info: dict | None = None,
                     except RuntimeError as exc:
                         raise HTTPException(501, str(exc)) from exc
                     mime = "video/mp4"
-                return _send(data, mime, f"{stem}.{fmt}")
+                return _send(data, mime, f".{fmt}")
             if fmt in ("html", "zip"):
                 data = await r.acall(r.html_zip(doc_id, doc["title"], info=info))
-                return _send(data, "application/zip", f"{stem}-html.zip")
+                return _send(data, "application/zip", "-html.zip")
         except BrowserMissing as exc:
             raise HTTPException(503, str(exc)) from exc
         except RenderFailed as exc:
@@ -1421,8 +1423,3 @@ def _deep(a: dict, b: dict) -> dict:
         out[k] = _deep(out[k], v) if isinstance(v, dict) and isinstance(out.get(k), dict) else v
     return out
 
-
-def _slug(s: str) -> str:
-    import re
-
-    return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()[:60] or "document"

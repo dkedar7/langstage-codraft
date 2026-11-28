@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.7 — 2026-11-28
+
+**An export is named after its title in any language (#79).** The file name came from the title
+with everything outside A–Z and 0–9 treated as a separator. Accented letters were cut out
+(`Rapport d'activité 2026` → `rapport-d-activit-2026.pdf`), and a title in Japanese, Russian,
+Greek, Arabic or any other non-Latin script downloaded as `document.pdf`. Now:
+
+- Latin letters lose only their accents: `rapport-d-activite-2026.pdf`, `grossenbericht-ubersicht.pdf`.
+- Other scripts keep their letters: `日本の報告.pdf`, `отчёт-за-год.pdf`.
+- The export route sends that name as RFC 5987 `filename*=UTF-8''…` next to an ASCII
+  `filename=` fallback, and the editor's **Export** menu and `export -o DIR/` both use it. A name a
+  server suggests is never a path: separators and characters a file system can't take are
+  replaced before the CLI writes it.
+
 ## 0.12.6 — 2026-11-28
 
 **A suggested block's Accept / Reject bar no longer covers the next block (#78).** The bar hung

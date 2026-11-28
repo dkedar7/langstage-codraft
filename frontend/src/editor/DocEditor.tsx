@@ -19,6 +19,7 @@ import { DesignPanel } from "./DesignPanel";
 import { DocPanel } from "./DocPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { useLive } from "./useLive";
+import { downloadName } from "./downloadName";
 import { withBase } from "../base";
 import { baseThemeName } from "../render/theme";
 
@@ -264,7 +265,7 @@ export function DocEditor({ docId, cfg, identity, onTitle, onChanged, pendingAsk
       }
       const blob = await r.blob();
       const disp = r.headers.get("content-disposition") || "";
-      const name = disp.match(/filename="([^"]+)"/)?.[1] || `document.${fmt}`;
+      const name = downloadName(disp) || `document.${fmt}`;
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
       a.download = name;

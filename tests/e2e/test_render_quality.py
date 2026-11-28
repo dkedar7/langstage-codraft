@@ -339,7 +339,10 @@ def test_a_text_block_with_a_table_opens_as_markdown_and_keeps_the_table(page, s
     page.keyboard.press("Control+Enter")
     page.wait_for_function(f"fetch('/api/docs/{did}').then(r => r.json()).then(d => d.blocks[0].content.markdown.includes('$27.70m'))")
     assert "| Path | Total |" in c.get(f"/api/docs/{did}").json()["blocks"][0]["content"]["markdown"]
-    assert page.locator(f"[data-block-id={b['id']}] table td", has_text="$27.70m").count() == 1
+    # The server has the new text; the page re-renders the block a moment later.
+    cell = page.locator(f"[data-block-id={b['id']}] table td", has_text="$27.70m")
+    cell.wait_for()
+    assert cell.count() == 1
 
 
 # ------------------------------------------------------------------ restoring a deleted block
